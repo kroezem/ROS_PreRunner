@@ -10,7 +10,7 @@ def generate_launch_description():
     slam_launch = os.path.join(
         get_package_share_directory('slam_toolbox'),
         'launch',
-        'online_async_launch.py',
+        'localization_launch.py',
     )
     slam_config = os.path.join(
         get_package_share_directory('runner_bringup'),
