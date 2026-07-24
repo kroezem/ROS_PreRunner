@@ -15,6 +15,10 @@ setup(
         ),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        (
+            'share/' + package_name + '/launch/include',
+            glob('launch/include/*.py'),
+        ),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],

@@ -2,13 +2,6 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Runner: Drive",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup drive.launch.py",
-      "dependsOn": "Stop all launches",
-      "problemMatcher": []
-    },
-    {
       "label": "Runner: Map",
       "type": "shell",
       "command": "ros2 launch runner_bringup map.launch.py",
@@ -16,71 +9,17 @@
       "problemMatcher": []
     },
     {
-      "label": "Runner: Full",
+      "label": "Runner: Localize",
       "type": "shell",
-      "command": "ros2 launch runner_bringup full.launch.py",
+      "command": "ros2 launch runner_bringup localize.launch.py",
       "dependsOn": "Stop all launches",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: Sensors",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup sensors.launch.py",
-      "dependsOn": "Stop all launches",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: Localization",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup localization.launch.py",
       "problemMatcher": []
     },
     {
       "label": "Runner: Teleop",
       "type": "shell",
       "command": "ros2 launch runner_bringup teleop.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: TF Static",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup tf_static.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: Lidar",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup lidar.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: IMU",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup imu.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: RF2O",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup rf2o.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: EKF",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup ekf.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: EKF Minimal",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup ekf_minimal.launch.py",
-      "problemMatcher": []
-    },
-    {
-      "label": "Runner: SLAM",
-      "type": "shell",
-      "command": "ros2 launch runner_bringup slam.launch.py",
+      "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
     {

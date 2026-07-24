@@ -1,6 +1,7 @@
-# drive.launch.py, map.launch.py, full.launch.py, and localize.launch.py are
-# mutually exclusive. Running two at once double-instantiates the sensor drivers
-# and corrupts both serial ports.
+# map.launch.py, localize.launch.py, and teleop.launch.py are mutually exclusive.
+# Each is a complete runnable entry point; run exactly one.
+# Running more than one may duplicate UART sensor or PWM motor ownership.
+# Internal tiers under launch/include are not standalone production entry points.
 
 import os
 
@@ -8,26 +9,20 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    launch_dir = os.path.join(
-        get_package_share_directory('runner_bringup'),
-        'launch',
-    )
+    package_share = get_package_share_directory('runner_bringup')
+    launch_dir = os.path.join(package_share, 'launch')
+    include_dir = os.path.join(launch_dir, 'include')
 
     return LaunchDescription([
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(launch_dir, 'sensors.launch.py'))),
-        Node(
-            package='runner_encoder',
-            executable='encoder_node',
-        ),
+            os.path.join(include_dir, 'sensors.launch.py'))),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(launch_dir, 'rf2o.launch.py'))),
+            os.path.join(include_dir, 'estimation.launch.py'))),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(launch_dir, 'ekf.launch.py'))),
+            os.path.join(include_dir, 'slam_localize.launch.py'))),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(launch_dir, 'slam_localize.launch.py'))),
+            os.path.join(launch_dir, 'teleop.launch.py'))),
     ])

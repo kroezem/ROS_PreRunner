@@ -1,3 +1,8 @@
+# map.launch.py, localize.launch.py, and teleop.launch.py are mutually exclusive.
+# Each is a complete runnable entry point; run exactly one.
+# Running more than one may duplicate UART sensor or PWM motor ownership.
+# Internal tiers under launch/include are not standalone production entry points.
+
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
