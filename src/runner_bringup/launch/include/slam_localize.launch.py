@@ -2,8 +2,9 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import GroupAction, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import SetRemap
 
 
 def generate_launch_description():
@@ -19,11 +20,14 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(slam_launch),
-            launch_arguments={
-                'slam_params_file': slam_config,
-                'use_sim_time': 'false',
-            }.items(),
-        ),
+        GroupAction([
+            SetRemap(src='/scan', dst='/scan_slam'),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(slam_launch),
+                launch_arguments={
+                    'slam_params_file': slam_config,
+                    'use_sim_time': 'false',
+                }.items(),
+            ),
+        ]),
     ])

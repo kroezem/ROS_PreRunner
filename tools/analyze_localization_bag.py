@@ -4,6 +4,7 @@
 import argparse
 import math
 import statistics
+from collections import Counter
 from pathlib import Path
 
 import rosbag2_py
@@ -16,12 +17,16 @@ YAW_EPSILON_RAD = 1e-5
 
 HEALTH_TOPICS = (
     '/scan',
+    '/scan_slam',
     '/scan_rf2o',
     '/odom_rf2o',
     '/imu/data',
     '/tf',
     '/initialpose',
+    '/pose',
 )
+
+SCAN_TOPICS = ('/scan', '/scan_slam')
 
 
 def normalize_frame(frame_id):
@@ -72,13 +77,88 @@ def distribution(values):
     }
 
 
+def stamp_to_ns(stamp):
+    return stamp.sec * 1_000_000_000 + stamp.nanosec
+
+
+def summarize_scans(records):
+    header_stamps_ns = [record['header_stamp_ns'] for record in records]
+    header_gaps_s = [
+        (current - previous) / 1e9
+        for previous, current in zip(
+            header_stamps_ns,
+            header_stamps_ns[1:],
+        )
+    ]
+    return {
+        'count': len(records),
+        'range_lengths': Counter(
+            record['range_length'] for record in records
+        ),
+        'intensity_lengths': Counter(
+            record['intensity_length'] for record in records
+        ),
+        'angle_min': Counter(record['angle_min'] for record in records),
+        'angle_max': Counter(record['angle_max'] for record in records),
+        'angle_increment': Counter(
+            record['angle_increment'] for record in records
+        ),
+        'first_header_stamp_ns': (
+            header_stamps_ns[0] if header_stamps_ns else None
+        ),
+        'last_header_stamp_ns': (
+            header_stamps_ns[-1] if header_stamps_ns else None
+        ),
+        'non_increasing_header_stamps': sum(
+            gap <= 0.0 for gap in header_gaps_s
+        ),
+        'header_gap_distribution': distribution(header_gaps_s),
+    }
+
+
+def compare_scan_headers(source_records, output_records):
+    source_by_stamp = {
+        record['header_stamp_ns']: record for record in source_records
+    }
+    output_by_stamp = {
+        record['header_stamp_ns']: record for record in output_records
+    }
+    matched_stamps = source_by_stamp.keys() & output_by_stamp.keys()
+    return {
+        'matched': len(matched_stamps),
+        'missing_output': len(source_by_stamp.keys() - output_by_stamp.keys()),
+        'unexpected_output': len(
+            output_by_stamp.keys() - source_by_stamp.keys()
+        ),
+        'frame_mismatches': sum(
+            source_by_stamp[stamp]['frame_id']
+            != output_by_stamp[stamp]['frame_id']
+            for stamp in matched_stamps
+        ),
+    }
+
+
 def format_value(value, digits=3, suffix=''):
     if value is None:
         return 'n/a'
     return f'{value:.{digits}f}{suffix}'
 
 
-def read_bag(bag_path):
+def format_counter(counter):
+    return '{' + ', '.join(
+        f'{key!r}: {count}'
+        for key, count in sorted(counter.items())
+    ) + '}'
+
+
+def format_stamp_ns(stamp_ns):
+    if stamp_ns is None:
+        return 'n/a'
+    seconds, nanoseconds = divmod(stamp_ns, 1_000_000_000)
+    return f'{seconds}.{nanoseconds:09d}'
+
+
+def read_bag(bag_path, seed_success_max_delay_s):
     reader = rosbag2_py.SequentialReader()
     storage_options = rosbag2_py.StorageOptions(
         uri=str(bag_path),
@@ -93,17 +173,20 @@ def read_bag(bag_path):
     topic_types = {
         topic.name: topic.type for topic in reader.get_all_topics_and_types()
     }
+    decoded_topics = ('/tf', '/initialpose', '/pose', *SCAN_TOPICS)
     message_types = {
         topic: get_message(topic_types[topic])
-        for topic in ('/tf', '/initialpose')
+        for topic in decoded_topics
         if topic in topic_types
     }
 
     counts = {topic: 0 for topic in HEALTH_TOPICS}
+    scans = {topic: [] for topic in SCAN_TOPICS}
     bag_start_ns = None
     bag_end_ns = None
     publications = []
     initial_poses = []
+    poses = []
 
     while reader.has_next():
         topic, serialized_data, receive_ns = reader.read_next()
@@ -114,6 +197,19 @@ def read_bag(bag_path):
 
         if topic in counts:
             counts[topic] += 1
+
+        if topic in SCAN_TOPICS:
+            message = deserialize_message(serialized_data, message_types[topic])
+            scans[topic].append({
+                'receive_ns': receive_ns,
+                'header_stamp_ns': stamp_to_ns(message.header.stamp),
+                'frame_id': message.header.frame_id,
+                'range_length': len(message.ranges),
+                'intensity_length': len(message.intensities),
+                'angle_min': message.angle_min,
+                'angle_max': message.angle_max,
+                'angle_increment': message.angle_increment,
+            })
 
         if topic == '/tf':
             message = deserialize_message(serialized_data, message_types[topic])
@@ -136,6 +232,18 @@ def read_bag(bag_path):
             message = deserialize_message(serialized_data, message_types[topic])
             pose = message.pose.pose
             initial_poses.append({
+                'receive_ns': receive_ns,
+                'header_stamp': message.header.stamp,
+                'frame_id': message.header.frame_id,
+                'x': pose.position.x,
+                'y': pose.position.y,
+                'yaw': quaternion_to_yaw(pose.orientation),
+            })
+
+        elif topic == '/pose':
+            message = deserialize_message(serialized_data, message_types[topic])
+            pose = message.pose.pose
+            poses.append({
                 'receive_ns': receive_ns,
                 'header_stamp': message.header.stamp,
                 'frame_id': message.header.frame_id,
@@ -188,8 +296,13 @@ def read_bag(bag_path):
         abs(correction['yaw_delta']) for correction in corrections
     ]
 
-    for initial_pose in initial_poses:
+    for index, initial_pose in enumerate(initial_poses):
         receive_ns = initial_pose['receive_ns']
+        next_seed_ns = (
+            initial_poses[index + 1]['receive_ns']
+            if index + 1 < len(initial_poses)
+            else None
+        )
         previous_correction = next(
             (
                 correction
@@ -229,7 +342,51 @@ def read_bag(bag_path):
             if next_correction is not None
             else None
         )
+        first_subsequent_pose = next(
+            (
+                pose
+                for pose in poses
+                if (
+                    pose['receive_ns'] > receive_ns
+                    and (
+                        next_seed_ns is None
+                        or pose['receive_ns'] < next_seed_ns
+                    )
+                )
+            ),
+            None,
+        )
+        initial_pose['first_subsequent_pose'] = first_subsequent_pose
+        initial_pose['pose_delay_s'] = (
+            (first_subsequent_pose['receive_ns'] - receive_ns) / 1e9
+            if first_subsequent_pose is not None
+            else None
+        )
+        initial_pose['pose_translation_from_seed_m'] = (
+            math.hypot(
+                first_subsequent_pose['x'] - initial_pose['x'],
+                first_subsequent_pose['y'] - initial_pose['y'],
+            )
+            if first_subsequent_pose is not None
+            else None
+        )
+        initial_pose['pose_yaw_from_seed_rad'] = (
+            wrap_angle(
+                first_subsequent_pose['yaw'] - initial_pose['yaw']
+            )
+            if first_subsequent_pose is not None
+            else None
+        )
+        initial_pose['seed_succeeded'] = (
+            normalize_frame(initial_pose['frame_id']) == 'map'
+            and initial_pose['pose_delay_s'] is not None
+            and initial_pose['pose_delay_s'] <= seed_success_max_delay_s
+        )
 
+    scan_summaries = {
+        topic: summarize_scans(records)
+        for topic, records in scans.items()
+    }
     return {
         'path': bag_path,
         'duration_s': duration_s,
@@ -241,6 +398,13 @@ def read_bag(bag_path):
         'translation_distribution': distribution(translation_deltas_m),
         'yaw_distribution': distribution(absolute_yaw_deltas_rad),
         'initial_poses': initial_poses,
+        'poses': poses,
+        'scan_summaries': scan_summaries,
+        'scan_header_comparison': compare_scan_headers(
+            scans['/scan'],
+            scans['/scan_slam'],
+        ),
+        'seed_success_max_delay_s': seed_success_max_delay_s,
         'bag_start_ns': bag_start_ns,
     }
 
@@ -269,6 +433,54 @@ def print_bag_report(result):
         count = result['counts'][topic]
         rate = count / duration_s if duration_s > 0.0 else 0.0
         print(f'  {topic:<16} {count:>10d} {rate:>12.3f} Hz')
+
+    print('\nScan geometry:')
+    for topic in SCAN_TOPICS:
+        summary = result['scan_summaries'][topic]
+        print(f'  {topic}:')
+        print(f'    messages: {summary["count"]}')
+        print(
+            '    len(ranges): '
+            f'{format_counter(summary["range_lengths"])}'
+        )
+        print(
+            '    len(intensities): '
+            f'{format_counter(summary["intensity_lengths"])}'
+        )
+        print(
+            '    angle_min: '
+            f'{format_counter(summary["angle_min"])}'
+        )
+        print(
+            '    angle_max: '
+            f'{format_counter(summary["angle_max"])}'
+        )
+        print(
+            '    angle_increment: '
+            f'{format_counter(summary["angle_increment"])}'
+        )
+        print(
+            '    header stamps: '
+            f'first={format_stamp_ns(summary["first_header_stamp_ns"])}, '
+            f'last={format_stamp_ns(summary["last_header_stamp_ns"])}, '
+            'non-increasing='
+            f'{summary["non_increasing_header_stamps"]}'
+        )
+        print_distribution(
+            'header stamp gap',
+            summary['header_gap_distribution'],
+            ' s',
+        )
+
+    comparison = result['scan_header_comparison']
+    print('  /scan -> /scan_slam header preservation:')
+    print(f'    matching stamps: {comparison["matched"]}')
+    print(f'    source stamps without output: {comparison["missing_output"]}')
+    print(
+        '    output stamps without source: '
+        f'{comparison["unexpected_output"]}'
+    )
+    print(f'    frame mismatches: {comparison["frame_mismatches"]}')
 
     publication_rate = (
         len(publications) / duration_s if duration_s > 0.0 else 0.0
@@ -318,6 +530,11 @@ def print_bag_report(result):
     )
 
     print('\nInitial poses:')
+    print(
+        '  seed success definition: header.frame_id resolves to map and the '
+        'first subsequent /pose arrives before the next seed and within '
+        f'{result["seed_success_max_delay_s"]:.3f} s'
+    )
     if not result['initial_poses']:
         print('  none')
     for index, initial_pose in enumerate(result['initial_poses'], start=1):
@@ -346,6 +563,36 @@ def print_bag_report(result):
             '    next correction change: '
             f'translation={format_value(initial_pose["next_translation_delta"], 6, " m")}, '
             f'yaw={format_value(initial_pose["next_yaw_delta"], 6, " rad")}'
+        )
+        first_pose = initial_pose['first_subsequent_pose']
+        print(
+            '    first subsequent /pose delay: '
+            f'{format_value(initial_pose["pose_delay_s"], 6, " s")}'
+        )
+        if first_pose is not None:
+            pose_stamp = first_pose['header_stamp']
+            pose_translation = format_value(
+                initial_pose['pose_translation_from_seed_m'],
+                6,
+                ' m',
+            )
+            pose_yaw = format_value(
+                initial_pose['pose_yaw_from_seed_rad'],
+                6,
+                ' rad',
+            )
+            print(
+                '    first subsequent /pose header: '
+                f'{pose_stamp.sec}.{pose_stamp.nanosec:09d}, '
+                f'frame_id={first_pose["frame_id"]!r}'
+            )
+            print(
+                '    first subsequent /pose delta from seed: '
+                f'translation={pose_translation}, yaw={pose_yaw}'
+            )
+        print(
+            '    seed succeeded: '
+            f'{"yes" if initial_pose["seed_succeeded"] else "no"}'
         )
 
 
@@ -415,6 +662,16 @@ def parse_args():
         metavar='BAG',
         help='ROS 2 MCAP bag directory',
     )
+    parser.add_argument(
+        '--seed-success-max-delay',
+        type=float,
+        default=2.0,
+        metavar='SECONDS',
+        help=(
+            'maximum first-subsequent-/pose delay counted as a successful '
+            'map-frame seed (default: 2.0)'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -426,7 +683,10 @@ def main():
         if not bag_path.is_dir():
             raise SystemExit(f'error: bag directory not found: {bag_path}')
         try:
-            result = read_bag(bag_path)
+            result = read_bag(
+                bag_path,
+                args.seed_success_max_delay,
+            )
         except Exception as error:
             raise SystemExit(f'error: failed to read {bag_path}: {error}') from error
         print_bag_report(result)

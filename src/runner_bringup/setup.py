@@ -36,6 +36,7 @@ setup(
         'console_scripts': [
             'rf2o_scan_canonicalizer = '
             'runner_bringup.rf2o_scan_canonicalizer:main',
+            'scan_rebinner = runner_bringup.scan_rebinner:main',
         ],
     },
 )

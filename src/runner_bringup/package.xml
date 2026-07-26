@@ -12,10 +12,12 @@
   <depend>launch_ros</depend>
   <depend>ldlidar_stl_ros2</depend>
   <depend>rf2o_laser_odometry</depend>
+  <depend>rclpy</depend>
   <depend>robot_localization</depend>
   <depend>runner_imu</depend>
   <depend>runner_teleop</depend>
   <depend>runner_motor</depend>
+  <depend>sensor_msgs</depend>
   <depend>slam_toolbox</depend>
   <depend>tf2_ros</depend>
   <exec_depend>runner_encoder</exec_depend>
