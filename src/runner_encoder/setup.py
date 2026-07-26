@@ -12,7 +12,14 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     # lgpio is provided externally by the apt package python3-lgpio.
-    install_requires=['setuptools', 'rclpy', 'nav_msgs', 'std_msgs'],
+    install_requires=[
+        'setuptools',
+        'rclpy',
+        'rcl_interfaces',
+        'nav_msgs',
+        'runner_interfaces',
+        'std_msgs',
+    ],
     zip_safe=True,
     maintainer='matti',
     maintainer_email='matti@todo.todo',
@@ -25,6 +32,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'analyze_encoder_bag = runner_encoder.bag_analyzer:main',
             'encoder_node = runner_encoder.encoder_node:main',
         ],
     },
