@@ -11,7 +11,7 @@
     {
       "label": "Runner: Localize",
       "type": "shell",
-      "command": "ros2 launch runner_bringup localize.launch.py",
+      "command": "ros2 launch runner_bringup localize.launch.py map_name:=${input:runnerMap}",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
@@ -39,6 +39,18 @@
       "type": "shell",
       "command": "ros2 launch foxglove_bridge foxglove_bridge_launch.xml",
       "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "runnerMap",
+      "type": "pickString",
+      "description": "Select the slam_toolbox map",
+      "options": [
+        "house_good_v1",
+        "bedroom_phase_b_503"
+      ],
+      "default": "house_good_v1"
     }
   ]
 }
