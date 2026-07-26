@@ -2,6 +2,7 @@
 """Report localization update metrics from one or more ROS 2 MCAP bags."""
 
 import argparse
+import bisect
 import math
 import statistics
 from collections import Counter
@@ -20,6 +21,7 @@ HEALTH_TOPICS = (
     '/scan_slam',
     '/scan_rf2o',
     '/odom_rf2o',
+    '/odometry/filtered',
     '/imu/data',
     '/tf',
     '/initialpose',
@@ -45,6 +47,50 @@ def quaternion_to_yaw(quaternion):
 
 def wrap_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def interpolate_position(positions, receive_ns):
+    if not positions:
+        return None
+
+    receive_times_ns = [position['receive_ns'] for position in positions]
+    index = bisect.bisect_left(receive_times_ns, receive_ns)
+    if index < len(positions) and receive_times_ns[index] == receive_ns:
+        return positions[index]['x'], positions[index]['y']
+    if index == 0 or index == len(positions):
+        return None
+
+    previous = positions[index - 1]
+    current = positions[index]
+    interval_ns = current['receive_ns'] - previous['receive_ns']
+    if interval_ns <= 0:
+        return None
+
+    fraction = (receive_ns - previous['receive_ns']) / interval_ns
+    return (
+        previous['x'] + fraction * (current['x'] - previous['x']),
+        previous['y'] + fraction * (current['y'] - previous['y']),
+    )
+
+
+def transform_point(transform, point):
+    point_x, point_y = point
+    cosine = math.cos(transform['yaw'])
+    sine = math.sin(transform['yaw'])
+    return (
+        transform['x'] + cosine * point_x - sine * point_y,
+        transform['y'] + sine * point_x + cosine * point_y,
+    )
+
+
+def path_length(positions):
+    return sum(
+        math.hypot(
+            current['x'] - previous['x'],
+            current['y'] - previous['y'],
+        )
+        for previous, current in zip(positions, positions[1:])
+    )
 
 
 def percentile(values, percentile_value):
@@ -173,7 +219,13 @@ def read_bag(bag_path, seed_success_max_delay_s):
     topic_types = {
         topic.name: topic.type for topic in reader.get_all_topics_and_types()
     }
-    decoded_topics = ('/tf', '/initialpose', '/pose', *SCAN_TOPICS)
+    decoded_topics = (
+        '/tf',
+        '/initialpose',
+        '/pose',
+        '/odometry/filtered',
+        *SCAN_TOPICS,
+    )
     message_types = {
         topic: get_message(topic_types[topic])
         for topic in decoded_topics
@@ -187,6 +239,8 @@ def read_bag(bag_path, seed_success_max_delay_s):
     publications = []
     initial_poses = []
     poses = []
+    odometry_positions = []
+    tf_odom_positions = []
 
     while reader.has_next():
         topic, serialized_data, receive_ns = reader.read_next()
@@ -227,6 +281,16 @@ def read_bag(bag_path, seed_success_max_delay_s):
                         'y': translation.y,
                         'yaw': quaternion_to_yaw(rotation),
                     })
+                if (
+                    normalize_frame(transform.header.frame_id) == 'odom'
+                    and normalize_frame(transform.child_frame_id) == 'base_link'
+                ):
+                    translation = transform.transform.translation
+                    tf_odom_positions.append({
+                        'receive_ns': receive_ns,
+                        'x': translation.x,
+                        'y': translation.y,
+                    })
 
         elif topic == '/initialpose':
             message = deserialize_message(serialized_data, message_types[topic])
@@ -252,8 +316,27 @@ def read_bag(bag_path, seed_success_max_delay_s):
                 'yaw': quaternion_to_yaw(pose.orientation),
             })
 
+        elif topic == '/odometry/filtered':
+            message = deserialize_message(serialized_data, message_types[topic])
+            position = message.pose.pose.position
+            odometry_positions.append({
+                'receive_ns': receive_ns,
+                'x': position.x,
+                'y': position.y,
+            })
+
     if bag_start_ns is None:
         raise RuntimeError('bag contains no messages')
+
+    if '/odometry/filtered' in topic_types:
+        odom_positions = odometry_positions
+        odom_position_source = '/odometry/filtered'
+    else:
+        odom_positions = tf_odom_positions
+        odom_position_source = (
+            '/tf odom -> base_link' if tf_odom_positions else None
+        )
+    odom_positions.sort(key=lambda position: position['receive_ns'])
 
     duration_s = (bag_end_ns - bag_start_ns) / 1e9
     corrections = []
@@ -275,8 +358,34 @@ def read_bag(bag_path, seed_success_max_delay_s):
                     'receive_ns': publication['receive_ns'],
                     'translation_delta': translation_delta,
                     'yaw_delta': yaw_delta,
+                    'previous_transform': previous_publication,
+                    'current_transform': publication,
                 })
         previous_publication = publication
+
+    for correction in corrections:
+        position = interpolate_position(
+            odom_positions,
+            correction['receive_ns'],
+        )
+        if position is None:
+            correction['pose_jump'] = None
+            correction['lever_arm'] = None
+            continue
+
+        previous_position = transform_point(
+            correction['previous_transform'],
+            position,
+        )
+        current_position = transform_point(
+            correction['current_transform'],
+            position,
+        )
+        correction['pose_jump'] = math.hypot(
+            current_position[0] - previous_position[0],
+            current_position[1] - previous_position[1],
+        )
+        correction['lever_arm'] = math.hypot(*position)
 
     correction_times_s = [
         (correction['receive_ns'] - bag_start_ns) / 1e9
@@ -295,6 +404,44 @@ def read_bag(bag_path, seed_success_max_delay_s):
     absolute_yaw_deltas_rad = [
         abs(correction['yaw_delta']) for correction in corrections
     ]
+    pose_jumps_m = [
+        correction['pose_jump']
+        for correction in corrections
+        if correction['pose_jump'] is not None
+    ]
+    lever_arms_m = [
+        correction['lever_arm']
+        for correction in corrections
+        if correction['lever_arm'] is not None
+    ]
+    pose_jump_distribution = distribution(pose_jumps_m)
+    translation_distribution = distribution(translation_deltas_m)
+    corrections_with_pose_jumps = [
+        correction
+        for correction in corrections
+        if correction['pose_jump'] is not None
+    ]
+    invariant_pose_jump_total_m = sum(
+        correction['pose_jump']
+        for correction in corrections_with_pose_jumps
+    )
+    inflation_ratio = (
+        sum(
+            correction['translation_delta']
+            for correction in corrections_with_pose_jumps
+        )
+        / invariant_pose_jump_total_m
+        if invariant_pose_jump_total_m
+        else None
+    )
+    odom_path_length_m = (
+        path_length(odom_positions) if odom_positions else None
+    )
+    pose_correction_per_m = (
+        sum(pose_jumps_m) / odom_path_length_m
+        if odom_path_length_m not in (None, 0.0) and pose_jumps_m
+        else None
+    )
 
     for index, initial_pose in enumerate(initial_poses):
         receive_ns = initial_pose['receive_ns']
@@ -395,8 +542,17 @@ def read_bag(bag_path, seed_success_max_delay_s):
         'corrections': corrections,
         'correction_times_s': correction_times_s,
         'gap_distribution': distribution(correction_gaps_s),
-        'translation_distribution': distribution(translation_deltas_m),
+        'translation_distribution': translation_distribution,
+        'pose_jump_distribution': pose_jump_distribution,
         'yaw_distribution': distribution(absolute_yaw_deltas_rad),
+        'lever_mean': (
+            statistics.mean(lever_arms_m) if lever_arms_m else None
+        ),
+        'lever_max': max(lever_arms_m) if lever_arms_m else None,
+        'inflation_ratio': inflation_ratio,
+        'odom_position_source': odom_position_source,
+        'odom_path_length_m': odom_path_length_m,
+        'pose_correction_per_m': pose_correction_per_m,
         'initial_poses': initial_poses,
         'poses': poses,
         'scan_summaries': scan_summaries,
@@ -519,9 +675,35 @@ def print_bag_report(result):
         ' s',
     )
     print_distribution(
-        'translation magnitude',
+        'raw map -> odom translation magnitude',
         result['translation_distribution'],
         ' m',
+    )
+    print_distribution(
+        'pose jump at base_link',
+        result['pose_jump_distribution'],
+        ' m',
+    )
+    print(
+        '  odom-frame position source: '
+        f'{result["odom_position_source"] or "n/a"}'
+    )
+    print(
+        '  lever arm (distance from odom origin): '
+        f'mean={format_value(result["lever_mean"], suffix=" m")}, '
+        f'max={format_value(result["lever_max"], suffix=" m")}'
+    )
+    print(
+        '  raw/invariant inflation ratio (cumulative raw / invariant): '
+        f'{format_value(result["inflation_ratio"], suffix="x")}'
+    )
+    print(
+        '  odom-frame path length: '
+        f'{format_value(result["odom_path_length_m"], suffix=" m")}'
+    )
+    print(
+        '  total pose correction per metre travelled: '
+        f'{format_value(result["pose_correction_per_m"], suffix=" m/m")}'
     )
     print_distribution(
         'absolute yaw magnitude',
@@ -608,6 +790,10 @@ def print_comparison(results):
         'trans_med',
         'trans_p95',
         'trans_max',
+        'pose_jump_med',
+        'pose_jump_p95',
+        'pose_jump_max',
+        'lever_mean',
         'yaw_abs_max',
     )
     rows = []
@@ -622,6 +808,10 @@ def print_comparison(results):
             format_value(result['translation_distribution']['median']),
             format_value(result['translation_distribution']['p95']),
             format_value(result['translation_distribution']['maximum']),
+            format_value(result['pose_jump_distribution']['median']),
+            format_value(result['pose_jump_distribution']['p95']),
+            format_value(result['pose_jump_distribution']['maximum']),
+            format_value(result['lever_mean']),
             format_value(result['yaw_distribution']['maximum']),
         ))
 
@@ -646,7 +836,8 @@ def print_comparison(results):
             )
         )
     print(
-        'Units: gaps in s, translation in m, yaw_abs_max in rad; '
+        'Units: gaps in s, translation/pose jump/lever arm in m, '
+        'yaw_abs_max in rad; '
         'initial transform excluded from corr.'
     )
 
