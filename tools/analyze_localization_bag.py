@@ -3,8 +3,11 @@
 
 import argparse
 import bisect
+import ctypes
 import math
 import statistics
+import struct
+import zlib
 from collections import Counter
 from pathlib import Path
 
@@ -29,6 +32,49 @@ HEALTH_TOPICS = (
 )
 
 SCAN_TOPICS = ('/scan', '/scan_slam')
+MCAP_MAGIC = b'\x89MCAP0\r\n'
+
+OP_FOOTER = 0x02
+OP_SCHEMA = 0x03
+OP_CHANNEL = 0x04
+OP_MESSAGE = 0x05
+OP_CHUNK = 0x06
+
+
+class McapParseError(RuntimeError):
+    pass
+
+
+class McapBufferReader:
+    def __init__(self, data):
+        self.data = memoryview(data)
+        self.offset = 0
+
+    def take(self, size):
+        end = self.offset + size
+        if size < 0 or end > len(self.data):
+            raise McapParseError('record ended before all fields were decoded')
+        value = self.data[self.offset:end]
+        self.offset = end
+        return value
+
+    def uint16(self):
+        return struct.unpack('<H', self.take(2))[0]
+
+    def uint32(self):
+        return struct.unpack('<I', self.take(4))[0]
+
+    def uint64(self):
+        return struct.unpack('<Q', self.take(8))[0]
+
+    def string(self):
+        return bytes(self.take(self.uint32())).decode('utf-8')
+
+    def bytes64(self):
+        return bytes(self.take(self.uint64()))
+
+    def remaining_bytes(self):
+        return bytes(self.take(len(self.data) - self.offset))
 
 
 def normalize_frame(frame_id):
@@ -91,6 +137,35 @@ def path_length(positions):
         )
         for previous, current in zip(positions, positions[1:])
     )
+
+
+def positions_in_window(positions, start_ns, end_ns):
+    if not positions:
+        return []
+
+    selected = [
+        position
+        for position in positions
+        if start_ns <= position['receive_ns'] <= end_ns
+    ]
+    for boundary_ns in (start_ns, end_ns):
+        point = interpolate_position(positions, boundary_ns)
+        if point is not None:
+            selected.append({
+                'receive_ns': boundary_ns,
+                'x': point[0],
+                'y': point[1],
+            })
+
+    selected.sort(key=lambda position: position['receive_ns'])
+    return [
+        position
+        for index, position in enumerate(selected)
+        if (
+            index == 0
+            or position['receive_ns'] != selected[index - 1]['receive_ns']
+        )
+    ]
 
 
 def percentile(values, percentile_value):
@@ -204,7 +279,353 @@ def format_stamp_ns(stamp_ns):
     return f'{seconds}.{nanoseconds:09d}'
 
 
-def read_bag(bag_path, seed_success_max_delay_s):
+def mcap_files_for_path(bag_path):
+    if bag_path.is_file():
+        if bag_path.suffix.lower() != '.mcap':
+            raise RuntimeError(f'not an MCAP file: {bag_path}')
+        return [bag_path]
+    if bag_path.is_dir():
+        mcap_paths = sorted(bag_path.glob('*.mcap'))
+        if mcap_paths:
+            return mcap_paths
+        raise RuntimeError(f'bag directory contains no MCAP files: {bag_path}')
+    raise RuntimeError(f'bag path not found: {bag_path}')
+
+
+def mcap_has_closing_magic(mcap_path):
+    if mcap_path.stat().st_size < len(MCAP_MAGIC):
+        return False
+    with mcap_path.open('rb') as stream:
+        stream.seek(-len(MCAP_MAGIC), 2)
+        return stream.read() == MCAP_MAGIC
+
+
+def decompress_zstd(data, uncompressed_size):
+    try:
+        library = ctypes.CDLL('libzstd.so.1')
+    except OSError as error:
+        raise McapParseError(
+            f'zstd decompression library unavailable: {error}'
+        ) from error
+    library.ZSTD_decompress.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    )
+    library.ZSTD_decompress.restype = ctypes.c_size_t
+    library.ZSTD_isError.argtypes = (ctypes.c_size_t,)
+    library.ZSTD_isError.restype = ctypes.c_uint
+    library.ZSTD_getErrorName.argtypes = (ctypes.c_size_t,)
+    library.ZSTD_getErrorName.restype = ctypes.c_char_p
+
+    source = ctypes.create_string_buffer(data)
+    destination = ctypes.create_string_buffer(uncompressed_size)
+    result = library.ZSTD_decompress(
+        destination,
+        uncompressed_size,
+        source,
+        len(data),
+    )
+    if library.ZSTD_isError(result):
+        error_name = library.ZSTD_getErrorName(result).decode()
+        raise McapParseError(f'zstd decompression failed: {error_name}')
+    if result != uncompressed_size:
+        raise McapParseError(
+            f'zstd produced {result} bytes, expected {uncompressed_size}'
+        )
+    return destination.raw[:result]
+
+
+def decompress_lz4(data, uncompressed_size):
+    try:
+        library = ctypes.CDLL('liblz4.so.1')
+    except OSError as error:
+        raise McapParseError(
+            f'lz4 decompression library unavailable: {error}'
+        ) from error
+    library.LZ4F_createDecompressionContext.argtypes = (
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_uint,
+    )
+    library.LZ4F_createDecompressionContext.restype = ctypes.c_size_t
+    library.LZ4F_freeDecompressionContext.argtypes = (ctypes.c_void_p,)
+    library.LZ4F_freeDecompressionContext.restype = ctypes.c_size_t
+    library.LZ4F_decompress.argtypes = (
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+    )
+    library.LZ4F_decompress.restype = ctypes.c_size_t
+    library.LZ4F_isError.argtypes = (ctypes.c_size_t,)
+    library.LZ4F_isError.restype = ctypes.c_uint
+    library.LZ4F_getErrorName.argtypes = (ctypes.c_size_t,)
+    library.LZ4F_getErrorName.restype = ctypes.c_char_p
+
+    context = ctypes.c_void_p()
+    result = library.LZ4F_createDecompressionContext(
+        ctypes.byref(context),
+        100,
+    )
+    if library.LZ4F_isError(result):
+        error_name = library.LZ4F_getErrorName(result).decode()
+        raise McapParseError(
+            f'lz4 decompression setup failed: {error_name}'
+        )
+
+    source = ctypes.create_string_buffer(data)
+    destination = ctypes.create_string_buffer(uncompressed_size)
+    source_offset = 0
+    destination_offset = 0
+    try:
+        while True:
+            source_size = ctypes.c_size_t(len(data) - source_offset)
+            destination_size = ctypes.c_size_t(
+                uncompressed_size - destination_offset
+            )
+            result = library.LZ4F_decompress(
+                context,
+                ctypes.byref(destination, destination_offset),
+                ctypes.byref(destination_size),
+                ctypes.byref(source, source_offset),
+                ctypes.byref(source_size),
+                None,
+            )
+            if library.LZ4F_isError(result):
+                error_name = library.LZ4F_getErrorName(result).decode()
+                raise McapParseError(
+                    f'lz4 decompression failed: {error_name}'
+                )
+            source_offset += source_size.value
+            destination_offset += destination_size.value
+            if result == 0:
+                break
+            if source_size.value == 0 and destination_size.value == 0:
+                raise McapParseError('lz4 decompression made no progress')
+    finally:
+        library.LZ4F_freeDecompressionContext(context)
+
+    if destination_offset != uncompressed_size:
+        raise McapParseError(
+            'lz4 produced '
+            f'{destination_offset} bytes, expected {uncompressed_size}'
+        )
+    return destination.raw[:destination_offset]
+
+
+def decode_chunk(content):
+    reader = McapBufferReader(content)
+    reader.uint64()
+    reader.uint64()
+    uncompressed_size = reader.uint64()
+    uncompressed_crc = reader.uint32()
+    compression = reader.string()
+    compressed_records = reader.bytes64()
+
+    if compression == '':
+        records = compressed_records
+    elif compression == 'zstd':
+        records = decompress_zstd(compressed_records, uncompressed_size)
+    elif compression == 'lz4':
+        records = decompress_lz4(compressed_records, uncompressed_size)
+    else:
+        raise McapParseError(
+            f'unsupported MCAP chunk compression {compression!r}'
+        )
+
+    if len(records) != uncompressed_size:
+        raise McapParseError(
+            f'chunk contains {len(records)} bytes, '
+            f'expected {uncompressed_size}'
+        )
+    if uncompressed_crc and zlib.crc32(records) != uncompressed_crc:
+        raise McapParseError('chunk CRC does not match its contents')
+    return records
+
+
+def iter_buffer_records(data):
+    offset = 0
+    while offset < len(data):
+        if len(data) - offset < 9:
+            raise McapParseError('truncated record header inside chunk')
+        opcode, content_length = struct.unpack_from('<BQ', data, offset)
+        offset += 9
+        end = offset + content_length
+        if end > len(data):
+            raise McapParseError('truncated record content inside chunk')
+        yield opcode, memoryview(data)[offset:end]
+        offset = end
+
+
+def recover_mcap_file(mcap_path, retained_topics):
+    schemas = {}
+    channels = {}
+    topic_types = {}
+    messages = []
+    message_count = 0
+    bag_start_ns = None
+    bag_end_ns = None
+
+    def process_record(opcode, content):
+        nonlocal message_count, bag_start_ns, bag_end_ns
+
+        if opcode == OP_SCHEMA:
+            reader = McapBufferReader(content)
+            schema_id = reader.uint16()
+            schemas[schema_id] = reader.string()
+        elif opcode == OP_CHANNEL:
+            reader = McapBufferReader(content)
+            channel_id = reader.uint16()
+            schema_id = reader.uint16()
+            topic = reader.string()
+            reader.string()
+            channels[channel_id] = (topic, schema_id)
+            if schema_id in schemas:
+                topic_types[topic] = schemas[schema_id]
+        elif opcode == OP_MESSAGE:
+            reader = McapBufferReader(content)
+            channel_id = reader.uint16()
+            reader.uint32()
+            receive_ns = reader.uint64()
+            reader.uint64()
+            serialized_data = reader.remaining_bytes()
+            if channel_id not in channels:
+                raise McapParseError(
+                    f'message references unknown channel {channel_id}'
+                )
+
+            topic, schema_id = channels[channel_id]
+            if schema_id in schemas:
+                topic_types[topic] = schemas[schema_id]
+            message_count += 1
+            bag_start_ns = (
+                receive_ns
+                if bag_start_ns is None
+                else min(bag_start_ns, receive_ns)
+            )
+            bag_end_ns = (
+                receive_ns
+                if bag_end_ns is None
+                else max(bag_end_ns, receive_ns)
+            )
+            if topic in retained_topics:
+                messages.append((topic, serialized_data, receive_ns))
+        elif opcode == OP_CHUNK:
+            records = decode_chunk(content)
+            for nested_opcode, nested_content in iter_buffer_records(records):
+                process_record(nested_opcode, nested_content)
+
+    parse_error = None
+    footer_seen = False
+    with mcap_path.open('rb') as stream:
+        if stream.read(len(MCAP_MAGIC)) != MCAP_MAGIC:
+            raise McapParseError('file does not start with MCAP magic')
+
+        while True:
+            record_offset = stream.tell()
+            header = stream.read(9)
+            if not header:
+                break
+            if len(header) < 9:
+                parse_error = (
+                    f'truncated record header at byte {record_offset}'
+                )
+                break
+
+            opcode, content_length = struct.unpack('<BQ', header)
+            content = stream.read(content_length)
+            if len(content) != content_length:
+                parse_error = (
+                    f'truncated record at byte {record_offset}: '
+                    f'expected {content_length} content bytes, '
+                    f'found {len(content)}'
+                )
+                break
+            try:
+                process_record(opcode, content)
+            except (McapParseError, UnicodeDecodeError) as error:
+                parse_error = (
+                    f'malformed record at byte {record_offset}: {error}'
+                )
+                break
+            if opcode == OP_FOOTER:
+                footer_seen = True
+                break
+
+    return {
+        'topic_types': topic_types,
+        'messages': messages,
+        'message_count': message_count,
+        'bag_start_ns': bag_start_ns,
+        'bag_end_ns': bag_end_ns,
+        'parse_error': parse_error,
+        'footer_seen': footer_seen,
+        'truncated': (
+            parse_error is not None
+            or not footer_seen
+            or not mcap_has_closing_magic(mcap_path)
+        ),
+    }
+
+
+def recover_mcap_bag(mcap_paths, retained_topics, open_error=None):
+    topic_types = {}
+    messages = []
+    message_count = 0
+    bag_start_ns = None
+    bag_end_ns = None
+    recovery_notes = []
+    truncated = False
+
+    for mcap_path in mcap_paths:
+        recovered = recover_mcap_file(mcap_path, retained_topics)
+        truncated = truncated or recovered['truncated']
+        topic_types.update(recovered['topic_types'])
+        messages.extend(recovered['messages'])
+        message_count += recovered['message_count']
+        if recovered['bag_start_ns'] is not None:
+            bag_start_ns = (
+                recovered['bag_start_ns']
+                if bag_start_ns is None
+                else min(bag_start_ns, recovered['bag_start_ns'])
+            )
+            bag_end_ns = (
+                recovered['bag_end_ns']
+                if bag_end_ns is None
+                else max(bag_end_ns, recovered['bag_end_ns'])
+            )
+        if recovered['parse_error']:
+            recovery_notes.append(
+                f'{mcap_path.name}: {recovered["parse_error"]}'
+            )
+        elif not recovered['footer_seen']:
+            recovery_notes.append(
+                f'{mcap_path.name}: recording ended before footer'
+            )
+
+    messages.sort(key=lambda item: item[2])
+    return {
+        'topic_types': topic_types,
+        'messages': messages,
+        'message_count': message_count,
+        'bag_start_ns': bag_start_ns,
+        'bag_end_ns': bag_end_ns,
+        'recovery_used': True,
+        'truncated': truncated,
+        'recovery_notes': recovery_notes,
+        'open_error': str(open_error) if open_error is not None else None,
+    }
+
+
+def load_bag_messages(bag_path):
+    retained_topics = set(HEALTH_TOPICS)
+    mcap_paths = mcap_files_for_path(bag_path)
+    if any(not mcap_has_closing_magic(path) for path in mcap_paths):
+        return recover_mcap_bag(mcap_paths, retained_topics)
+
     reader = rosbag2_py.SequentialReader()
     storage_options = rosbag2_py.StorageOptions(
         uri=str(bag_path),
@@ -214,11 +635,67 @@ def read_bag(bag_path, seed_success_max_delay_s):
         input_serialization_format='cdr',
         output_serialization_format='cdr',
     )
-    reader.open(storage_options, converter_options)
+    try:
+        reader.open(storage_options, converter_options)
+    except Exception as error:
+        return recover_mcap_bag(
+            mcap_paths,
+            retained_topics,
+            open_error=error,
+        )
 
     topic_types = {
         topic.name: topic.type for topic in reader.get_all_topics_and_types()
     }
+    messages = []
+    message_count = 0
+    bag_start_ns = None
+    bag_end_ns = None
+    try:
+        while reader.has_next():
+            topic, serialized_data, receive_ns = reader.read_next()
+            message_count += 1
+            bag_start_ns = (
+                receive_ns
+                if bag_start_ns is None
+                else min(bag_start_ns, receive_ns)
+            )
+            bag_end_ns = (
+                receive_ns
+                if bag_end_ns is None
+                else max(bag_end_ns, receive_ns)
+            )
+            if topic in retained_topics:
+                messages.append((topic, serialized_data, receive_ns))
+    except Exception as error:
+        return recover_mcap_bag(
+            mcap_paths,
+            retained_topics,
+            open_error=error,
+        )
+
+    messages.sort(key=lambda item: item[2])
+    return {
+        'topic_types': topic_types,
+        'messages': messages,
+        'message_count': message_count,
+        'bag_start_ns': bag_start_ns,
+        'bag_end_ns': bag_end_ns,
+        'recovery_used': False,
+        'truncated': False,
+        'recovery_notes': [],
+        'open_error': None,
+    }
+
+
+def read_bag(
+    bag_path,
+    seed_success_max_delay_s,
+    start_time_s=0.0,
+    end_time_s=None,
+):
+    loaded = load_bag_messages(bag_path)
+    topic_types = loaded['topic_types']
     decoded_topics = (
         '/tf',
         '/initialpose',
@@ -232,27 +709,48 @@ def read_bag(bag_path, seed_success_max_delay_s):
         if topic in topic_types
     }
 
+    bag_start_ns = loaded['bag_start_ns']
+    bag_end_ns = loaded['bag_end_ns']
+    if bag_start_ns is None:
+        raise RuntimeError('bag contains no recoverable messages')
+
+    bag_duration_s = (bag_end_ns - bag_start_ns) / 1e9
+    window_start_s = start_time_s
+    window_end_s = (
+        bag_duration_s
+        if end_time_s is None
+        else min(end_time_s, bag_duration_s)
+    )
+    if window_start_s >= bag_duration_s:
+        raise RuntimeError(
+            f'start time {window_start_s:g} s is outside the '
+            f'{bag_duration_s:.3f} s bag'
+        )
+    if window_end_s <= window_start_s:
+        raise RuntimeError(
+            f'analysis window end {window_end_s:g} s must be after '
+            f'start {window_start_s:g} s'
+        )
+
+    window_start_ns = bag_start_ns + round(window_start_s * 1e9)
+    window_end_ns = bag_start_ns + round(window_end_s * 1e9)
+    duration_s = window_end_s - window_start_s
+
     counts = {topic: 0 for topic in HEALTH_TOPICS}
     scans = {topic: [] for topic in SCAN_TOPICS}
-    bag_start_ns = None
-    bag_end_ns = None
-    publications = []
+    all_publications = []
     initial_poses = []
     poses = []
     odometry_positions = []
     tf_odom_positions = []
 
-    while reader.has_next():
-        topic, serialized_data, receive_ns = reader.read_next()
-        if bag_start_ns is None or receive_ns < bag_start_ns:
-            bag_start_ns = receive_ns
-        if bag_end_ns is None or receive_ns > bag_end_ns:
-            bag_end_ns = receive_ns
+    for topic, serialized_data, receive_ns in loaded['messages']:
+        in_window = window_start_ns <= receive_ns <= window_end_ns
 
-        if topic in counts:
+        if topic in counts and in_window:
             counts[topic] += 1
 
-        if topic in SCAN_TOPICS:
+        if topic in SCAN_TOPICS and in_window:
             message = deserialize_message(serialized_data, message_types[topic])
             scans[topic].append({
                 'receive_ns': receive_ns,
@@ -274,7 +772,7 @@ def read_bag(bag_path, seed_success_max_delay_s):
                 ):
                     translation = transform.transform.translation
                     rotation = transform.transform.rotation
-                    publications.append({
+                    all_publications.append({
                         'receive_ns': receive_ns,
                         'header_stamp': transform.header.stamp,
                         'x': translation.x,
@@ -293,6 +791,8 @@ def read_bag(bag_path, seed_success_max_delay_s):
                     })
 
         elif topic == '/initialpose':
+            if not in_window:
+                continue
             message = deserialize_message(serialized_data, message_types[topic])
             pose = message.pose.pose
             initial_poses.append({
@@ -305,6 +805,8 @@ def read_bag(bag_path, seed_success_max_delay_s):
             })
 
         elif topic == '/pose':
+            if not in_window:
+                continue
             message = deserialize_message(serialized_data, message_types[topic])
             pose = message.pose.pose
             poses.append({
@@ -325,9 +827,6 @@ def read_bag(bag_path, seed_success_max_delay_s):
                 'y': position.y,
             })
 
-    if bag_start_ns is None:
-        raise RuntimeError('bag contains no messages')
-
     if '/odometry/filtered' in topic_types:
         odom_positions = odometry_positions
         odom_position_source = '/odometry/filtered'
@@ -338,11 +837,11 @@ def read_bag(bag_path, seed_success_max_delay_s):
         )
     odom_positions.sort(key=lambda position: position['receive_ns'])
 
-    duration_s = (bag_end_ns - bag_start_ns) / 1e9
-    corrections = []
+    all_publications.sort(key=lambda publication: publication['receive_ns'])
+    all_corrections = []
     previous_publication = None
 
-    for publication in publications:
+    for publication in all_publications:
         if previous_publication is not None:
             delta_x = publication['x'] - previous_publication['x']
             delta_y = publication['y'] - previous_publication['y']
@@ -354,7 +853,7 @@ def read_bag(bag_path, seed_success_max_delay_s):
                 translation_delta > TRANSLATION_EPSILON_M
                 or abs(yaw_delta) > YAW_EPSILON_RAD
             ):
-                corrections.append({
+                all_corrections.append({
                     'receive_ns': publication['receive_ns'],
                     'translation_delta': translation_delta,
                     'yaw_delta': yaw_delta,
@@ -362,6 +861,17 @@ def read_bag(bag_path, seed_success_max_delay_s):
                     'current_transform': publication,
                 })
         previous_publication = publication
+
+    publications = [
+        publication
+        for publication in all_publications
+        if window_start_ns <= publication['receive_ns'] <= window_end_ns
+    ]
+    corrections = [
+        correction
+        for correction in all_corrections
+        if window_start_ns <= correction['receive_ns'] <= window_end_ns
+    ]
 
     for correction in corrections:
         position = interpolate_position(
@@ -434,8 +944,13 @@ def read_bag(bag_path, seed_success_max_delay_s):
         if invariant_pose_jump_total_m
         else None
     )
+    window_odom_positions = positions_in_window(
+        odom_positions,
+        window_start_ns,
+        window_end_ns,
+    )
     odom_path_length_m = (
-        path_length(odom_positions) if odom_positions else None
+        path_length(window_odom_positions) if window_odom_positions else None
     )
     pose_correction_per_m = (
         sum(pose_jumps_m) / odom_path_length_m
@@ -537,6 +1052,9 @@ def read_bag(bag_path, seed_success_max_delay_s):
     return {
         'path': bag_path,
         'duration_s': duration_s,
+        'bag_duration_s': bag_duration_s,
+        'window_start_s': window_start_s,
+        'window_end_s': window_end_s,
         'counts': counts,
         'publications': publications,
         'corrections': corrections,
@@ -562,6 +1080,13 @@ def read_bag(bag_path, seed_success_max_delay_s):
         ),
         'seed_success_max_delay_s': seed_success_max_delay_s,
         'bag_start_ns': bag_start_ns,
+        'recovery_used': loaded['recovery_used'],
+        'recovered_message_count': (
+            loaded['message_count'] if loaded['recovery_used'] else None
+        ),
+        'truncated': loaded['truncated'],
+        'recovery_notes': loaded['recovery_notes'],
+        'open_error': loaded['open_error'],
     }
 
 
@@ -582,7 +1107,24 @@ def print_bag_report(result):
 
     print(f'\n=== {result["path"]} ===')
     print('Time basis: bag receive time for all rates, gaps, and associations')
-    print(f'Bag duration: {duration_s:.3f} s')
+    print(f'Bag duration: {result["bag_duration_s"]:.3f} s')
+    print(
+        'Analysis window: '
+        f'{result["window_start_s"]:.3f} s to '
+        f'{result["window_end_s"]:.3f} s bag-relative '
+        f'(duration {duration_s:.3f} s)'
+    )
+    print('Count source: MCAP message records (metadata.yaml counts not used)')
+    print(f'Recording truncated: {"yes" if result["truncated"] else "no"}')
+    if result['recovery_used']:
+        print(
+            'Sequential recovery: '
+            f'{result["recovered_message_count"]} messages recovered'
+        )
+        if result['open_error']:
+            print(f'  rosbag2 reader error: {result["open_error"]}')
+        for note in result['recovery_notes']:
+            print(f'  stopped cleanly: {note}')
     print('\nTopic health:')
     print(f'  {"topic":<16} {"messages":>10} {"average rate":>15}')
     for topic in HEALTH_TOPICS:
@@ -668,7 +1210,7 @@ def print_bag_report(result):
     )
     print('  initial map -> odom publication counted as correction: no')
     print(f'  count: {len(corrections)}')
-    print(f'  rate over bag duration: {correction_rate:.3f} Hz')
+    print(f'  rate over analysis window: {correction_rate:.3f} Hz')
     print_distribution(
         'inter-correction gap',
         result['gap_distribution'],
@@ -851,7 +1393,21 @@ def parse_args():
         nargs='+',
         type=Path,
         metavar='BAG',
-        help='ROS 2 MCAP bag directory',
+        help='ROS 2 MCAP bag directory or bare .mcap file',
+    )
+    parser.add_argument(
+        '--start-time',
+        type=float,
+        default=0.0,
+        metavar='SECONDS',
+        help='analysis-window start in bag-relative seconds (default: 0)',
+    )
+    parser.add_argument(
+        '--end-time',
+        type=float,
+        default=None,
+        metavar='SECONDS',
+        help='analysis-window end in bag-relative seconds (default: bag end)',
     )
     parser.add_argument(
         '--seed-success-max-delay',
@@ -863,7 +1419,15 @@ def parse_args():
             'map-frame seed (default: 2.0)'
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not math.isfinite(args.start_time) or args.start_time < 0.0:
+        parser.error('--start-time must be a finite, non-negative value')
+    if args.end_time is not None:
+        if not math.isfinite(args.end_time) or args.end_time < 0.0:
+            parser.error('--end-time must be a finite, non-negative value')
+        if args.end_time <= args.start_time:
+            parser.error('--end-time must be greater than --start-time')
+    return args
 
 
 def main():
@@ -871,12 +1435,12 @@ def main():
     results = []
 
     for bag_path in args.bags:
-        if not bag_path.is_dir():
-            raise SystemExit(f'error: bag directory not found: {bag_path}')
         try:
             result = read_bag(
                 bag_path,
                 args.seed_success_max_delay,
+                args.start_time,
+                args.end_time,
             )
         except Exception as error:
             raise SystemExit(f'error: failed to read {bag_path}: {error}') from error
