@@ -11,7 +11,7 @@
     {
       "label": "Runner: Save Map",
       "type": "shell",
-      "command": "bash -lc 'set -euo pipefail; source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; NAME=\"${input:mapSaveName}\"; if [[ ! \"$NAME\" =~ ^[A-Za-z0-9._-]+$ ]]; then echo \"Invalid map name. Use only letters, numbers, dots, underscores, and hyphens.\" >&2; exit 1; fi; MAP=\"$HOME/runner_ws/maps/$NAME\"; mkdir -p \"$HOME/runner_ws/maps\"; if compgen -G \"${MAP}.*\" >/dev/null; then echo \"Refusing to overwrite existing map artifacts: ${MAP}.*\" >&2; ls -lh \"${MAP}.\"*; exit 1; fi; echo \"Saving posegraph to $MAP\"; ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \"{filename: \\\"$MAP\\\"}\"; echo \"Saving occupancy grid to $MAP\"; ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \"{name: {data: \\\"$MAP\\\"}}\"; echo; echo \"Saved map artifacts:\"; ls -lh \"${MAP}.\"*'",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; set -euo pipefail; NAME=\"${input:mapSaveName}\"; if [[ ! \"$NAME\" =~ ^[A-Za-z0-9._-]+$ ]]; then echo \"Invalid map name. Use only letters, numbers, dots, underscores, and hyphens.\" >&2; exit 1; fi; MAP=\"$HOME/runner_ws/maps/$NAME\"; mkdir -p \"$HOME/runner_ws/maps\"; if compgen -G \"${MAP}.*\" >/dev/null; then echo \"Refusing to overwrite existing map artifacts: ${MAP}.*\" >&2; ls -lh \"${MAP}.\"*; exit 1; fi; echo \"Saving posegraph to $MAP\"; ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \"{filename: \\\"$MAP\\\"}\"; echo \"Saving occupancy grid to $MAP\"; ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \"{name: {data: \\\"$MAP\\\"}}\"; echo; echo \"Saved map artifacts:\"; ls -lh \"${MAP}.\"*'",
       "problemMatcher": []
     },
     {
@@ -49,7 +49,7 @@
     {
       "label": "Stop all launches",
       "type": "shell",
-      "command": "pkill -INT -f 'ros2 launch runner_bringup' ; pkill -INT -f motor_node ; sleep 1 ; sudo systemctl restart runner-pwm-setup.service || true",
+      "command": "pkill -INT -f 'ros2 launch runner_bringup' || true; pkill -INT -f motor_node || true; sleep 1; sudo systemctl restart runner-pwm-setup.service || true",
       "problemMatcher": []
     }
   ],
@@ -59,6 +59,7 @@
       "type": "pickString",
       "description": "Select the slam_toolbox map",
       "options": [
+        "collingwood",
         "house_good_v1",
         "bedroom_phase_b_503"
       ],
