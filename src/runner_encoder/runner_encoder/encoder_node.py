@@ -12,6 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Publish command-informed velocity from a single-channel wheel encoder.
+
+``pending_direction`` is the latest valid nonzero commanded direction and
+signs ``/wheel/odom``. ``active_direction`` remains a diagnostic view of
+stop-delimited movement epochs. They should agree under controlled
+stop-delimited transitions, which the future D-34 reverse/ESC handshake is
+expected to enforce during autonomous control.
+
+Manual direction changes may occur without a pulse-confirmed stop, leaving
+``active_direction`` stale. Conversely, ``pending_direction`` may briefly lead
+physical reversal during a command transition. Signed wheel odometry is
+therefore command-informed; a single-channel encoder cannot measure direction
+independently.
+"""
+
 import math
 import time
 
@@ -44,7 +60,7 @@ def build_publications(
     """Build odometry and diagnostics from one encoder state snapshot."""
     edge_rate = measurement.edge_rate(window_sec)
     signed_speed = (
-        edge_rate * metres_per_edge * measurement.active_direction
+        edge_rate * metres_per_edge * measurement.pending_direction
     )
 
     odom_msg = Odometry()

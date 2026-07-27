@@ -178,7 +178,7 @@ def test_stationary_becomes_true_only_at_configured_timeout():
     ).stationary
 
 
-def test_diagnostic_and_odometry_share_one_measurement_snapshot():
+def test_pending_forward_signs_odometry_when_active_direction_is_reverse():
     stamp = Time(sec=123, nanosec=456)
     measurement = EncoderMeasurement(
         edge_count=3,
@@ -196,7 +196,7 @@ def test_diagnostic_and_odometry_share_one_measurement_snapshot():
 
     assert odom.header.stamp == state.stamp
     assert state.edge_rate == 60.0
-    assert odom.twist.twist.linear.x == pytest.approx(-0.61692)
+    assert odom.twist.twist.linear.x == pytest.approx(0.61692)
     assert not state.stationary
     assert state.active_direction == -1
     assert state.pending_direction == 1
@@ -207,6 +207,82 @@ def test_diagnostic_and_odometry_share_one_measurement_snapshot():
         'active_direction',
         'pending_direction',
     }
+
+
+def test_pending_reverse_signs_odometry_when_active_direction_is_forward():
+    measurement = EncoderMeasurement(
+        edge_count=2,
+        stationary=False,
+        active_direction=1,
+        pending_direction=-1,
+    )
+
+    odom, state = build_publications(
+        measurement,
+        Time(sec=1, nanosec=2),
+        METRES_PER_EDGE,
+        WINDOW_SEC,
+    )
+
+    assert state.edge_rate == 40.0
+    assert state.active_direction == 1
+    assert state.pending_direction == -1
+    assert odom.twist.twist.linear.x == pytest.approx(-0.41128)
+
+
+def test_direction_zero_coast_keeps_latest_nonzero_sign():
+    state = EncoderState(TIMEOUT)
+    _start_forward(state)
+    state.take_measurement(0)
+    assert state.update_direction(0)
+    state.record_edge(50_000_000)
+
+    measurement = state.take_measurement(50_000_000)
+    odom, diagnostic = build_publications(
+        measurement,
+        Time(sec=3, nanosec=4),
+        METRES_PER_EDGE,
+        WINDOW_SEC,
+    )
+
+    assert diagnostic.edge_rate == 20.0
+    assert diagnostic.pending_direction == 1
+    assert odom.twist.twist.linear.x == pytest.approx(0.20564)
+
+
+def test_startup_activity_exposes_edge_rate_but_signed_speed_is_zero():
+    state = EncoderState(TIMEOUT)
+    state.record_edge(0)
+    measurement = state.take_measurement(0)
+
+    odom, diagnostic = build_publications(
+        measurement,
+        Time(sec=5, nanosec=6),
+        METRES_PER_EDGE,
+        WINDOW_SEC,
+    )
+
+    assert diagnostic.edge_rate == 20.0
+    assert diagnostic.active_direction == 0
+    assert diagnostic.pending_direction == 0
+    assert odom.twist.twist.linear.x == 0.0
+
+
+def test_active_direction_latch_remains_stop_delimited():
+    state = EncoderState(TIMEOUT)
+    _start_forward(state)
+    assert state.update_direction(-1)
+    state.record_edge(50_000_000)
+
+    moving = state.take_measurement(50_000_000)
+    assert moving.active_direction == 1
+    assert moving.pending_direction == -1
+
+    assert state.take_measurement(250_000_000).stationary
+    state.record_edge(260_000_000)
+    restarted = state.take_measurement(260_000_000)
+    assert restarted.active_direction == -1
+    assert restarted.pending_direction == -1
 
 
 @pytest.mark.parametrize(
