@@ -9,6 +9,12 @@
       "problemMatcher": []
     },
     {
+      "label": "Runner: Save Map",
+      "type": "shell",
+      "command": "bash -lc 'set -euo pipefail; source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; NAME=\"${input:mapSaveName}\"; if [[ ! \"$NAME\" =~ ^[A-Za-z0-9._-]+$ ]]; then echo \"Invalid map name. Use only letters, numbers, dots, underscores, and hyphens.\" >&2; exit 1; fi; MAP=\"$HOME/runner_ws/maps/$NAME\"; mkdir -p \"$HOME/runner_ws/maps\"; if compgen -G \"${MAP}.*\" >/dev/null; then echo \"Refusing to overwrite existing map artifacts: ${MAP}.*\" >&2; ls -lh \"${MAP}.\"*; exit 1; fi; echo \"Saving posegraph to $MAP\"; ros2 service call /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \"{filename: \\\"$MAP\\\"}\"; echo \"Saving occupancy grid to $MAP\"; ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap \"{name: {data: \\\"$MAP\\\"}}\"; echo; echo \"Saved map artifacts:\"; ls -lh \"${MAP}.\"*'",
+      "problemMatcher": []
+    },
+    {
       "label": "Runner: Localize",
       "type": "shell",
       "command": "ros2 launch runner_bringup localize.launch.py map_name:=${input:runnerMap}",
@@ -21,6 +27,17 @@
       "command": "ros2 launch runner_bringup teleop.launch.py",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
+    },
+    {
+      "label": "Runner: Record Rosbag",
+      "type": "shell",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; set -eo pipefail; NAME=\"${input:rosbagName}\"; if [[ ! \"$NAME\" =~ ^[A-Za-z0-9._-]+$ ]]; then echo \"Invalid bag name. Use only letters, numbers, dots, underscores, and hyphens.\" >&2; exit 1; fi; mkdir -p \"$HOME/runner_ws/bags\"; OUTPUT=\"$HOME/runner_ws/bags/${NAME}_$(date +%Y%m%d_%H%M%S)\"; echo \"Recording all topics to:\"; echo \"$OUTPUT\"; echo \"Stop with Ctrl+C to finalize the bag.\"; exec ros2 bag record --storage mcap --all-topics --output \"$OUTPUT\"'",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
     },
     {
       "label": "Runner: Encoder (standalone)",
@@ -51,6 +68,18 @@
         "bedroom_phase_b_503"
       ],
       "default": "house_good_v1"
+    },
+    {
+      "id": "mapSaveName",
+      "type": "promptString",
+      "description": "New map name, without a path or extension",
+      "default": "new_map"
+    },
+    {
+      "id": "rosbagName",
+      "type": "promptString",
+      "description": "Rosbag name prefix",
+      "default": "runner_test"
     }
   ]
 }
