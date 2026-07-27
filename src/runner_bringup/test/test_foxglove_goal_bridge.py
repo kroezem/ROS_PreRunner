@@ -1,0 +1,411 @@
+"""Focused tests for the Foxglove NavigateToPose goal bridge."""
+
+import time
+
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped
+from nav2_msgs.action import NavigateToPose
+import pytest
+import rclpy
+
+from runner_bringup.foxglove_goal_bridge import FoxgloveGoalBridge
+
+
+class FakeFuture:
+    """Small controllable future for action-client tests."""
+
+    def __init__(self):
+        self._callbacks = []
+        self._result = None
+        self._exception = None
+
+    def add_done_callback(self, callback):
+        self._callbacks.append(callback)
+
+    def result(self):
+        if self._exception is not None:
+            raise self._exception
+        return self._result
+
+    def resolve(self, result):
+        self._result = result
+        for callback in list(self._callbacks):
+            callback(self)
+
+    def fail(self, error):
+        self._exception = error
+        for callback in list(self._callbacks):
+            callback(self)
+
+
+class FakeCancelResponse:
+    """Cancellation response containing accepted goals, or none."""
+
+    def __init__(self, accepted=True):
+        self.goals_canceling = [object()] if accepted else []
+
+
+class FakeResultResponse:
+    """NavigateToPose result service response."""
+
+    def __init__(self, status=GoalStatus.STATUS_SUCCEEDED):
+        self.status = status
+        self.result = NavigateToPose.Result()
+
+
+class FakeGoalHandle:
+    """Controllable accepted goal handle."""
+
+    accepted = True
+
+    def __init__(
+        self,
+        *,
+        get_result_error=None,
+        cancel_errors=None,
+    ):
+        self.cancel_calls = 0
+        self.cancel_futures = []
+        self.result_futures = []
+        self.get_result_calls = 0
+        self.get_result_error = get_result_error
+        self.cancel_errors = list(cancel_errors or [])
+
+    def cancel_goal_async(self):
+        self.cancel_calls += 1
+        if self.cancel_errors:
+            error = self.cancel_errors.pop(0)
+            if error is not None:
+                raise error
+        future = FakeFuture()
+        self.cancel_futures.append(future)
+        return future
+
+    def get_result_async(self):
+        self.get_result_calls += 1
+        if self.get_result_error is not None:
+            error = self.get_result_error
+            self.get_result_error = None
+            raise error
+        future = FakeFuture()
+        self.result_futures.append(future)
+        return future
+
+    @property
+    def result_future(self):
+        return self.result_futures[-1]
+
+
+class RejectedGoalHandle:
+    """Rejected action goal response."""
+
+    accepted = False
+
+
+class FakeActionClient:
+    """Record goals sent by the bridge."""
+
+    def __init__(self):
+        self.goals = []
+        self.send_futures = []
+        self.send_errors = []
+
+    def server_is_ready(self):
+        return True
+
+    def send_goal_async(self, goal):
+        if self.send_errors:
+            error = self.send_errors.pop(0)
+            if error is not None:
+                raise error
+        self.goals.append(goal)
+        future = FakeFuture()
+        self.send_futures.append(future)
+        return future
+
+
+@pytest.fixture
+def bridge():
+    """Create a bridge with a fake action client."""
+    rclpy.init()
+    action_client = FakeActionClient()
+    node = FoxgloveGoalBridge(action_client=action_client)
+    node.CANCEL_RETRY_INTERVAL = 0.0
+    node.RESULT_RETRY_INTERVAL = 0.0
+    yield node, action_client
+    if not node._shutting_down:
+        node.destroy_node()
+    rclpy.shutdown()
+
+
+def make_pose(x, y=0.0):
+    """Create a map-frame test pose."""
+    pose = PoseStamped()
+    pose.header.frame_id = 'map'
+    pose.pose.position.x = x
+    pose.pose.position.y = y
+    pose.pose.orientation.w = 1.0
+    return pose
+
+
+def sent_x(action_client):
+    return [goal.pose.pose.position.x for goal in action_client.goals]
+
+
+def accept_first(action_client, handle=None):
+    handle = handle or FakeGoalHandle()
+    action_client.send_futures[0].resolve(handle)
+    return handle
+
+
+def finish(handle, status=GoalStatus.STATUS_CANCELED):
+    handle.result_future.resolve(FakeResultResponse(status))
+
+
+def test_single_pose_forwarding(bridge):
+    node, action_client = bridge
+    pose = make_pose(1.25, -0.5)
+
+    node._goal_callback(pose)
+
+    assert len(action_client.goals) == 1
+    assert action_client.goals[0].pose == pose
+
+
+def test_one_replacement_waits_for_terminal_result(bridge):
+    node, action_client = bridge
+    first_handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    first_handle.cancel_futures[0].resolve(FakeCancelResponse())
+
+    assert sent_x(action_client) == [1.0]
+    finish(first_handle)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_three_rapid_poses_while_first_send_response_pending(bridge):
+    node, action_client = bridge
+
+    node._goal_callback(make_pose(1.0))
+    node._goal_callback(make_pose(2.0))
+    node._goal_callback(make_pose(3.0))
+    first_handle = FakeGoalHandle()
+    action_client.send_futures[0].resolve(first_handle)
+    first_handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(first_handle)
+
+    assert sent_x(action_client) == [1.0, 3.0]
+
+
+def test_three_rapid_poses_while_first_goal_active(bridge):
+    node, action_client = bridge
+    first_handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    node._goal_callback(make_pose(3.0))
+    first_handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(first_handle)
+
+    assert sent_x(action_client) == [1.0, 3.0]
+
+
+def test_newer_pending_pose_replaces_older_pending_pose(bridge):
+    node, action_client = bridge
+    first_handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    node._goal_callback(make_pose(4.0))
+
+    assert node._pending_pose.pose.position.x == 4.0
+    first_handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(first_handle)
+    assert sent_x(action_client) == [1.0, 4.0]
+
+
+def test_synchronous_send_exception_is_retried_by_timer(bridge):
+    node, action_client = bridge
+    action_client.send_errors = [RuntimeError('sync send')]
+
+    node._goal_callback(make_pose(1.0))
+
+    assert node._pending_pose.pose.position.x == 1.0
+    assert node._send_future is None
+    node._pump()
+    assert sent_x(action_client) == [1.0]
+
+
+def test_asynchronous_send_future_exception_preserves_latest(bridge):
+    node, action_client = bridge
+
+    node._goal_callback(make_pose(1.0))
+    node._goal_callback(make_pose(2.0))
+    action_client.send_futures[0].fail(RuntimeError('async send'))
+
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_rejected_goal_preserves_latest(bridge):
+    node, action_client = bridge
+
+    node._goal_callback(make_pose(1.0))
+    node._goal_callback(make_pose(2.0))
+    action_client.send_futures[0].resolve(RejectedGoalHandle())
+
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_synchronous_get_result_exception_keeps_active_until_result(bridge):
+    node, action_client = bridge
+    handle = FakeGoalHandle(get_result_error=RuntimeError('result setup'))
+
+    node._goal_callback(make_pose(1.0))
+    node._goal_callback(make_pose(2.0))
+    action_client.send_futures[0].resolve(handle)
+
+    assert node._goal_handle is handle
+    assert sent_x(action_client) == [1.0]
+    node._pump()
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_asynchronous_result_exception_keeps_active_until_result(bridge):
+    node, action_client = bridge
+    handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    handle.result_future.fail(RuntimeError('result future'))
+
+    assert node._goal_handle is handle
+    assert sent_x(action_client) == [1.0]
+    node._pump()
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_synchronous_cancel_exception_retries_without_wedging(bridge):
+    node, action_client = bridge
+    handle = FakeGoalHandle(cancel_errors=[RuntimeError('sync cancel')])
+    accept_first_after_pose(node, action_client, 1.0, handle)
+
+    node._goal_callback(make_pose(2.0))
+    node._pump()
+
+    assert handle.cancel_calls == 2
+    assert sent_x(action_client) == [1.0]
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_cancel_future_exception_retries_without_wedging(bridge):
+    node, action_client = bridge
+    handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    handle.cancel_futures[0].fail(RuntimeError('cancel future'))
+    node._pump()
+
+    assert handle.cancel_calls == 2
+    handle.cancel_futures[1].resolve(FakeCancelResponse())
+    finish(handle)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_cancellation_rejection_stops_after_bounded_attempts(bridge):
+    node, action_client = bridge
+    handle = accept_first_after_pose(node, action_client, 1.0)
+
+    node._goal_callback(make_pose(2.0))
+    for attempt in range(node.MAX_CANCEL_ATTEMPTS):
+        handle.cancel_futures[attempt].resolve(FakeCancelResponse(False))
+        node._pump()
+
+    assert handle.cancel_calls == node.MAX_CANCEL_ATTEMPTS
+    assert sent_x(action_client) == [1.0]
+    finish(handle, GoalStatus.STATUS_SUCCEEDED)
+    assert sent_x(action_client) == [1.0, 2.0]
+
+
+def test_stale_send_callback_cannot_clear_newer_send_state(bridge):
+    node, action_client = bridge
+    node._goal_callback(make_pose(1.0))
+    stale_future = action_client.send_futures[0]
+    stale_generation = node._send_generation
+    node._clear_send_state()
+    node._pending_pose = make_pose(2.0)
+    node._pump()
+    current_future = node._send_future
+    current_generation = node._send_generation
+
+    node._goal_response_callback(
+        stale_future,
+        stale_generation,
+        stale_future,
+        make_pose(1.0),
+    )
+
+    assert node._send_future is current_future
+    assert node._send_generation == current_generation
+
+
+def test_stale_result_callback_cannot_clear_newer_active_goal(bridge):
+    node, action_client = bridge
+    old_handle = accept_first_after_pose(node, action_client, 1.0)
+    old_generation = node._active_generation
+    node._clear_active_state()
+    node._pending_pose = make_pose(2.0)
+    node._pump()
+    new_handle = FakeGoalHandle()
+    action_client.send_futures[1].resolve(new_handle)
+    new_generation = node._active_generation
+
+    node._result_callback(
+        old_handle.result_future,
+        old_generation,
+        old_handle,
+        old_handle.result_future,
+    )
+
+    assert node._goal_handle is new_handle
+    assert node._active_generation == new_generation
+
+
+def test_shutdown_requests_cancel_and_exits_within_bound(bridge):
+    node, action_client = bridge
+    handle = accept_first_after_pose(node, action_client, 1.0)
+    node._pending_pose = make_pose(2.0)
+
+    started = time.monotonic()
+    node.shutdown(timeout_sec=0.05)
+    elapsed = time.monotonic() - started
+
+    assert handle.cancel_calls == 1
+    # ROS entity teardown can add scheduler-dependent DDS cleanup latency;
+    # this still proves the unresolved cancellation cannot hang shutdown.
+    assert elapsed < 1.0
+    assert sent_x(action_client) == [1.0]
+
+
+def test_shutdown_retries_synchronous_cancel_failure(bridge):
+    node, action_client = bridge
+    handle = FakeGoalHandle(cancel_errors=[RuntimeError('sync cancel')])
+    accept_first_after_pose(node, action_client, 1.0, handle)
+
+    node.shutdown(timeout_sec=0.05)
+
+    assert handle.cancel_calls == 2
+    assert sent_x(action_client) == [1.0]
+
+
+def accept_first_after_pose(
+    node,
+    action_client,
+    x,
+    handle=None,
+):
+    node._goal_callback(make_pose(x))
+    return accept_first(action_client, handle)

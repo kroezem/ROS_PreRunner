@@ -1,0 +1,7 @@
+image: house_good_v1.pgm
+mode: trinary
+resolution: 0.025
+origin: [-11.342, -5.401, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196

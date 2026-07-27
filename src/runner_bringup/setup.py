@@ -20,6 +20,10 @@ setup(
             glob('launch/include/*.py'),
         ),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
+        (
+            'share/' + package_name + '/behavior_trees',
+            glob('behavior_trees/*.xml'),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -37,6 +41,8 @@ setup(
             'rf2o_scan_canonicalizer = '
             'runner_bringup.rf2o_scan_canonicalizer:main',
             'scan_rebinner = runner_bringup.scan_rebinner:main',
+            'foxglove_goal_bridge = '
+            'runner_bringup.foxglove_goal_bridge:main',
         ],
     },
 )
