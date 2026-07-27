@@ -28,20 +28,28 @@ therefore command-informed; a single-channel encoder cannot measure direction
 independently.
 """
 
+import glob
 import math
+import threading
 import time
 
-import lgpio
+import gpiod
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 from rclpy.node import Node
-from runner_encoder.encoder_state import EncoderMeasurement, EncoderState
+from runner_encoder.encoder_state import (
+    EncoderMeasurement,
+    EncoderState,
+    MIN_EDGE_INTERVAL_NS,
+)
 from runner_interfaces.msg import EncoderState as EncoderStateMsg
 from std_msgs.msg import Int8
 
 
-GLITCH_FILTER_US = 100
+GPIO_CHIP_LABEL = 'pinctrl-rp1'
+GPIO_CONSUMER = 'runner_encoder'
+GPIO_EVENT_WAIT_NS = 100_000_000
 LARGE_VARIANCE = 1e6
 STATIONARY_TIMEOUT_DESCRIPTION = (
     'Pulse-free interval used to declare the encoder stationary. '
@@ -49,6 +57,139 @@ STATIONARY_TIMEOUT_DESCRIPTION = (
     'timeout corresponds to 0.010282 / 0.2 = 0.05141 m/s. This timeout is '
     'therefore a low-speed threshold in disguise.'
 )
+
+
+def open_gpio_chip_by_label(
+    label: str,
+    *,
+    gpiod_module=gpiod,
+    chip_paths=None,
+):
+    """Open exactly one GPIO chip matching a live kernel label."""
+    if chip_paths is None:
+        chip_paths = sorted(glob.glob('/dev/gpiochip*'))
+
+    matches = []
+    try:
+        for path in chip_paths:
+            chip = gpiod_module.Chip(
+                path,
+                gpiod_module.Chip.OPEN_BY_PATH,
+            )
+            if chip.label() == label:
+                matches.append((path, chip))
+            else:
+                chip.close()
+    except Exception:
+        for _, chip in matches:
+            chip.close()
+        raise
+
+    if len(matches) != 1:
+        for _, chip in matches:
+            chip.close()
+        raise RuntimeError(
+            f'Expected exactly one GPIO chip labeled {label!r}; '
+            f'found {len(matches)}'
+        )
+    return matches[0]
+
+
+class GpioEventReader:
+    """Own one GPIO line and forward kernel edge timestamps from a worker."""
+
+    def __init__(
+        self,
+        gpio_pin: int,
+        record_edge,
+        error_callback,
+        *,
+        gpiod_module=gpiod,
+        chip_paths=None,
+    ):
+        self._gpiod = gpiod_module
+        self._record_edge = record_edge
+        self._error_callback = error_callback
+        self._stop_event = threading.Event()
+        self._chip_path = None
+        self._chip = None
+        self._line = None
+        self._line_requested = False
+        self._thread = None
+        self._event_count = 0
+        self._short_interval_count = 0
+        self._last_event_ns = None
+
+        try:
+            self._chip_path, self._chip = open_gpio_chip_by_label(
+                GPIO_CHIP_LABEL,
+                gpiod_module=self._gpiod,
+                chip_paths=chip_paths,
+            )
+            self._line = self._chip.get_line(gpio_pin)
+            self._line.request(
+                consumer=GPIO_CONSUMER,
+                type=self._gpiod.LINE_REQ_EV_BOTH_EDGES,
+            )
+            self._line_requested = True
+            thread = threading.Thread(
+                target=self._read_events,
+                name='encoder_gpio_events',
+                daemon=True,
+            )
+            thread.start()
+            self._thread = thread
+        except Exception:
+            self.close()
+            raise
+
+    @property
+    def chip_path(self):
+        return self._chip_path
+
+    @property
+    def event_count(self):
+        return self._event_count
+
+    @property
+    def short_interval_count(self):
+        return self._short_interval_count
+
+    def _read_events(self):
+        try:
+            while not self._stop_event.is_set():
+                if not self._line.event_wait(
+                    sec=0,
+                    nsec=GPIO_EVENT_WAIT_NS,
+                ):
+                    continue
+                event = self._line.event_read()
+                timestamp_ns = event.sec * 1_000_000_000 + event.nsec
+                self._event_count += 1
+                if (
+                    self._last_event_ns is not None
+                    and timestamp_ns - self._last_event_ns
+                    < MIN_EDGE_INTERVAL_NS
+                ):
+                    self._short_interval_count += 1
+                self._last_event_ns = timestamp_ns
+                self._record_edge(timestamp_ns)
+        except Exception as error:
+            if not self._stop_event.is_set():
+                self._error_callback(error)
+
+    def close(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+        if self._line_requested:
+            self._line.release()
+            self._line_requested = False
+        self._line = None
+        if self._chip is not None:
+            self._chip.close()
+            self._chip = None
 
 
 def build_publications(
@@ -114,28 +255,7 @@ class EncoderNode(Node):
             )
 
         self._state = EncoderState(self._stationary_timeout_sec)
-        self._chip = None
-        self._gpio_callback = None
-
-        # RP1 header bank (verify with gpiodetect: pinctrl-rp1); chip 0 is brcmstb.
-        self._chip = lgpio.gpiochip_open(4)
-        try:
-            lgpio.gpio_claim_alert(
-                self._chip, self._gpio_pin, lgpio.BOTH_EDGES
-            )
-            lgpio.gpio_set_debounce_micros(
-                self._chip, self._gpio_pin, GLITCH_FILTER_US
-            )
-            self._gpio_callback = lgpio.callback(
-                self._chip,
-                self._gpio_pin,
-                lgpio.BOTH_EDGES,
-                self._on_edge,
-            )
-        except Exception:
-            lgpio.gpiochip_close(self._chip)
-            self._chip = None
-            raise
+        self._gpio_reader = None
 
         self._odom_pub = self.create_publisher(Odometry, '/wheel/odom', 10)
         self._state_pub = self.create_publisher(
@@ -145,12 +265,24 @@ class EncoderNode(Node):
             Int8, '/motor/direction', self._on_direction, 10
         )
         self.create_timer(self._window_ms / 1000.0, self._publish_window)
+        try:
+            self._gpio_reader = GpioEventReader(
+                self._gpio_pin,
+                self._state.record_edge,
+                self._on_gpio_error,
+            )
+        except Exception as error:
+            self.get_logger().error(
+                f'Failed to initialize encoder GPIO {self._gpio_pin}: {error}'
+            )
+            raise
         self.get_logger().info(
-            f'encoder_node ready on GPIO {self._gpio_pin}'
+            f'encoder_node ready on {self._gpio_reader.chip_path} '
+            f'GPIO {self._gpio_pin}'
         )
 
-    def _on_edge(self, chip, gpio, level, tick):
-        self._state.record_edge(tick)
+    def _on_gpio_error(self, error):
+        self.get_logger().error(f'Encoder GPIO event reader failed: {error}')
 
     def _on_direction(self, msg: Int8):
         if not self._state.update_direction(msg.data):
@@ -171,12 +303,16 @@ class EncoderNode(Node):
         self._state_pub.publish(state_msg)
 
     def close_gpio(self):
-        if self._gpio_callback is not None:
-            self._gpio_callback.cancel()
-            self._gpio_callback = None
-        if self._chip is not None:
-            lgpio.gpiochip_close(self._chip)
-            self._chip = None
+        if self._gpio_reader is not None:
+            reader = self._gpio_reader
+            reader.close()
+            self.get_logger().info(
+                'Encoder GPIO stopped: '
+                f'events={reader.event_count}, '
+                'intervals_below_100us='
+                f'{reader.short_interval_count}'
+            )
+            self._gpio_reader = None
 
 
 def main():

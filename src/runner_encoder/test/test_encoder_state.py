@@ -422,19 +422,3 @@ def test_long_edge_gap_starts_fresh_stop_epoch_history():
     assert list(state._edge_timestamps_ns) == [
         10_000_000 + TIMEOUT_NS
     ]
-
-
-def test_gpio_callback_uses_lgpio_timestamp_without_userspace_reread():
-    class RecordingState:
-        def __init__(self):
-            self.timestamp = None
-
-        def record_edge(self, timestamp):
-            self.timestamp = timestamp
-
-    node = object.__new__(EncoderNode)
-    node._state = RecordingState()
-
-    EncoderNode._on_edge(node, 4, 22, 1, 123_456_789)
-
-    assert node._state.timestamp == 123_456_789
