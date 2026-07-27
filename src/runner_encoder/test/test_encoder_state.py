@@ -14,22 +14,63 @@
 
 """Tests for encoder interval-rate estimation and direction latching."""
 
+from types import SimpleNamespace
+
 from builtin_interfaces.msg import Time
 import pytest
+import rclpy
 
-from runner_encoder.encoder_node import build_publications, EncoderNode
+from runner_encoder import encoder_node as encoder_node_module
+from runner_encoder.encoder_node import (
+    build_publications,
+    EncoderNode,
+    read_history_depth,
+)
 from runner_encoder.encoder_state import (
+    DEFAULT_HISTORY_DEPTH,
     EncoderMeasurement,
     EncoderState,
-    MAX_EDGE_TIMESTAMPS,
     MAX_LOOKBACK_NS,
     MIN_EDGE_INTERVAL_NS,
+    validate_history_depth,
 )
 
 
 TIMEOUT = 0.2
 TIMEOUT_NS = 200_000_000
 METRES_PER_EDGE = 0.010282
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.info_messages = []
+        self.error_messages = []
+
+    def info(self, message):
+        self.info_messages.append(message)
+
+    def error(self, message):
+        self.error_messages.append(message)
+
+
+class _ParameterNode:
+    _USE_DEFAULT = object()
+
+    def __init__(self, value=_USE_DEFAULT):
+        self._value = value
+        self.logger = _RecordingLogger()
+
+    def declare_parameter(self, name, default):
+        assert name == 'history_depth'
+        if self._value is self._USE_DEFAULT:
+            self._value = default
+
+    def get_parameter(self, name):
+        assert name == 'history_depth'
+        return SimpleNamespace(value=self._value)
+
+    def get_logger(self):
+        return self.logger
 
 
 def _start_forward(state: EncoderState, edge_time_ns: int = 0) -> None:
@@ -294,6 +335,145 @@ def test_invalid_stationary_timeout_is_rejected(invalid_timeout):
         EncoderState(invalid_timeout)
 
 
+def test_default_history_depth_is_four():
+    node = _ParameterNode()
+
+    assert read_history_depth(node) == 4
+    assert DEFAULT_HISTORY_DEPTH == 4
+
+
+@pytest.mark.parametrize('history_depth', [1, 2, 4, 8])
+def test_explicit_history_depth_is_accepted_and_logged(history_depth):
+    node = _ParameterNode(history_depth)
+
+    assert read_history_depth(node) == history_depth
+    assert node.logger.info_messages == [
+        f'Encoder interval history depth: {history_depth}'
+    ]
+    assert node.logger.error_messages == []
+
+
+@pytest.mark.parametrize('history_depth', [0, -1])
+def test_nonpositive_history_depth_is_rejected_and_logged(history_depth):
+    node = _ParameterNode(history_depth)
+
+    with pytest.raises(ValueError, match='history_depth must be at least 1'):
+        read_history_depth(node)
+
+    assert node.logger.error_messages == [
+        'Invalid history_depth parameter: history_depth must be at least 1'
+    ]
+
+
+@pytest.mark.parametrize('history_depth', [True, 1.0, '4'])
+def test_noninteger_history_depth_is_rejected_and_logged(history_depth):
+    node = _ParameterNode(history_depth)
+
+    with pytest.raises(ValueError, match='history_depth must be an integer'):
+        read_history_depth(node)
+
+    assert node.logger.error_messages == [
+        'Invalid history_depth parameter: history_depth must be an integer'
+    ]
+
+
+def test_history_depth_that_cannot_size_timestamp_deque_is_rejected():
+    import sys
+
+    with pytest.raises(ValueError, match='must be no greater than'):
+        validate_history_depth(sys.maxsize)
+
+
+def test_node_defaults_preserve_publication_rate_and_distance(monkeypatch):
+    class FakeReader:
+        chip_path = '/dev/gpiochip4'
+        event_count = 0
+        short_interval_count = 0
+
+        def __init__(self, gpio_pin, record_edge, error_callback):
+            assert gpio_pin == 22
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        encoder_node_module,
+        'GpioEventReader',
+        FakeReader,
+    )
+
+    rclpy.init(args=[])
+    node = None
+    try:
+        node = EncoderNode()
+
+        assert node.get_parameter('metres_per_edge').value == 0.010282
+        assert node.get_parameter('window_ms').value == 50
+        assert next(node.timers).timer_period_ns == 50_000_000
+        assert node._state._edge_timestamps_ns.maxlen == 5
+    finally:
+        if node is not None:
+            node.close_gpio()
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+@pytest.mark.parametrize('history_depth', [1, 2, 4, 8])
+def test_history_container_length_matches_selected_depth(history_depth):
+    state = EncoderState(TIMEOUT, history_depth)
+
+    assert state._edge_timestamps_ns.maxlen == history_depth + 1
+
+
+@pytest.mark.parametrize('history_depth', [1, 2, 4, 8])
+def test_rate_averages_latest_selected_interval_count(history_depth):
+    intervals_ns = [
+        8_000_000,
+        12_000_000,
+        10_000_000,
+        14_000_000,
+        9_000_000,
+        11_000_000,
+        13_000_000,
+        15_000_000,
+    ]
+    edge_times_ns = [0]
+    for interval_ns in intervals_ns:
+        edge_times_ns.append(edge_times_ns[-1] + interval_ns)
+
+    state = EncoderState(TIMEOUT, history_depth)
+    for edge_time_ns in edge_times_ns:
+        state.record_edge(edge_time_ns)
+
+    measurement = state.take_measurement(edge_times_ns[-1])
+    retained_span_ns = sum(intervals_ns[-history_depth:])
+    expected_rate = history_depth * 1e9 / retained_span_ns
+
+    assert measurement.edge_rate == pytest.approx(expected_rate)
+
+
+def test_depth_one_uses_only_latest_interval():
+    state = EncoderState(TIMEOUT, 1)
+    for edge_time_ns in (0, 10_000_000, 30_000_000):
+        state.record_edge(edge_time_ns)
+
+    assert state.take_measurement(30_000_000).edge_rate == 50.0
+    assert list(state._edge_timestamps_ns) == [10_000_000, 30_000_000]
+
+
+def test_history_container_drops_oldest_timestamp_when_full():
+    state = EncoderState(TIMEOUT, 2)
+    for edge_time_ns in (0, 10_000_000, 20_000_000, 30_000_000):
+        state.record_edge(edge_time_ns)
+
+    assert list(state._edge_timestamps_ns) == [
+        10_000_000,
+        20_000_000,
+        30_000_000,
+    ]
+
+
 def test_rate_averages_all_retained_intervals():
     state = EncoderState(TIMEOUT)
     for edge_time_ns in (0, 8_000_000, 20_000_000, 30_000_000):
@@ -305,16 +485,17 @@ def test_rate_averages_all_retained_intervals():
 
 
 def test_timestamp_buffer_is_bounded_to_one_magnet_cycle():
-    state = EncoderState(TIMEOUT)
+    history_depth = 8
+    state = EncoderState(TIMEOUT, history_depth)
     interval_ns = 1_000_000
-    edge_count = MAX_EDGE_TIMESTAMPS + 5
+    edge_count = history_depth + 6
     for index in range(edge_count):
         state.record_edge(index * interval_ns)
 
     measurement = state.take_measurement((edge_count - 1) * interval_ns)
 
     assert measurement.edge_rate == 1000.0
-    assert len(state._edge_timestamps_ns) == MAX_EDGE_TIMESTAMPS
+    assert len(state._edge_timestamps_ns) == history_depth + 1
 
 
 def test_timestamp_history_is_bounded_by_lookback():

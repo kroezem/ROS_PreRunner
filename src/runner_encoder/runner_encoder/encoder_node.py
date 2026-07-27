@@ -37,11 +37,14 @@ import gpiod
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
+from rclpy.exceptions import ParameterException
 from rclpy.node import Node
 from runner_encoder.encoder_state import (
+    DEFAULT_HISTORY_DEPTH,
     EncoderMeasurement,
     EncoderState,
     MIN_EDGE_INTERVAL_NS,
+    validate_history_depth,
 )
 from runner_interfaces.msg import EncoderState as EncoderStateMsg
 from std_msgs.msg import Int8
@@ -192,6 +195,23 @@ class GpioEventReader:
             self._chip = None
 
 
+def read_history_depth(node) -> int:
+    """Declare, validate, and report the retained interval count."""
+    try:
+        node.declare_parameter('history_depth', DEFAULT_HISTORY_DEPTH)
+        history_depth = validate_history_depth(
+            node.get_parameter('history_depth').value
+        )
+    except (ParameterException, ValueError) as error:
+        node.get_logger().error(f'Invalid history_depth parameter: {error}')
+        raise
+
+    node.get_logger().info(
+        f'Encoder interval history depth: {history_depth}'
+    )
+    return history_depth
+
+
 def build_publications(
     measurement: EncoderMeasurement,
     stamp,
@@ -254,7 +274,11 @@ class EncoderNode(Node):
                 'stationary_timeout_sec must be finite and greater than zero'
             )
 
-        self._state = EncoderState(self._stationary_timeout_sec)
+        self._history_depth = read_history_depth(self)
+        self._state = EncoderState(
+            self._stationary_timeout_sec,
+            self._history_depth,
+        )
         self._gpio_reader = None
 
         self._odom_pub = self.create_publisher(Odometry, '/wheel/odom', 10)

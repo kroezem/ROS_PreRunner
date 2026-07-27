@@ -17,19 +17,30 @@
 from collections import deque
 from dataclasses import dataclass
 import math
+import sys
 import threading
 from typing import Deque, Optional
 
 
-# Nine timestamps contain eight intervals: one complete cycle of the eight
-# magnet edges.  At the measured 20--26 edge/s range that spans 0.31--0.40 s;
-# the depth limit makes the estimate progressively fresher at higher speeds.
-MAX_EDGE_TIMESTAMPS = 9
+DEFAULT_HISTORY_DEPTH = 4
 MAX_LOOKBACK_NS = 500_000_000
 
 # The GPIO debounce configuration rejects changes that are not stable for
 # 100 us.  An interval shorter than that cannot be a valid accepted edge pair.
 MIN_EDGE_INTERVAL_NS = 100_000
+
+
+def validate_history_depth(history_depth: int) -> int:
+    """Return a history depth that can safely size the timestamp deque."""
+    if type(history_depth) is not int:
+        raise ValueError('history_depth must be an integer')
+    if history_depth < 1:
+        raise ValueError('history_depth must be at least 1')
+    if history_depth >= sys.maxsize:
+        raise ValueError(
+            f'history_depth must be no greater than {sys.maxsize - 1}'
+        )
+    return history_depth
 
 
 @dataclass(frozen=True)
@@ -45,7 +56,11 @@ class EncoderMeasurement:
 class EncoderState:
     """Latch direction only when pulses resume after a confirmed stop."""
 
-    def __init__(self, stationary_timeout_sec: float):
+    def __init__(
+        self,
+        stationary_timeout_sec: float,
+        history_depth: int = DEFAULT_HISTORY_DEPTH,
+    ):
         """Initialize state with a validated pulse-absence timeout."""
         if (
             not math.isfinite(stationary_timeout_sec)
@@ -60,10 +75,12 @@ class EncoderState:
                 'stationary_timeout_sec must be at least one nanosecond'
             )
 
+        history_depth = validate_history_depth(history_depth)
+
         self._stationary_timeout_ns = stationary_timeout_ns
         self._lock = threading.Lock()
         self._edge_timestamps_ns: Deque[int] = deque(
-            maxlen=MAX_EDGE_TIMESTAMPS
+            maxlen=history_depth + 1
         )
         self._last_edge_ns: Optional[int] = None
         self._stationary = True
