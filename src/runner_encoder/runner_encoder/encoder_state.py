@@ -14,24 +14,32 @@
 
 """Thread-safe state for the single-channel wheel encoder."""
 
+from collections import deque
 from dataclasses import dataclass
 import math
 import threading
-from typing import Optional
+from typing import Deque, Optional
+
+
+# Nine timestamps contain eight intervals: one complete cycle of the eight
+# magnet edges.  At the measured 20--26 edge/s range that spans 0.31--0.40 s;
+# the depth limit makes the estimate progressively fresher at higher speeds.
+MAX_EDGE_TIMESTAMPS = 9
+MAX_LOOKBACK_NS = 500_000_000
+
+# The GPIO debounce configuration rejects changes that are not stable for
+# 100 us.  An interval shorter than that cannot be a valid accepted edge pair.
+MIN_EDGE_INTERVAL_NS = 100_000
 
 
 @dataclass(frozen=True)
 class EncoderMeasurement:
     """One coherent encoder publication-cycle snapshot."""
 
-    edge_count: int
+    edge_rate: float
     stationary: bool
     active_direction: int
     pending_direction: int
-
-    def edge_rate(self, window_sec: float) -> float:
-        """Return the unsigned fixed-window GPIO edge rate."""
-        return self.edge_count / window_sec
 
 
 class EncoderState:
@@ -54,7 +62,9 @@ class EncoderState:
 
         self._stationary_timeout_ns = stationary_timeout_ns
         self._lock = threading.Lock()
-        self._edge_count = 0
+        self._edge_timestamps_ns: Deque[int] = deque(
+            maxlen=MAX_EDGE_TIMESTAMPS
+        )
         self._last_edge_ns: Optional[int] = None
         self._stationary = True
         self._active_direction = 0
@@ -75,6 +85,13 @@ class EncoderState:
     def record_edge(self, monotonic_ns: int) -> None:
         """Record an edge and begin a new epoch after pulse-confirmed rest."""
         with self._lock:
+            if (
+                self._last_edge_ns is not None
+                and monotonic_ns - self._last_edge_ns
+                < MIN_EDGE_INTERVAL_NS
+            ):
+                return
+
             pulse_gap_confirmed_stop = (
                 self._last_edge_ns is None
                 or monotonic_ns - self._last_edge_ns
@@ -82,24 +99,73 @@ class EncoderState:
             )
             if self._stationary or pulse_gap_confirmed_stop:
                 self._active_direction = self._latest_nonzero_direction
+                self._edge_timestamps_ns.clear()
 
             self._stationary = False
             self._last_edge_ns = monotonic_ns
-            self._edge_count += 1
+            self._edge_timestamps_ns.append(monotonic_ns)
+            self._prune_history(monotonic_ns)
 
     def take_measurement(self, monotonic_ns: int) -> EncoderMeasurement:
-        """Take and reset one coherent fixed-window measurement."""
+        """Take one coherent interval-rate measurement."""
         with self._lock:
+            if (
+                self._last_edge_ns is not None
+                and monotonic_ns < self._last_edge_ns
+            ):
+                # Both clocks should be CLOCK_MONOTONIC.  If that invariant is
+                # broken, discard the old epoch instead of producing a
+                # negative age or retaining timestamps from another timeline.
+                self._last_edge_ns = None
+                self._edge_timestamps_ns.clear()
+                self._stationary = True
+
             self._stationary = (
                 self._last_edge_ns is None
                 or monotonic_ns - self._last_edge_ns
                 >= self._stationary_timeout_ns
             )
+            if self._stationary:
+                edge_rate = 0.0
+                self._edge_timestamps_ns.clear()
+            else:
+                self._prune_history(monotonic_ns)
+                edge_rate = self._estimate_edge_rate(monotonic_ns)
+
             measurement = EncoderMeasurement(
-                edge_count=self._edge_count,
+                edge_rate=edge_rate,
                 stationary=self._stationary,
                 active_direction=self._active_direction,
                 pending_direction=self._latest_nonzero_direction,
             )
-            self._edge_count = 0
             return measurement
+
+    def _prune_history(self, reference_ns: int) -> None:
+        """Retain timestamps within both the depth and lookback bounds."""
+        cutoff_ns = reference_ns - MAX_LOOKBACK_NS
+        while (
+            len(self._edge_timestamps_ns) > 1
+            and self._edge_timestamps_ns[0] < cutoff_ns
+        ):
+            self._edge_timestamps_ns.popleft()
+
+    def _estimate_edge_rate(self, monotonic_ns: int) -> float:
+        """Estimate unsigned rate over retained intervals with stop decay."""
+        if len(self._edge_timestamps_ns) < 2:
+            return 0.0
+
+        first_edge_ns = self._edge_timestamps_ns[0]
+        previous_edge_ns = self._edge_timestamps_ns[-2]
+        last_edge_ns = self._edge_timestamps_ns[-1]
+        span_ns = last_edge_ns - first_edge_ns
+        most_recent_interval_ns = last_edge_ns - previous_edge_ns
+        if span_ns <= 0 or most_recent_interval_ns <= 0:
+            return 0.0
+
+        edge_rate = (
+            (len(self._edge_timestamps_ns) - 1) * 1e9 / span_ns
+        )
+        dt_since_last_ns = monotonic_ns - last_edge_ns
+        if dt_since_last_ns > most_recent_interval_ns:
+            edge_rate = min(edge_rate, 1e9 / dt_since_last_ns)
+        return edge_rate

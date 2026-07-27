@@ -55,10 +55,9 @@ def build_publications(
     measurement: EncoderMeasurement,
     stamp,
     metres_per_edge: float,
-    window_sec: float,
 ):
     """Build odometry and diagnostics from one encoder state snapshot."""
-    edge_rate = measurement.edge_rate(window_sec)
+    edge_rate = measurement.edge_rate
     signed_speed = (
         edge_rate * metres_per_edge * measurement.pending_direction
     )
@@ -151,7 +150,7 @@ class EncoderNode(Node):
         )
 
     def _on_edge(self, chip, gpio, level, tick):
-        self._state.record_edge(time.monotonic_ns())
+        self._state.record_edge(tick)
 
     def _on_direction(self, msg: Int8):
         if not self._state.update_direction(msg.data):
@@ -161,14 +160,12 @@ class EncoderNode(Node):
             )
 
     def _publish_window(self):
-        window_s = self._window_ms / 1000.0
         measurement = self._state.take_measurement(time.monotonic_ns())
         stamp = self.get_clock().now().to_msg()
         odom_msg, state_msg = build_publications(
             measurement,
             stamp,
             self._metres_per_edge,
-            window_s,
         )
         self._odom_pub.publish(odom_msg)
         self._state_pub.publish(state_msg)
