@@ -620,8 +620,12 @@ def recover_mcap_bag(mcap_paths, retained_topics, open_error=None):
     }
 
 
-def load_bag_messages(bag_path):
-    retained_topics = set(HEALTH_TOPICS)
+def load_bag_messages(bag_path, retained_topics=None):
+    retained_topics = (
+        set(HEALTH_TOPICS)
+        if retained_topics is None
+        else set(retained_topics)
+    )
     mcap_paths = mcap_files_for_path(bag_path)
     if any(not mcap_has_closing_magic(path) for path in mcap_paths):
         return recover_mcap_bag(mcap_paths, retained_topics)
@@ -688,27 +692,8 @@ def load_bag_messages(bag_path):
     }
 
 
-def read_bag(
-    bag_path,
-    seed_success_max_delay_s,
-    start_time_s=0.0,
-    end_time_s=None,
-):
-    loaded = load_bag_messages(bag_path)
-    topic_types = loaded['topic_types']
-    decoded_topics = (
-        '/tf',
-        '/initialpose',
-        '/pose',
-        '/odometry/filtered',
-        *SCAN_TOPICS,
-    )
-    message_types = {
-        topic: get_message(topic_types[topic])
-        for topic in decoded_topics
-        if topic in topic_types
-    }
-
+def resolve_analysis_window(loaded, start_time_s=0.0, end_time_s=None):
+    """Resolve a bag-relative receive-time window using loaded bag bounds."""
     bag_start_ns = loaded['bag_start_ns']
     bag_end_ns = loaded['bag_end_ns']
     if bag_start_ns is None:
@@ -732,9 +717,57 @@ def read_bag(
             f'start {window_start_s:g} s'
         )
 
-    window_start_ns = bag_start_ns + round(window_start_s * 1e9)
-    window_end_ns = bag_start_ns + round(window_end_s * 1e9)
-    duration_s = window_end_s - window_start_s
+    return {
+        'bag_start_ns': bag_start_ns,
+        'bag_end_ns': bag_end_ns,
+        'bag_duration_s': bag_duration_s,
+        'window_start_s': window_start_s,
+        'window_end_s': window_end_s,
+        'window_start_ns': bag_start_ns + round(window_start_s * 1e9),
+        'window_end_ns': bag_start_ns + round(window_end_s * 1e9),
+        'duration_s': window_end_s - window_start_s,
+    }
+
+
+def messages_in_receive_window(messages, start_ns, end_ns):
+    """Return messages whose bag receive timestamps lie in an inclusive window."""
+    return [
+        message
+        for message in messages
+        if start_ns <= message[2] <= end_ns
+    ]
+
+
+def read_bag(
+    bag_path,
+    seed_success_max_delay_s,
+    start_time_s=0.0,
+    end_time_s=None,
+):
+    loaded = load_bag_messages(bag_path)
+    topic_types = loaded['topic_types']
+    decoded_topics = (
+        '/tf',
+        '/initialpose',
+        '/pose',
+        '/odometry/filtered',
+        *SCAN_TOPICS,
+    )
+    message_types = {
+        topic: get_message(topic_types[topic])
+        for topic in decoded_topics
+        if topic in topic_types
+    }
+
+    window = resolve_analysis_window(loaded, start_time_s, end_time_s)
+    bag_start_ns = window['bag_start_ns']
+    bag_end_ns = window['bag_end_ns']
+    bag_duration_s = window['bag_duration_s']
+    window_start_s = window['window_start_s']
+    window_end_s = window['window_end_s']
+    window_start_ns = window['window_start_ns']
+    window_end_ns = window['window_end_ns']
+    duration_s = window['duration_s']
 
     counts = {topic: 0 for topic in HEALTH_TOPICS}
     scans = {topic: [] for topic in SCAN_TOPICS}
