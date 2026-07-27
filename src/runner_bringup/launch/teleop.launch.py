@@ -26,5 +26,9 @@ def generate_launch_description():
                 'deadman_button': 0,
             }],
         ),
-        Node(package='runner_motor', executable='motor_node'),
+        Node(
+            package='runner_motor',
+            executable='motor_node',
+            parameters=[{'esc_mode': 'race'}],
+        ),
     ])
