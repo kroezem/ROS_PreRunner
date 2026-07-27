@@ -40,21 +40,9 @@
       }
     },
     {
-      "label": "Runner: Encoder (standalone)",
-      "type": "shell",
-      "command": "ros2 run runner_encoder encoder_node",
-      "problemMatcher": []
-    },
-    {
       "label": "Stop all launches",
       "type": "shell",
       "command": "pkill -INT -f 'ros2 launch runner_bringup' ; pkill -INT -f motor_node ; sleep 1 ; sudo systemctl restart runner-pwm-setup.service || true",
-      "problemMatcher": []
-    },
-    {
-      "label": "Foxglove bridge (ad-hoc)",
-      "type": "shell",
-      "command": "ros2 launch foxglove_bridge foxglove_bridge_launch.xml",
       "problemMatcher": []
     }
   ],
