@@ -108,7 +108,7 @@ class AdapterConfig:
     floor_promotion_min_ratio: float = 0.50
     maximum_commanded_speed: float = 0.60
     proportional_gain: float = 0.30
-    integral_gain: float = 0.12
+    integral_gain: float = 0.06
     integrator_min: float = -0.25
     integrator_max: float = 0.16
     output_min: float = -0.20

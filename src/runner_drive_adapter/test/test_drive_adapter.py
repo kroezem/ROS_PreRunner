@@ -124,8 +124,8 @@ def test_integrator_accumulates_when_unsaturated():
         adapter, 0.10, speed=0.29, measured=0.20, ekf=0.20
     )
 
-    assert decision.integrator_state == pytest.approx(0.00108)
-    assert decision.final_throttle == pytest.approx(0.40808)
+    assert decision.integrator_state == pytest.approx(0.00054)
+    assert decision.final_throttle == pytest.approx(0.40754)
 
 
 def test_integrator_freezes_after_qualified_wheelspin():
