@@ -66,7 +66,7 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert rpp['regulated_linear_scaling_min_radius'] == 0.80
     assert rpp['regulated_linear_scaling_min_speed'] == 0.126
     assert rpp['use_collision_detection'] is True
-    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 1.0
+    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.5
     assert controller['enable_stamped_cmd_vel'] is False
 
 

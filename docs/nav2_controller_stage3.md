@@ -46,7 +46,7 @@ nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
 | `regulated_linear_scaling_min_speed` | 0.126 m/s | Does not request a sub-measured-floor turn speed |
 | `use_cost_regulated_linear_velocity_scaling` | false | Separates the measured curvature effect from obstacle-cost scaling |
 | `use_collision_detection` | true | RPP checks its projected arc against the local costmap |
-| `max_allowed_time_to_collision_up_to_carrot` | 1.0 s | Collision projection is capped at the carrot |
+| `max_allowed_time_to_collision_up_to_carrot` | 0.5 s | Collision projection is capped at the carrot |
 | `use_rotate_to_heading` | false | Ackermann vehicle cannot rotate in place |
 | `allow_reversing` | false | Phase 1 is forward-only |
 | `transform_tolerance` | 0.3 s | Matches the established Nav2 transform tolerance |
