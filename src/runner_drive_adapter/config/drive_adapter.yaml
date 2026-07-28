@@ -20,7 +20,7 @@ drive_adapter:
     integrator_min: -0.25
     integrator_max: 0.16
     output_min: -0.20
-    output_max: 0.50
+    output_max: 0.70
     breakaway_integrator_preload: 0.04
 
     encoder_metres_per_edge: 0.010282

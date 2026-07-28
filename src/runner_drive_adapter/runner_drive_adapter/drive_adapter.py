@@ -112,7 +112,7 @@ class AdapterConfig:
     integrator_min: float = -0.25
     integrator_max: float = 0.16
     output_min: float = -0.20
-    output_max: float = 0.50
+    output_max: float = 0.70
     breakaway_integrator_preload: float = 0.04
     encoder_metres_per_edge: float = 0.010282
     wheelspin_speed_ratio: float = 1.50

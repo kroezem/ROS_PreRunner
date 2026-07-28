@@ -91,13 +91,15 @@ def test_feedforward_passes_through_at_zero_error():
 
 
 def test_positive_output_saturates_and_integrator_freezes():
-    adapter = DriveAdapter(AdapterConfig())
+    config = AdapterConfig(proportional_gain=0.60)
+    adapter = DriveAdapter(config)
     first = _update(adapter, 0.0, speed=0.60, measured=0.0)
     before = adapter.integrator_state
     second = _update(adapter, 0.10, speed=0.60, measured=0.0)
 
-    assert first.final_throttle == 0.50
-    assert second.final_throttle == 0.50
+    assert config.output_max == 0.70
+    assert first.final_throttle == 0.70
+    assert second.final_throttle == 0.70
     assert second.saturation_state == 'upper'
     assert adapter.integrator_state == before
 
@@ -177,8 +179,8 @@ def test_stationary_transition_preloads_integrator_for_breakaway():
     )
 
     assert decision.integrator_state == 0.04
-    assert decision.final_throttle == 0.50
-    assert decision.saturation_state == 'upper'
+    assert decision.final_throttle == pytest.approx(0.507)
+    assert decision.saturation_state == 'none'
 
 
 def test_breakaway_preload_is_not_reapplied_while_stationary():
