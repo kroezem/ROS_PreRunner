@@ -105,8 +105,9 @@ Ratified architecture, for the post-Phase-1 board revision:
 | `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Sole GPIO 22 owner, via libgpiod (D-54). |
 | `runner_teleop` | `teleop_node` | `/joy` → `/cmd_vel`, three-state hold-to-run (D-48). |
 | `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized). D-55. |
-| `runner_interfaces` | — | `EncoderState.msg`. `ament_cmake` + `rosidl_generate_interfaces`. |
+| `runner_interfaces` | — | `EncoderState.msg`, `SystemTelemetry.msg`. |
 | `runner_battery` | `battery_node` | UPS fuel gauge → `/battery` (systemd). |
+| `runner_telemetry` | `telemetry_node` | Pi health → `/system/telemetry` @ 1 Hz (systemd). |
 | `ldlidar_stl_ros2` | `LD19` | LD19 → `/scan` (D-22). |
 | `rf2o_laser_odometry` | `rf2o_..._node` | Laser odometry → `/odom_rf2o`. Vendored fork. |
 
@@ -439,7 +440,6 @@ Obstacle avoidance active from the first powered test. Impossible routes fail th
 - Re-run `analyze_localization_bag.py` on the v0.8 §4.10 baseline bag with the corrected metric, so magnitude figures become comparable.
 
 **Ratified, not implemented**
-- Pi telemetry node (temp + sticky `vcgencmd get_throttled` bits, 1 Hz, systemd).
 - ADS1115 traction voltage → `/battery/traction` (§3.3).
 - Board revision: PD sink, 2S balanced charger, Pi-controlled high-side FET, brushed H-bridge, IMU, IO breakout (§3.3).
 - Fix `analyze_yaw_cross_validation.py` to accumulate absolute rotation per bin (§4.11).

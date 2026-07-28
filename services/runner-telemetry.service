@@ -1,0 +1,14 @@
+[Unit]
+Description=Runner Raspberry Pi telemetry
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_telemetry telemetry_node'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

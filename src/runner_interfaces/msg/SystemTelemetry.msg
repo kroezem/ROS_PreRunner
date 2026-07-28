@@ -1,0 +1,12 @@
+builtin_interfaces/Time stamp
+bool pi_valid
+float32 soc_temperature_celsius
+uint32 throttled_raw
+bool current_undervoltage
+bool current_frequency_capped
+bool current_throttled
+bool current_soft_temperature_limit
+bool sticky_undervoltage
+bool sticky_frequency_capped
+bool sticky_throttled
+bool sticky_soft_temperature_limit
