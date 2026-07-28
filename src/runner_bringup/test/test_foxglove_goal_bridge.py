@@ -1,6 +1,8 @@
 """Focused tests for Foxglove simple-goal and route actions."""
 
+import json
 import time
+from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
@@ -53,9 +55,16 @@ class FakeCancelResponse:
 class FakeResultResponse:
     """NavigateToPose result service response."""
 
-    def __init__(self, status=GoalStatus.STATUS_SUCCEEDED):
+    def __init__(
+        self,
+        status=GoalStatus.STATUS_SUCCEEDED,
+        error_code=0,
+        error_msg='',
+    ):
         self.status = status
         self.result = NavigateToPose.Result()
+        self.result.error_code = error_code
+        self.result.error_msg = error_msg
 
 
 class FakeGoalHandle:
@@ -114,19 +123,29 @@ class FakeActionClient:
         self.goals = []
         self.send_futures = []
         self.send_errors = []
+        self.feedback_callbacks = []
 
     def server_is_ready(self):
         return True
 
-    def send_goal_async(self, goal):
+    def send_goal_async(self, goal, feedback_callback=None):
         if self.send_errors:
             error = self.send_errors.pop(0)
             if error is not None:
                 raise error
         self.goals.append(goal)
+        self.feedback_callbacks.append(feedback_callback)
         future = FakeFuture()
         self.send_futures.append(future)
         return future
+
+    def send_feedback(self, index, poses_remaining):
+        feedback = SimpleNamespace(
+            number_of_poses_remaining=poses_remaining
+        )
+        self.feedback_callbacks[index](
+            SimpleNamespace(feedback=feedback)
+        )
 
 
 class FakePublisher:
@@ -593,6 +612,43 @@ def test_successful_loop_route_redispatches(bridge):
         [1.0, 2.0],
         [1.0, 2.0],
     ]
+
+
+def test_autonomy_state_reports_route_progress_and_nav2_error(bridge):
+    node, _ = bridge
+    route_client = node._route_action_client
+    state_pub = FakePublisher()
+    node._autonomy_state_pub = state_pub
+    node._waypoint_callback(make_pose(1.0))
+    node._waypoint_callback(make_pose(2.0))
+    node._route_control_callback(String(data='start'))
+    handle = FakeGoalHandle()
+    route_client.send_futures[0].resolve(handle)
+
+    node._publish_autonomy_state()
+    accepted = json.loads(state_pub.messages[-1].data)
+    assert accepted['goal_state'] == 'accepted'
+    assert accepted['route_length'] == 2
+    assert accepted['current_waypoint_index'] == 0
+    assert accepted['loop_mode'] is False
+    assert accepted['time_in_state_seconds'] >= 0.0
+
+    route_client.send_feedback(0, poses_remaining=1)
+    node._publish_autonomy_state()
+    executing = json.loads(state_pub.messages[-1].data)
+    assert executing['goal_state'] == 'executing'
+    assert executing['current_waypoint_index'] == 1
+
+    handle.result_future.resolve(FakeResultResponse(
+        GoalStatus.STATUS_ABORTED,
+        error_code=208,
+        error_msg='planner failed',
+    ))
+    node._publish_autonomy_state()
+    aborted = json.loads(state_pub.messages[-1].data)
+    assert aborted['goal_state'] == 'aborted'
+    assert aborted['last_error_code'] == 208
+    assert aborted['last_error_meaning'] == 'NO_VALID_PATH'
 
 
 def test_stop_prevents_loop_redispatch(bridge):

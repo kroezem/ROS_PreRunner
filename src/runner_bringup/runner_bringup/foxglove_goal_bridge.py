@@ -29,6 +29,60 @@ STATUS_NAMES = {
     GoalStatus.STATUS_ABORTED: 'ABORTED',
 }
 
+NAV2_ERROR_NAMES = {
+    0: 'NONE',
+    100: 'UNKNOWN',
+    101: 'INVALID_CONTROLLER',
+    102: 'TF_ERROR',
+    103: 'INVALID_PATH',
+    104: 'PATIENCE_EXCEEDED',
+    105: 'FAILED_TO_MAKE_PROGRESS',
+    106: 'NO_VALID_CONTROL',
+    107: 'CONTROLLER_TIMED_OUT',
+    200: 'UNKNOWN',
+    201: 'INVALID_PLANNER',
+    202: 'TF_ERROR',
+    203: 'START_OUTSIDE_MAP',
+    204: 'GOAL_OUTSIDE_MAP',
+    205: 'START_OCCUPIED',
+    206: 'GOAL_OCCUPIED',
+    207: 'TIMEOUT',
+    208: 'NO_VALID_PATH',
+    300: 'UNKNOWN',
+    301: 'INVALID_PLANNER',
+    302: 'TF_ERROR',
+    303: 'START_OUTSIDE_MAP',
+    304: 'GOAL_OUTSIDE_MAP',
+    305: 'START_OCCUPIED',
+    306: 'GOAL_OCCUPIED',
+    307: 'TIMEOUT',
+    308: 'NO_VALID_PATH',
+    309: 'NO_VIAPOINTS_GIVEN',
+    500: 'UNKNOWN',
+    501: 'INVALID_SMOOTHER',
+    502: 'TIMEOUT',
+    503: 'SMOOTHED_PATH_IN_COLLISION',
+    504: 'FAILED_TO_SMOOTH_PATH',
+    505: 'INVALID_PATH',
+    700: 'UNKNOWN',
+    701: 'TIMEOUT',
+    702: 'TF_ERROR',
+    703: 'COLLISION_AHEAD',
+    710: 'UNKNOWN',
+    711: 'TIMEOUT',
+    712: 'TF_ERROR',
+    713: 'INVALID_INPUT',
+    714: 'COLLISION_AHEAD',
+    720: 'UNKNOWN',
+    721: 'TIMEOUT',
+    722: 'TF_ERROR',
+    723: 'COLLISION_AHEAD',
+    724: 'INVALID_INPUT',
+    730: 'UNKNOWN',
+    731: 'TIMEOUT',
+    732: 'TF_ERROR',
+}
+
 
 @dataclass(frozen=True)
 class _Request:
@@ -97,6 +151,11 @@ class FoxgloveGoalBridge(Node):
         self._next_cancel_attempt = 0.0
         self._cancel_exhausted_logged = False
         self._shutting_down = False
+        self._goal_state = 'none'
+        self._goal_state_since = time.monotonic()
+        self._last_error_code = 0
+        self._last_error_meaning = NAV2_ERROR_NAMES[0]
+        self._current_waypoint_index = -1
         route_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -111,6 +170,11 @@ class FoxgloveGoalBridge(Node):
             MarkerArray,
             '/runner/route_markers',
             route_qos,
+        )
+        self._autonomy_state_pub = self.create_publisher(
+            String,
+            '/runner/autonomy_state',
+            10,
         )
         self.create_subscription(
             PoseStamped,
@@ -132,7 +196,7 @@ class FoxgloveGoalBridge(Node):
         )
         self._load_route()
         self._publish_route()
-        self.create_timer(0.5, self._pump)
+        self.create_timer(0.5, self._timer_callback)
 
     @property
     def route(self):
@@ -245,6 +309,31 @@ class FoxgloveGoalBridge(Node):
             self._request_cancel()
         self._pump()
 
+    def _timer_callback(self):
+        self._pump()
+        self._publish_autonomy_state()
+
+    def _set_goal_state(self, state):
+        if state == self._goal_state:
+            return
+        self._goal_state = state
+        self._goal_state_since = time.monotonic()
+
+    def _publish_autonomy_state(self):
+        elapsed = max(0.0, time.monotonic() - self._goal_state_since)
+        document = {
+            'goal_state': self._goal_state,
+            'last_error_code': self._last_error_code,
+            'last_error_meaning': self._last_error_meaning,
+            'route_length': len(self._route),
+            'current_waypoint_index': self._current_waypoint_index,
+            'loop_mode': self._loop_enabled,
+            'time_in_state_seconds': round(elapsed, 3),
+        }
+        self._autonomy_state_pub.publish(
+            String(data=json.dumps(document, sort_keys=True))
+        )
+
     def _client_for(self, kind):
         if kind == 'NavigateThroughPoses':
             return self._route_action_client
@@ -288,7 +377,12 @@ class FoxgloveGoalBridge(Node):
             goal = NavigateToPose.Goal()
             goal.pose = request.poses[0]
         try:
-            future = client.send_goal_async(goal)
+            future = client.send_goal_async(
+                goal,
+                feedback_callback=lambda message,
+                sent_generation=generation:
+                self._feedback_callback(message, sent_generation),
+            )
         except Exception as error:
             if self._send_generation == generation:
                 self._clear_send_state()
@@ -342,12 +436,17 @@ class FoxgloveGoalBridge(Node):
         if not goal_handle.accepted:
             self._restore_request_if_latest(request)
             self.get_logger().warning(f'{request.kind} goal rejected')
+            self._set_goal_state('aborted')
             self._pump()
             return
 
         self._active_generation = generation
         self._active_kind = request.kind
         self._goal_handle = goal_handle
+        self._current_waypoint_index = (
+            0 if request.kind == 'NavigateThroughPoses' else -1
+        )
+        self._set_goal_state('accepted')
         self._reset_cancel_state()
         self.get_logger().info(f'{request.kind} goal accepted')
         self._ensure_result_request()
@@ -357,6 +456,20 @@ class FoxgloveGoalBridge(Node):
             or self._cancel_requested
         ):
             self._request_cancel(force=self._shutting_down)
+
+    def _feedback_callback(self, message, generation):
+        if self._active_generation != generation:
+            return
+        self._set_goal_state('executing')
+        if self._active_kind != 'NavigateThroughPoses':
+            return
+        remaining = max(0, int(message.feedback.number_of_poses_remaining))
+        route_length = len(self._route)
+        if route_length:
+            self._current_waypoint_index = min(
+                route_length - 1,
+                max(0, route_length - remaining),
+            )
 
     def _ensure_result_request(self):
         if (
@@ -532,6 +645,17 @@ class FoxgloveGoalBridge(Node):
 
         if not self._active_matches(generation, goal_handle):
             return
+        self._last_error_code = int(result.error_code)
+        self._last_error_meaning = NAV2_ERROR_NAMES.get(
+            self._last_error_code,
+            result.error_msg or 'UNKNOWN_ERROR_CODE',
+        )
+        terminal_state = {
+            GoalStatus.STATUS_SUCCEEDED: 'succeeded',
+            GoalStatus.STATUS_CANCELED: 'canceled',
+            GoalStatus.STATUS_ABORTED: 'aborted',
+        }.get(response.status, 'aborted')
+        self._set_goal_state(terminal_state)
         succeeded = response.status == GoalStatus.STATUS_SUCCEEDED
         should_loop = (
             kind == 'NavigateThroughPoses'
@@ -549,6 +673,7 @@ class FoxgloveGoalBridge(Node):
                 'NavigateThroughPoses',
                 tuple(self._route),
             )
+            self._current_waypoint_index = 0
             self.get_logger().info(
                 'Route completed successfully; dispatching loop'
             )
