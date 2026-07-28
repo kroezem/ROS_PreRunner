@@ -13,6 +13,7 @@ from runner_bringup.foxglove_goal_bridge import (
     FoxgloveGoalBridge,
 )
 from std_msgs.msg import String
+from visualization_msgs.msg import Marker
 
 
 class FakeFuture:
@@ -126,6 +127,16 @@ class FakeActionClient:
         future = FakeFuture()
         self.send_futures.append(future)
         return future
+
+
+class FakePublisher:
+    """Record messages published by a bridge test."""
+
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
 
 
 @pytest.fixture
@@ -468,6 +479,64 @@ def test_route_control_clear_and_loop_commands_persist(bridge):
     assert '"poses": []' in node._route_file.read_text()
 
 
+def test_route_markers_have_stable_ids_labels_and_vehicle_scale(bridge):
+    node, _ = bridge
+    publisher = FakePublisher()
+    node._marker_pub = publisher
+
+    node._waypoint_callback(make_pose(1.0, 2.0))
+    node._waypoint_callback(make_pose(3.0, 4.0))
+
+    markers = publisher.messages[-1].markers
+    assert markers[0].action == Marker.DELETEALL
+    assert len(markers) == 5
+    spheres = markers[1::2]
+    labels = markers[2::2]
+    assert [marker.id for marker in spheres] == [0, 2]
+    assert [marker.id for marker in labels] == [1, 3]
+    assert all(
+        marker.ns == FoxgloveGoalBridge.MARKER_NAMESPACE
+        for marker in markers[1:]
+    )
+    assert all(
+        marker.header.frame_id == 'map'
+        for marker in markers
+    )
+    assert all(marker.type == Marker.SPHERE for marker in spheres)
+    assert all(
+        marker.scale.x == pytest.approx(0.06)
+        and marker.scale.y == pytest.approx(0.06)
+        for marker in spheres
+    )
+    assert all(
+        marker.type == Marker.TEXT_VIEW_FACING
+        for marker in labels
+    )
+    assert [marker.text for marker in labels] == ['1', '2']
+    assert all(
+        marker.scale.z == pytest.approx(0.055)
+        for marker in labels
+    )
+
+
+def test_route_marker_deletion_prevents_stale_waypoints(bridge):
+    node, _ = bridge
+    publisher = FakePublisher()
+    node._marker_pub = publisher
+    node._waypoint_callback(make_pose(1.0))
+    node._waypoint_callback(make_pose(2.0))
+
+    node._route_control_callback(String(data='remove_last'))
+    after_remove = publisher.messages[-1].markers
+    assert after_remove[0].action == Marker.DELETEALL
+    assert [marker.id for marker in after_remove[1:]] == [0, 1]
+
+    node._route_control_callback(String(data='clear'))
+    after_clear = publisher.messages[-1].markers
+    assert len(after_clear) == 1
+    assert after_clear[0].action == Marker.DELETEALL
+
+
 def test_remove_last_rejects_empty_route_cleanly(bridge):
     node, _ = bridge
     warnings = []
@@ -549,13 +618,17 @@ def test_malformed_waypoints_and_commands_are_rejected(bridge):
     node.get_logger().warning = warnings.append
     invalid = make_pose(1.0)
     invalid.header.frame_id = ''
+    non_map = make_pose(2.0)
+    non_map.header.frame_id = 'odom'
 
     node._waypoint_callback(invalid)
+    node._waypoint_callback(non_map)
     node._route_control_callback(String(data=' START '))
     node._route_control_callback(String(data='unknown'))
 
     assert node.route == ()
     assert any('malformed' in warning for warning in warnings)
+    assert any('outside the map frame' in warning for warning in warnings)
     assert sum('unknown route command' in warning for warning in warnings) == 2
 
 

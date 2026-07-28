@@ -16,6 +16,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 STATUS_NAMES = {
@@ -43,6 +44,11 @@ class FoxgloveGoalBridge(Node):
     RESULT_RETRY_INTERVAL = 0.5
     SHUTDOWN_TIMEOUT = 1.0
     DEFAULT_ROUTE_FILE = '~/.ros/runner_route.json'
+    ROUTE_FRAME = 'map'
+    MARKER_NAMESPACE = 'runner_route'
+    WAYPOINT_DIAMETER = 0.06
+    LABEL_HEIGHT = 0.055
+    LABEL_Z_OFFSET = 0.08
 
     def __init__(
         self,
@@ -99,6 +105,11 @@ class FoxgloveGoalBridge(Node):
         self._route_pub = self.create_publisher(
             PathMessage,
             '/runner/route',
+            route_qos,
+        )
+        self._marker_pub = self.create_publisher(
+            MarkerArray,
+            '/runner/route_markers',
             route_qos,
         )
         self.create_subscription(
@@ -162,12 +173,9 @@ class FoxgloveGoalBridge(Node):
                 'Rejecting malformed /runner/waypoint pose'
             )
             return
-        if (
-            self._route
-            and pose.header.frame_id != self._route[0].header.frame_id
-        ):
+        if pose.header.frame_id != self.ROUTE_FRAME:
             self.get_logger().warning(
-                'Rejecting /runner/waypoint with a different route frame'
+                'Rejecting /runner/waypoint outside the map frame'
             )
             return
         self._route.append(pose)
@@ -595,12 +603,58 @@ class FoxgloveGoalBridge(Node):
         )
 
     def _publish_route(self):
+        stamp = self.get_clock().now().to_msg()
         message = PathMessage()
-        message.header.stamp = self.get_clock().now().to_msg()
-        if self._route:
-            message.header.frame_id = self._route[0].header.frame_id
+        message.header.stamp = stamp
+        message.header.frame_id = self.ROUTE_FRAME
         message.poses = list(self._route)
         self._route_pub.publish(message)
+
+        markers = MarkerArray()
+        delete_all = Marker()
+        delete_all.header.frame_id = self.ROUTE_FRAME
+        delete_all.header.stamp = stamp
+        delete_all.action = Marker.DELETEALL
+        markers.markers.append(delete_all)
+        for index, pose in enumerate(self._route):
+            sphere = Marker()
+            sphere.header.frame_id = self.ROUTE_FRAME
+            sphere.header.stamp = stamp
+            sphere.ns = self.MARKER_NAMESPACE
+            sphere.id = index * 2
+            sphere.type = Marker.SPHERE
+            sphere.action = Marker.ADD
+            sphere.pose = pose.pose
+            sphere.scale.x = self.WAYPOINT_DIAMETER
+            sphere.scale.y = self.WAYPOINT_DIAMETER
+            sphere.scale.z = self.WAYPOINT_DIAMETER
+            sphere.color.r = 0.1
+            sphere.color.g = 0.8
+            sphere.color.b = 1.0
+            sphere.color.a = 0.9
+            markers.markers.append(sphere)
+
+            label = Marker()
+            label.header.frame_id = self.ROUTE_FRAME
+            label.header.stamp = stamp
+            label.ns = self.MARKER_NAMESPACE
+            label.id = index * 2 + 1
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = pose.pose.position.x
+            label.pose.position.y = pose.pose.position.y
+            label.pose.position.z = (
+                pose.pose.position.z + self.LABEL_Z_OFFSET
+            )
+            label.pose.orientation.w = 1.0
+            label.scale.z = self.LABEL_HEIGHT
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 1.0
+            label.text = str(index + 1)
+            markers.markers.append(label)
+        self._marker_pub.publish(markers)
 
     def _persist_route(self):
         document = {
@@ -632,11 +686,11 @@ class FoxgloveGoalBridge(Node):
             ]
             if not all(self._valid_pose(pose) for pose in poses):
                 raise ValueError('route contains an invalid pose')
-            if poses and any(
-                pose.header.frame_id != poses[0].header.frame_id
+            if any(
+                pose.header.frame_id != self.ROUTE_FRAME
                 for pose in poses
             ):
-                raise ValueError('route contains mixed frames')
+                raise ValueError('route contains a pose outside the map frame')
             loop_enabled = document.get('loop_enabled', False)
             if not isinstance(loop_enabled, bool):
                 raise ValueError('loop_enabled is not a boolean')

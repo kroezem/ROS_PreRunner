@@ -36,6 +36,7 @@
   <depend>slam_toolbox</depend>
   <depend>tf2_ros</depend>
   <depend>twist_mux</depend>
+  <depend>visualization_msgs</depend>
   <exec_depend>runner_encoder</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
