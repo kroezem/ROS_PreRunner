@@ -6,13 +6,27 @@ import struct
 
 
 MAGIC = b'RKEY'
-VERSION = 1
+VERSION = 2
 MODE_DRIVE = 0
 MODE_BRAKE = 1
 MODE_SUPPRESS = 2
 MODE_BRAKE_SUPPRESS = MODE_BRAKE | MODE_SUPPRESS
 VALID_MODE_MASK = MODE_BRAKE | MODE_SUPPRESS
-PACKET_FORMAT = '!4sBBQIff'
+ROUTE_NONE = 0
+ROUTE_START = 1
+ROUTE_STOP = 2
+ROUTE_CLEAR = 3
+ROUTE_LOOP_TOGGLE = 4
+ROUTE_REMOVE_LAST = 5
+VALID_ROUTE_COMMANDS = {
+    ROUTE_NONE,
+    ROUTE_START,
+    ROUTE_STOP,
+    ROUTE_CLEAR,
+    ROUTE_LOOP_TOGGLE,
+    ROUTE_REMOVE_LAST,
+}
+PACKET_FORMAT = '!4sBBQIffB'
 PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
 SERIAL_HALF_RANGE = 1 << 31
 SERIAL_MASK = (1 << 32) - 1
@@ -31,6 +45,7 @@ class KeyboardPacket:
     sequence: int
     throttle: float
     steering: float
+    route_command: int
 
 
 def decode_packet(data: bytes) -> KeyboardPacket:
@@ -39,7 +54,16 @@ def decode_packet(data: bytes) -> KeyboardPacket:
         raise PacketError(
             f'wrong packet length {len(data)}; expected {PACKET_SIZE}'
         )
-    magic, version, mode, session_id, sequence, throttle, steering = (
+    (
+        magic,
+        version,
+        mode,
+        session_id,
+        sequence,
+        throttle,
+        steering,
+        route_command,
+    ) = (
         struct.unpack(PACKET_FORMAT, data)
     )
     if magic != MAGIC:
@@ -58,12 +82,15 @@ def decode_packet(data: bytes) -> KeyboardPacket:
         raise PacketError('throttle must be within [0.0, 1.0]')
     if not -1.0 <= steering <= 1.0:
         raise PacketError('steering must be within [-1.0, 1.0]')
+    if route_command not in VALID_ROUTE_COMMANDS:
+        raise PacketError(f'unsupported route command {route_command}')
     return KeyboardPacket(
         mode=mode,
         session_id=session_id,
         sequence=sequence,
         throttle=throttle,
         steering=steering,
+        route_command=route_command,
     )
 
 

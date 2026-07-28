@@ -458,9 +458,25 @@ def test_route_control_clear_and_loop_commands_persist(bridge):
 
     node._route_control_callback(String(data='loop_off'))
     assert not node.loop_enabled
+    node._route_control_callback(String(data='loop_toggle'))
+    assert node.loop_enabled
+    node._route_control_callback(String(data='remove_last'))
+    assert node.route == ()
+    node._waypoint_callback(make_pose(1.0))
     node._route_control_callback(String(data='clear'))
     assert node.route == ()
     assert '"poses": []' in node._route_file.read_text()
+
+
+def test_remove_last_rejects_empty_route_cleanly(bridge):
+    node, _ = bridge
+    warnings = []
+    node.get_logger().warning = warnings.append
+
+    node._route_control_callback(String(data='remove_last'))
+
+    assert node.route == ()
+    assert warnings == ['Cannot remove last waypoint: route is empty']
 
 
 def test_persistence_round_trip(tmp_path):

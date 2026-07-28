@@ -12,22 +12,29 @@ Install `pynput` on the laptop, then run:
 python3 tools/keyboard_sender.py RUNNER_IP --port 49321
 ```
 
-The sender uses W for forward, S for full brake, A/D for full steering,
-Space for autonomy suppression, and `[`/`]` for 0.01 throttle-setpoint
-changes. Bracket changes occur only once per physical press. A/D together
-produce zero steering and S overrides W.
+Space is the driving hold-to-run key. While Space is held, W requests the
+selected throttle, S requests full brake, and A/D request full steering.
+Releasing Space disarms WASD and requests brake. The backtick key enables
+autonomy suppression, equivalent to controller L1. A continuous backtick hold
+expires after 30 seconds by default and requires release and re-press; override
+it with `--autonomy-hold-timeout`. `=`/`-` change the throttle setpoint by
+0.01 once per physical press. Escape clears all held-key state and requests
+brake.
+
+Route controls are F5 start, F6 stop, F7 clear, F8 loop toggle, and F9 undo
+last waypoint. These publish the corresponding command through the Pi bridge
+to `/runner/route_control`.
 
 On macOS, grant the terminal or Python launcher Input Monitoring or
-Accessibility permission. `pynput` is a global listener and does not provide
-a portable application-focus-loss event. W, A, S, D, and Space control the
-vehicle regardless of which application has focus. Kill the sender when it is
-not in use. The Pi timeout is intended to handle laptop sleep and lid closure,
-but lid-close and laptop-sleep behavior is untested.
+Accessibility permission. `pynput` capture is global regardless of window
+focus and does not provide a portable application-focus-loss event. Kill the
+sender when it is not in use. The Pi timeout is intended to handle laptop
+sleep and lid closure, but lid-close and laptop-sleep behavior is untested.
 
 ## Pi policy
 
 `keyboard_bridge` listens on UDP port 49321 by default, validates the exact
-26-byte version-one packet, applies the default 0.50 forward cap, and publishes
+27-byte version-two packet, applies the default 0.50 forward cap, and publishes
 `/teleop/keyboard_state` at 20 Hz. It marks the state invalid after 150 ms
 without a valid newer datagram. `teleop_node` independently expires a silent
 bridge state after 150 ms.
@@ -44,6 +51,6 @@ sequences, unauthorized sources, and live-session changes are rejected without
 refreshing liveness.
 
 After controller preemption, packet timeout, network loss, or laptop sleep, a
-held W cannot resume motion until W is released and pressed again. A held Space
-cannot resume autonomy suppression after timeout until it too is released and
-pressed again.
+held W cannot resume motion until W is released and pressed again. A held
+backtick cannot resume autonomy suppression after its 30-second timeout until
+it is released and pressed again.

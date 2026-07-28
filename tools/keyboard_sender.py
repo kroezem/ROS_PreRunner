@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Send global keyboard state to Runner over versioned UDP.
-
-W, A, S, D, and Space control the vehicle regardless of which application has
-focus. The sender must be killed when not in use.
-"""
+"""Send global keyboard and route-control state to Runner over UDP."""
 
 import argparse
+from collections import deque
 import math
 import secrets
 import signal
@@ -15,18 +12,29 @@ import sys
 import threading
 import time
 
-from pynput import keyboard
-
-
 MAGIC = b'RKEY'
-VERSION = 1
+VERSION = 2
 MODE_DRIVE = 0
 MODE_BRAKE = 1
 MODE_SUPPRESS = 2
-PACKET_FORMAT = '!4sBBQIff'
+ROUTE_NONE = 0
+ROUTE_START = 1
+ROUTE_STOP = 2
+ROUTE_CLEAR = 3
+ROUTE_LOOP_TOGGLE = 4
+ROUTE_REMOVE_LAST = 5
+PACKET_FORMAT = '!4sBBQIffB'
 DEFAULT_PORT = 49321
 SEND_PERIOD = 0.05
 SHUTDOWN_PACKET_COUNT = 5
+DEFAULT_AUTONOMY_HOLD_TIMEOUT = 30.0
+ROUTE_KEYS = {
+    'route_start': ROUTE_START,
+    'route_stop': ROUTE_STOP,
+    'route_clear': ROUTE_CLEAR,
+    'route_loop_toggle': ROUTE_LOOP_TOGGLE,
+    'route_remove_last': ROUTE_REMOVE_LAST,
+}
 
 
 def port_number(value):
@@ -48,6 +56,19 @@ def finite_unit(value):
         raise argparse.ArgumentTypeError('setpoint must be numeric') from error
     if not math.isfinite(result) or not 0.0 <= result <= 1.0:
         raise argparse.ArgumentTypeError('setpoint must be within [0.0, 1.0]')
+    return result
+
+
+def positive_seconds(value):
+    """Parse a finite positive duration."""
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('duration must be numeric') from error
+    if not math.isfinite(result) or result <= 0.0:
+        raise argparse.ArgumentTypeError(
+            'duration must be finite and greater than zero'
+        )
     return result
 
 
@@ -74,66 +95,101 @@ def resolve_destination(host, port):
 class KeyboardInput:
     """Thread-safe pressed-key and discrete setpoint state."""
 
-    def __init__(self, setpoint):
+    def __init__(self, setpoint, autonomy_hold_timeout):
         self.setpoint = setpoint
+        self.autonomy_hold_timeout = autonomy_hold_timeout
         self.pressed = set()
+        self.route_commands = deque()
+        self.autonomy_pressed_at = None
+        self.autonomy_expired = False
         self.lock = threading.Lock()
 
-    @staticmethod
-    def token(key):
-        if key == keyboard.Key.space:
-            return 'space'
-        try:
-            character = key.char
-        except AttributeError:
-            return None
-        return character.lower() if character else None
-
-    def press(self, key):
-        token = self.token(key)
-        if token not in {'w', 's', 'a', 'd', '[', ']', 'space'}:
+    def press(self, token, now=None):
+        """Apply one independent normalized keydown event."""
+        if token == 'escape':
+            self.clear()
             return
+        valid = {
+            'w', 's', 'a', 'd', 'space', '`', '=', '-',
+            *ROUTE_KEYS,
+        }
+        if token not in valid:
+            return
+        timestamp = time.monotonic() if now is None else now
         with self.lock:
             if token in self.pressed:
                 return
             self.pressed.add(token)
-            if token == '[':
+            if token == '-':
                 self.setpoint = round(max(0.0, self.setpoint - 0.01), 2)
                 print(
                     f'\rRequested throttle setpoint: {self.setpoint:.2f}  ',
                     end='',
                     flush=True,
                 )
-            elif token == ']':
+            elif token == '=':
                 self.setpoint = round(min(1.0, self.setpoint + 0.01), 2)
                 print(
                     f'\rRequested throttle setpoint: {self.setpoint:.2f}  ',
                     end='',
                     flush=True,
                 )
+            elif token == '`':
+                self.autonomy_pressed_at = timestamp
+                self.autonomy_expired = False
+            elif token in ROUTE_KEYS:
+                self.route_commands.append(ROUTE_KEYS[token])
 
-    def release(self, key):
-        token = self.token(key)
-        if token is None:
-            return
+    def release(self, token):
+        """Apply one independent normalized keyup event."""
         with self.lock:
             self.pressed.discard(token)
+            if token == '`':
+                self.autonomy_pressed_at = None
+                self.autonomy_expired = False
 
-    def state(self):
+    def clear(self):
+        """Clear every held key and immediately return to brake state."""
+        with self.lock:
+            self.pressed.clear()
+            self.autonomy_pressed_at = None
+            self.autonomy_expired = False
+
+    def state(self, now=None):
+        """Return one packet state and consume at most one route command."""
+        timestamp = time.monotonic() if now is None else now
         with self.lock:
             pressed = set(self.pressed)
             setpoint = self.setpoint
-        brake = 's' in pressed
-        suppress = 'space' in pressed
-        mode = MODE_BRAKE if brake else MODE_DRIVE
+            if (
+                '`' in pressed
+                and self.autonomy_pressed_at is not None
+                and timestamp - self.autonomy_pressed_at
+                >= self.autonomy_hold_timeout
+            ):
+                self.autonomy_expired = True
+            suppress = '`' in pressed and not self.autonomy_expired
+            route_command = (
+                self.route_commands.popleft()
+                if self.route_commands else ROUTE_NONE
+            )
         if suppress:
-            mode |= MODE_SUPPRESS
-        throttle = setpoint if 'w' in pressed and not brake else 0.0
+            return MODE_SUPPRESS, 0.0, 0.0, route_command
+        if 'space' not in pressed or 's' in pressed:
+            return MODE_BRAKE, 0.0, 0.0, route_command
+        throttle = setpoint if 'w' in pressed else 0.0
         steering = float('a' in pressed) - float('d' in pressed)
-        return mode, throttle, steering
+        return MODE_DRIVE, throttle, steering, route_command
 
 
-def packet(session_id, sequence, mode, throttle, steering):
+def packet(
+    session_id,
+    sequence,
+    mode,
+    throttle,
+    steering,
+    route_command=ROUTE_NONE,
+):
     """Pack one deterministic protocol version-one datagram."""
     return struct.pack(
         PACKET_FORMAT,
@@ -144,6 +200,7 @@ def packet(session_id, sequence, mode, throttle, steering):
         sequence,
         throttle,
         steering,
+        route_command,
     )
 
 
@@ -169,13 +226,22 @@ def main(argv=None):
         default=0.30,
         help='initial requested W throttle (default: 0.30)',
     )
+    parser.add_argument(
+        '--autonomy-hold-timeout',
+        type=positive_seconds,
+        default=DEFAULT_AUTONOMY_HOLD_TIMEOUT,
+        help='maximum continuous ` hold in seconds (default: 30)',
+    )
     args = parser.parse_args(argv)
     try:
         destination = resolve_destination(args.host, args.port)
     except ValueError as error:
         parser.error(str(error))
 
-    input_state = KeyboardInput(args.initial_throttle)
+    input_state = KeyboardInput(
+        args.initial_throttle,
+        args.autonomy_hold_timeout,
+    )
     stop = threading.Event()
     session_id = 0
     while session_id == 0:
@@ -187,9 +253,30 @@ def main(argv=None):
         stop.set()
 
     previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
+    from pynput import keyboard
+
+    special_keys = {
+        keyboard.Key.space: 'space',
+        keyboard.Key.esc: 'escape',
+        keyboard.Key.f5: 'route_start',
+        keyboard.Key.f6: 'route_stop',
+        keyboard.Key.f7: 'route_clear',
+        keyboard.Key.f8: 'route_loop_toggle',
+        keyboard.Key.f9: 'route_remove_last',
+    }
+
+    def token(key):
+        if key in special_keys:
+            return special_keys[key]
+        try:
+            character = key.char
+        except AttributeError:
+            return None
+        return character.lower() if character else None
+
     listener = keyboard.Listener(
-        on_press=input_state.press,
-        on_release=input_state.release,
+        on_press=lambda key: input_state.press(token(key)),
+        on_release=lambda key: input_state.release(token(key)),
     )
     listener.start()
     listener.wait()
@@ -208,11 +295,19 @@ def main(argv=None):
         f'session={session_id}; requested throttle={args.initial_throttle:.2f}'
     )
     print(
-        'WARNING: W, A, S, D, and Space control the vehicle regardless of '
-        'which application has focus.'
+        'WARNING: keyboard capture is GLOBAL regardless of window focus.'
     )
     print('WARNING: The sender must be killed when not in use.')
-    print('W=forward S=brake A/D=steer Space=suppress [/] adjust')
+    print(
+        'Space=arm/release=brake; while armed W=throttle S=brake '
+        'A/D=steer; `=autonomy enable '
+        f'(expires after {args.autonomy_hold_timeout:g}s); '
+        '=/-=setpoint up/down; Escape=clear held state and brake'
+    )
+    print(
+        'Routes: F5=start F6=stop F7=clear F8=loop toggle '
+        'F9=undo last waypoint'
+    )
     exit_code = 0
     try:
         next_send = time.monotonic()
@@ -224,7 +319,7 @@ def main(argv=None):
                 )
                 exit_code = 1
                 break
-            mode, throttle, steering = input_state.state()
+            mode, throttle, steering, route_command = input_state.state()
             udp_socket.sendto(
                 packet(
                     session_id,
@@ -232,6 +327,7 @@ def main(argv=None):
                     mode,
                     throttle,
                     steering,
+                    route_command,
                 ),
                 destination,
             )
@@ -254,6 +350,7 @@ def main(argv=None):
                         MODE_BRAKE,
                         0.0,
                         0.0,
+                        ROUTE_NONE,
                     ),
                     destination,
                 )

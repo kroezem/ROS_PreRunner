@@ -3,14 +3,17 @@ import struct
 
 import pytest
 
-from runner_teleop.keyboard_bridge import _validate_configuration
 from runner_teleop.keyboard_bridge import KeyboardReceiver
+from runner_teleop.keyboard_bridge import ROUTE_COMMAND_NAMES
+from runner_teleop.keyboard_bridge import _validate_configuration
 from runner_teleop.keyboard_protocol import decode_packet
 from runner_teleop.keyboard_protocol import MAGIC
 from runner_teleop.keyboard_protocol import MODE_BRAKE_SUPPRESS
 from runner_teleop.keyboard_protocol import PACKET_FORMAT
 from runner_teleop.keyboard_protocol import PACKET_SIZE
 from runner_teleop.keyboard_protocol import PacketError
+from runner_teleop.keyboard_protocol import ROUTE_LOOP_TOGGLE
+from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
 from runner_teleop.keyboard_protocol import VERSION
 
 
@@ -23,6 +26,7 @@ def packet(
     sequence=1,
     throttle=0.30,
     steering=0.0,
+    route_command=0,
 ):
     return struct.pack(
         PACKET_FORMAT,
@@ -33,11 +37,12 @@ def packet(
         sequence,
         throttle,
         steering,
+        route_command,
     )
 
 
 def test_packet_contract_is_exact_and_mode_combinations_are_supported():
-    assert PACKET_SIZE == 26
+    assert PACKET_SIZE == 27
 
     decoded = decode_packet(
         packet(
@@ -45,6 +50,7 @@ def test_packet_contract_is_exact_and_mode_combinations_are_supported():
             sequence=0xffffffff,
             throttle=1.0,
             steering=-1.0,
+            route_command=ROUTE_LOOP_TOGGLE,
         )
     )
 
@@ -52,6 +58,12 @@ def test_packet_contract_is_exact_and_mode_combinations_are_supported():
     assert decoded.sequence == 0xffffffff
     assert decoded.throttle == 1.0
     assert decoded.steering == -1.0
+    assert decoded.route_command == ROUTE_LOOP_TOGGLE
+
+
+def test_route_command_codes_map_to_bridge_commands():
+    assert ROUTE_COMMAND_NAMES[ROUTE_LOOP_TOGGLE] == 'loop_toggle'
+    assert ROUTE_COMMAND_NAMES[ROUTE_REMOVE_LAST] == 'remove_last'
 
 
 @pytest.mark.parametrize(
@@ -60,7 +72,7 @@ def test_packet_contract_is_exact_and_mode_combinations_are_supported():
         packet()[:-1],
         packet() + b'x',
         packet(magic=b'NOPE'),
-        packet(version=2),
+        packet(version=1),
         packet(mode=4),
         packet(session=0),
         packet(throttle=math.nan),
@@ -70,6 +82,7 @@ def test_packet_contract_is_exact_and_mode_combinations_are_supported():
         packet(steering=math.nan),
         packet(steering=-1.01),
         packet(steering=1.01),
+        packet(route_command=6),
     ],
 )
 def test_malformed_and_invalid_packets_are_rejected(data):

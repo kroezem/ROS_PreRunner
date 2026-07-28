@@ -15,7 +15,14 @@ from runner_teleop.keyboard_protocol import is_newer_sequence
 from runner_teleop.keyboard_protocol import KeyboardPacket
 from runner_teleop.keyboard_protocol import PACKET_SIZE
 from runner_teleop.keyboard_protocol import PacketError
+from runner_teleop.keyboard_protocol import ROUTE_CLEAR
+from runner_teleop.keyboard_protocol import ROUTE_LOOP_TOGGLE
+from runner_teleop.keyboard_protocol import ROUTE_NONE
+from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
+from runner_teleop.keyboard_protocol import ROUTE_START
+from runner_teleop.keyboard_protocol import ROUTE_STOP
 from runner_teleop.keyboard_protocol import sequence_delta
+from std_msgs.msg import String
 
 
 DEFAULT_PORT = 49321
@@ -23,6 +30,13 @@ DEFAULT_TIMEOUT = 0.15
 DEFAULT_SPEED_CAP = 0.50
 DEFAULT_PUBLICATION_RATE = 20.0
 WARNING_PERIOD = 2.0
+ROUTE_COMMAND_NAMES = {
+    ROUTE_START: 'start',
+    ROUTE_STOP: 'stop',
+    ROUTE_CLEAR: 'clear',
+    ROUTE_LOOP_TOGGLE: 'loop_toggle',
+    ROUTE_REMOVE_LAST: 'remove_last',
+}
 
 
 @dataclass(frozen=True)
@@ -186,6 +200,11 @@ class KeyboardBridge(Node):
             '/teleop/keyboard_state',
             10,
         )
+        self._route_control_pub = self.create_publisher(
+            String,
+            '/runner/route_control',
+            10,
+        )
         self.create_timer(0.005, self._receive)
         self.create_timer(0.005, self._publish_timeout_transition)
         self.create_timer(1.0 / publication_rate, self._publish)
@@ -249,6 +268,15 @@ class KeyboardBridge(Node):
                     f'applied={accepted.throttle:.3f}',
                     now,
                 )
+            if (
+                accepted is not None
+                and accepted.packet.route_command != ROUTE_NONE
+            ):
+                self._route_control_pub.publish(String(
+                    data=ROUTE_COMMAND_NAMES[
+                        accepted.packet.route_command
+                    ]
+                ))
 
     def _publish(self) -> None:
         now = time.monotonic()

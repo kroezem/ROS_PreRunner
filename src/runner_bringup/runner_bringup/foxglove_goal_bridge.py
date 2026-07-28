@@ -210,6 +210,21 @@ class FoxgloveGoalBridge(Node):
         elif command == 'loop_off':
             self._loop_enabled = False
             self._persist_route()
+        elif command == 'loop_toggle':
+            self._loop_enabled = not self._loop_enabled
+            self._persist_route()
+        elif command == 'remove_last':
+            if not self._route:
+                self.get_logger().warning(
+                    'Cannot remove last waypoint: route is empty'
+                )
+                return
+            self._route.pop()
+            self._persist_route()
+            self._publish_route()
+            self.get_logger().info(
+                f'Last route waypoint removed; count={len(self._route)}'
+            )
         else:
             self.get_logger().warning(
                 f'Rejecting unknown route command {command!r}'
