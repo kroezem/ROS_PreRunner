@@ -110,8 +110,8 @@ local_costmap:
           inf_is_valid: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        inflation_radius: 0.30
-        cost_scaling_factor: 5.0
+        inflation_radius: 0.15
+        cost_scaling_factor: 10.0
 
 global_costmap:
   global_costmap:
