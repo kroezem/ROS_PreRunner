@@ -8,6 +8,7 @@
   <license>Apache-2.0</license>
 
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>rclpy</depend>
   <depend>runner_interfaces</depend>
   <depend>std_msgs</depend>

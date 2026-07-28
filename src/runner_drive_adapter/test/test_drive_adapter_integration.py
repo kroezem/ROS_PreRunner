@@ -17,12 +17,13 @@
 import time
 
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from runner_drive_adapter.drive_adapter_node import DriveAdapterNode
 from runner_interfaces.msg import EncoderState
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String, UInt32
 
 
 def _spin_for(executor, duration):
@@ -41,6 +42,10 @@ def test_graph_ownership_staleness_and_diagnostics():
 
     commands = []
     states = []
+    assist_states = []
+    boosts = []
+    event_counts = []
+    exit_reasons = []
     probe.create_subscription(
         Twist,
         '/cmd_vel_auto',
@@ -53,17 +58,39 @@ def test_graph_ownership_staleness_and_diagnostics():
         states.append,
         10,
     )
+    probe.create_subscription(
+        String, '/stall_assist/state', assist_states.append, 10
+    )
+    probe.create_subscription(
+        Float32, '/stall_assist/applied_boost', boosts.append, 10
+    )
+    probe.create_subscription(
+        UInt32, '/stall_assist/event_count', event_counts.append, 10
+    )
+    probe.create_subscription(
+        String,
+        '/stall_assist/last_exit_reason',
+        exit_reasons.append,
+        10,
+    )
     nav_pub = probe.create_publisher(Twist, '/cmd_vel_nav', 10)
     encoder_pub = probe.create_publisher(
         EncoderState,
         '/wheel/encoder_state',
         10,
     )
+    motion_pub = probe.create_publisher(
+        Odometry, '/odometry/filtered', 10
+    )
 
     try:
         _spin_for(executor, 0.15)
         assert commands == []
         assert any('reason=no_command' in state.data for state in states)
+        assert assist_states
+        assert boosts
+        assert event_counts
+        assert exit_reasons
         assert len(probe.get_publishers_info_by_topic('/cmd_vel_auto')) == 1
         cmd_vel_publishers = probe.get_publishers_info_by_topic('/cmd_vel')
         assert not any(
@@ -85,7 +112,14 @@ def test_graph_ownership_staleness_and_diagnostics():
             for endpoint in encoder_subscriptions
         ) == 1
 
-        encoder_pub.publish(EncoderState(stationary=False, edge_rate=2.0))
+        encoder_pub.publish(EncoderState(
+            stationary=False,
+            edge_rate=2.0,
+            pending_direction=1,
+        ))
+        motion = Odometry()
+        motion.twist.twist.linear.x = 0.20
+        motion_pub.publish(motion)
         command = Twist()
         command.linear.x = 0.20
         nav_pub.publish(command)
@@ -94,6 +128,8 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert commands[-1].linear.x > 0.0
         assert commands[-1].angular.z == 0.0
         assert any('mode=forward' in state.data for state in states)
+        assert assist_states[-1].data == 'NORMAL'
+        assert boosts[-1].data == 0.0
 
         _spin_for(executor, 0.30)
         commands.clear()

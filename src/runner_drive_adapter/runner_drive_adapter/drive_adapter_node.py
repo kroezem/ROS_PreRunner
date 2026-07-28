@@ -12,28 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Adapt physical Nav2 Twist commands to normalized Runner drive commands.
-
-``/cmd_vel_nav`` is ``geometry_msgs/msg/Twist`` with ``linear.x`` in m/s and
-``angular.z`` in rad/s. ``/cmd_vel_auto`` is ``geometry_msgs/msg/Twist`` with
-``linear.x`` as normalized throttle/brake and ``angular.z`` as normalized
-steering. Stage 2 connects this output to ``motor_node`` only through
-``twist_mux`` and its normalized ``/cmd_vel`` output.
-"""
+"""ROS interface for Runner SI conversion and bounded stall assistance."""
 
 import time
 
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from runner_drive_adapter.drive_adapter import (
-    AdapterConfig,
-    DriveAdapter,
-)
+from runner_drive_adapter.drive_adapter import AdapterConfig, DriveAdapter
 from runner_interfaces.msg import EncoderState
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String, UInt32
 
 
 WARNING_THROTTLE_SECONDS = 5.0
@@ -47,7 +37,7 @@ class WarningThrottle:
         self._last: dict[str, float] = {}
 
     def allows(self, key: str, now: float) -> bool:
-        """Return true for the first event and once per configured interval."""
+        """Return true for the first event and once per interval."""
         previous = self._last.get(key)
         if previous is not None and now - previous < self._interval:
             return False
@@ -56,20 +46,41 @@ class WarningThrottle:
 
 
 class DriveAdapterNode(Node):
-    """ROS interface for the deterministic drive-adapter core."""
+    """ROS wrapper around the deterministic drive-adapter core."""
 
     def __init__(self):
         super().__init__('drive_adapter')
         defaults = AdapterConfig()
-        self.declare_parameter('wheelbase', defaults.wheelbase)
-        self.declare_parameter(
+        names = (
+            'wheelbase',
             'max_steering_angle',
-            defaults.max_steering_angle,
-        )
-        self.declare_parameter(
             'steering_min_speed',
-            defaults.steering_min_speed,
+            'minimum_moving_speed',
+            'floor_promotion_min_ratio',
+            'stall_assist_enabled',
+            'under_speed_ratio',
+            'under_speed_absolute_ceiling',
+            'under_speed_qualification_sec',
+            'command_stability_tolerance',
+            'ramp_rate_per_sec',
+            'boost_throttle_ceiling',
+            'maximum_assist_duration_sec',
+            'motion_confirm_speed',
+            'motion_confirm_duration_sec',
+            'motion_hold_duration_sec',
+            'decay_rate_per_sec',
+            'overspeed_margin',
+            'wheelspin_edge_rate_threshold',
+            'wheelspin_vehicle_speed_threshold',
+            'wheelspin_qualification_sec',
+            'cooldown_duration_sec',
+            'motion_signal_timeout_sec',
+            'encoder_state_timeout_sec',
+            'cmd_vel_nav_timeout',
+            'publication_rate',
         )
+        for name in names:
+            self.declare_parameter(name, getattr(defaults, name))
         self.declare_parameter(
             'throttle_breakpoints',
             list(defaults.throttle_breakpoints),
@@ -78,98 +89,45 @@ class DriveAdapterNode(Node):
             'speed_breakpoints',
             list(defaults.speed_breakpoints),
         )
-        self.declare_parameter(
-            'minimum_moving_speed',
-            defaults.minimum_moving_speed,
+        values = {name: self.get_parameter(name).value for name in names}
+        values['throttle_breakpoints'] = tuple(
+            self.get_parameter('throttle_breakpoints').value
         )
-        self.declare_parameter(
-            'floor_promotion_min_ratio',
-            defaults.floor_promotion_min_ratio,
+        values['speed_breakpoints'] = tuple(
+            self.get_parameter('speed_breakpoints').value
         )
-        self.declare_parameter(
-            'breakaway_throttle',
-            defaults.breakaway_throttle,
-        )
-        self.declare_parameter(
-            'breakaway_timeout',
-            defaults.breakaway_timeout,
-        )
-        self.declare_parameter(
-            'motion_confirm_edge_rate',
-            defaults.motion_confirm_edge_rate,
-        )
-        self.declare_parameter(
-            'cmd_vel_nav_timeout',
-            defaults.cmd_vel_nav_timeout,
-        )
-        self.declare_parameter(
-            'encoder_state_timeout',
-            defaults.encoder_state_timeout,
-        )
-        self.declare_parameter(
-            'publication_rate',
-            defaults.publication_rate,
-        )
-
         try:
-            config = AdapterConfig(
-                wheelbase=self._parameter('wheelbase'),
-                max_steering_angle=self._parameter(
-                    'max_steering_angle'
-                ),
-                steering_min_speed=self._parameter(
-                    'steering_min_speed'
-                ),
-                throttle_breakpoints=tuple(
-                    self._parameter('throttle_breakpoints')
-                ),
-                speed_breakpoints=tuple(
-                    self._parameter('speed_breakpoints')
-                ),
-                minimum_moving_speed=self._parameter(
-                    'minimum_moving_speed'
-                ),
-                floor_promotion_min_ratio=self._parameter(
-                    'floor_promotion_min_ratio'
-                ),
-                breakaway_throttle=self._parameter(
-                    'breakaway_throttle'
-                ),
-                breakaway_timeout=self._parameter('breakaway_timeout'),
-                motion_confirm_edge_rate=self._parameter(
-                    'motion_confirm_edge_rate'
-                ),
-                cmd_vel_nav_timeout=self._parameter(
-                    'cmd_vel_nav_timeout'
-                ),
-                encoder_state_timeout=self._parameter(
-                    'encoder_state_timeout'
-                ),
-                publication_rate=self._parameter('publication_rate'),
-            )
+            config = AdapterConfig(**values)
         except (TypeError, ValueError) as error:
-            self.get_logger().error(
-                f'Invalid drive-adapter parameters: {error}'
-            )
-            raise ValueError(
-                f'Invalid drive-adapter parameters: {error}'
-            ) from None
+            message = f'Invalid drive-adapter parameters: {error}'
+            self.get_logger().error(message)
+            raise ValueError(message) from None
 
         self.config = config
         self.adapter = DriveAdapter(config)
         self._warnings = WarningThrottle()
-        self._last_encoder_stale = False
+        self._shutdown_recorded = False
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto', 10)
         self._state_pub = self.create_publisher(
-            String,
-            '/drive_adapter/state',
-            10,
+            String, '/drive_adapter/state', 10
+        )
+        self._assist_state_pub = self.create_publisher(
+            String, '/stall_assist/state', 10
+        )
+        self._boost_pub = self.create_publisher(
+            Float32, '/stall_assist/applied_boost', 10
+        )
+        self._event_count_pub = self.create_publisher(
+            UInt32, '/stall_assist/event_count', 10
+        )
+        self._exit_reason_pub = self.create_publisher(
+            String, '/stall_assist/last_exit_reason', 10
         )
         self.create_subscription(
-            Twist,
-            '/cmd_vel_nav',
-            self._on_command,
-            10,
+            Twist, '/cmd_vel_nav', self._on_command, 10
+        )
+        self.create_subscription(
+            Odometry, '/odometry/filtered', self._on_motion, 10
         )
         self.create_subscription(
             EncoderState,
@@ -180,9 +138,6 @@ class DriveAdapterNode(Node):
         self.create_timer(1.0 / config.publication_rate, self._publish)
         self._log_startup()
 
-    def _parameter(self, name: str):
-        return self.get_parameter(name).value
-
     def _on_command(self, message: Twist) -> None:
         self.adapter.update_command(
             message.linear.x,
@@ -190,26 +145,25 @@ class DriveAdapterNode(Node):
             time.monotonic(),
         )
 
+    def _on_motion(self, message: Odometry) -> None:
+        self.adapter.update_motion(
+            message.twist.twist.linear.x,
+            time.monotonic(),
+        )
+
     def _on_encoder(self, message: EncoderState) -> None:
         self.adapter.update_encoder(
             message.stationary,
             message.edge_rate,
+            message.pending_direction,
             time.monotonic(),
         )
 
     def _publish(self) -> None:
         now = time.monotonic()
         decision = self.adapter.step(now)
-        self._state_pub.publish(String(data=decision.diagnostic_text()))
-        for event in self.adapter.take_events():
-            if event == 'started':
-                self.get_logger().info('Breakaway kick started')
-            else:
-                reason = event.split(':', 1)[1]
-                self.get_logger().info(
-                    f'Breakaway kick ended: {reason}'
-                )
-
+        self._publish_diagnostics(decision)
+        self._log_events()
         self._warn_for_decision(decision, now)
         if not decision.publish_command:
             return
@@ -218,35 +172,65 @@ class DriveAdapterNode(Node):
         output.angular.z = decision.normalized_steering
         self._cmd_pub.publish(output)
 
+    def _publish_diagnostics(self, decision) -> None:
+        self._state_pub.publish(String(data=decision.diagnostic_text()))
+        self._assist_state_pub.publish(
+            String(data=decision.assist_state)
+        )
+        self._boost_pub.publish(
+            Float32(data=float(decision.applied_boost))
+        )
+        self._event_count_pub.publish(
+            UInt32(data=decision.event_count)
+        )
+        self._exit_reason_pub.publish(
+            String(data=decision.last_exit_reason)
+        )
+
+    def _log_events(self) -> None:
+        for event in self.adapter.take_transition_events():
+            if event.startswith('start:'):
+                self.get_logger().info(
+                    f'Stall assist started: {event.removeprefix("start:")}'
+                )
+            else:
+                self.get_logger().info(
+                    'Stall assist state: '
+                    f'{event.removeprefix("transition:")}'
+                )
+        for summary in self.adapter.take_event_summaries():
+            self.get_logger().info(
+                f'Stall assist summary: {summary.diagnostic_text()}'
+            )
+
     def _warn_for_decision(self, decision, now: float) -> None:
-        reason = decision.reason
         command = self.adapter.latest_command
         if command is None:
             return
         speed, yaw_rate = command
-        if reason == 'negative_speed':
+        if decision.reason == 'negative_speed':
             self._warning(
-                reason,
+                'negative_speed',
                 f'Rejecting negative speed {speed:.9f} m/s; full brake',
                 now,
             )
-        elif reason == 'nonfinite_input':
+        elif decision.reason == 'nonfinite_input':
             self._error(
-                reason,
+                'nonfinite_input',
                 'Rejecting non-finite /cmd_vel_nav input; full brake',
                 now,
             )
-        elif reason == 'above_table_clamped':
+        elif decision.reason == 'above_table_clamped':
             self._warning(
-                reason,
+                'above_table_clamped',
                 f'Requested speed {speed:.9f} m/s exceeds table maximum '
                 f'{self.config.speed_breakpoints[-1]:.9f} m/s; clamping',
                 now,
             )
-        elif reason == 'steering_infeasible':
+        elif decision.reason == 'steering_infeasible':
             curvature = yaw_rate / speed
             self._warning(
-                reason,
+                'steering_infeasible',
                 'Rejecting infeasible steering request: '
                 f'v={speed:.9f} m/s omega={yaw_rate:.9f} rad/s '
                 f'curvature={curvature:.12f} 1/m '
@@ -255,15 +239,21 @@ class DriveAdapterNode(Node):
                 now,
             )
         if (
-            decision.publish_command
-            and decision.mode == 'forward'
-            and self.adapter.encoder_is_stale(now)
+            decision.mode == 'forward'
+            and decision.assist_state in {'NORMAL', 'QUALIFYING'}
         ):
-            self._warning(
-                'encoder_stale',
-                'Encoder state is stale; breakaway kick is suppressed',
-                now,
-            )
+            if self.adapter.motion_is_stale(now):
+                self._warning(
+                    'motion_signal_stale',
+                    'EKF motion signal is stale; stall assist suppressed',
+                    now,
+                )
+            elif self.adapter.encoder_is_stale(now):
+                self._warning(
+                    'encoder_stale',
+                    'Encoder state is stale; stall assist suppressed',
+                    now,
+                )
 
     def _warning(self, key: str, message: str, now: float) -> None:
         if self._warnings.allows(key, now):
@@ -274,42 +264,47 @@ class DriveAdapterNode(Node):
             self.get_logger().error(message)
 
     def _log_startup(self) -> None:
-        config = self.config
+        c = self.config
         self.get_logger().info(
             'drive_adapter ready: '
-            f'wheelbase={config.wheelbase:.6f} m, '
-            f'max_steering_angle={config.max_steering_angle:.6f} rad, '
-            f'maximum_curvature={config.maximum_curvature:.12f} 1/m, '
-            f'steering_min_speed={config.steering_min_speed:.6f} m/s'
+            f'wheelbase={c.wheelbase:.6f} m, '
+            f'max_steering_angle={c.max_steering_angle:.6f} rad, '
+            f'maximum_curvature={c.maximum_curvature:.12f} 1/m'
         )
         self.get_logger().info(
-            'Drive table: '
-            f'speeds={list(config.speed_breakpoints)} m/s, '
-            f'throttles={list(config.throttle_breakpoints)}, '
-            f'maximum_supported_speed='
-            f'{config.speed_breakpoints[-1]:.6f} m/s'
+            'Drive table unchanged: '
+            f'speeds={list(c.speed_breakpoints)} m/s, '
+            f'throttles={list(c.throttle_breakpoints)}, '
+            f'maximum_supported_speed={c.speed_breakpoints[-1]:.6f} m/s'
         )
         self.get_logger().info(
-            'Floor and kick: '
-            f'minimum_moving_speed={config.minimum_moving_speed:.6f} m/s, '
-            f'floor_promotion_min_ratio='
-            f'{config.floor_promotion_min_ratio:.6f}, '
-            f'promotion_boundary={config.promotion_threshold:.6f} m/s, '
-            f'breakaway_throttle={config.breakaway_throttle:.6f}, '
-            f'breakaway_timeout={config.breakaway_timeout:.6f} s'
+            'Stall assist: primary_motion_signal=ekf_velocity, '
+            f'enabled={c.stall_assist_enabled}, '
+            f'under_speed_ratio={c.under_speed_ratio:.6f}, '
+            f'under_speed_absolute_ceiling='
+            f'{c.under_speed_absolute_ceiling:.6f} m/s, '
+            f'qualification={c.under_speed_qualification_sec:.6f} s, '
+            f'ramp_rate={c.ramp_rate_per_sec:.6f}/s, '
+            f'ceiling={c.boost_throttle_ceiling:.6f}, '
+            f'maximum_duration={c.maximum_assist_duration_sec:.6f} s'
         )
-        self.get_logger().info(
-            'Timing and encoder: '
-            f'publication_rate={config.publication_rate:.6f} Hz, '
-            f'cmd_vel_nav_timeout={config.cmd_vel_nav_timeout:.6f} s, '
-            f'encoder_state_timeout={config.encoder_state_timeout:.6f} s, '
-            f'motion_confirm_edge_rate='
-            f'{config.motion_confirm_edge_rate:.6f} edges/s'
-        )
+
+    def record_shutdown(self) -> None:
+        """Record a bounded shutdown exit exactly once."""
+        if self._shutdown_recorded:
+            return
+        self._shutdown_recorded = True
+        self.adapter.shutdown(time.monotonic())
+        self._log_events()
+
+    def destroy_node(self):
+        """End any active event without publishing another motor command."""
+        self.record_shutdown()
+        return super().destroy_node()
 
 
 def main():
-    """Run the Stage 1 drive adapter."""
+    """Run the drive adapter."""
     rclpy.init()
     node = None
     try:

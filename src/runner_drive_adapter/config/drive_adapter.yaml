@@ -13,15 +13,28 @@ drive_adapter:
 
     minimum_moving_speed: 0.126
     floor_promotion_min_ratio: 0.50
-    breakaway_throttle: 0.380
-    breakaway_timeout: 0.75
 
-    # EncoderState.edge_rate is unsigned physical edges/s. One sigma of the
-    # measured speed noise is 0.0034 / 0.010282 = 0.331 edges/s. This 1.0
-    # edges/s threshold is approximately 3 sigma, equals 0.010282 m/s, and is
-    # well below the 0.126 m/s minimum moving speed (12.254 edges/s).
-    motion_confirm_edge_rate: 1.0
-    encoder_state_timeout: 0.25
+    # Bounded terrain assist. EKF body-forward velocity is primary; encoder
+    # edge rate and pending command direction are the wheelspin cross-check.
+    stall_assist_enabled: true
+    under_speed_ratio: 0.40
+    under_speed_absolute_ceiling: 0.10
+    under_speed_qualification_sec: 0.30
+    command_stability_tolerance: 0.02
+    ramp_rate_per_sec: 0.10
+    boost_throttle_ceiling: 0.50
+    maximum_assist_duration_sec: 1.50
+    motion_confirm_speed: 0.06
+    motion_confirm_duration_sec: 0.20
+    motion_hold_duration_sec: 0.30
+    decay_rate_per_sec: 0.15
+    overspeed_margin: 0.02
+    wheelspin_edge_rate_threshold: 1.0
+    wheelspin_vehicle_speed_threshold: 0.02
+    wheelspin_qualification_sec: 0.25
+    cooldown_duration_sec: 0.50
+    motion_signal_timeout_sec: 0.25
+    encoder_state_timeout_sec: 0.25
 
     cmd_vel_nav_timeout: 0.25
     publication_rate: 20.0

@@ -89,6 +89,17 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     )
 
 
+def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
+    """Global cost shaping widens planning space without reducing clearance."""
+    global_params = _params()['global_costmap']['global_costmap'][
+        'ros__parameters'
+    ]
+    inflation = global_params['inflation_layer']
+
+    assert inflation['inflation_radius'] == 0.30
+    assert inflation['cost_scaling_factor'] == 10.0
+
+
 def test_behavior_tree_is_minimal_and_forward_only():
     """The explicit tree plans once, follows, and has no motion recovery."""
     root = ET.parse(BT_PATH).getroot()

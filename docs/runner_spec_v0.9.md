@@ -203,7 +203,9 @@ Depth 4 measured at 0.313 m/s gives σ = 0.0034 m/s. Depth 8 adds ~2% smoothing 
 
 **Magnitude is unreliable under wheelspin.** Measured wheel/EKF speed ratio while moving: p50 1.01, p90 2.04, p99 4.61; 22.0% of moving samples exceed 1.5×, 24.4% fall below 0.7×. `/wheel/odom` is **not** an EKF velocity source.
 
-**Consumers.** `edge_rate` (unsigned) → speed control. `stationary` → drive-adapter breakaway kick (§4.15) and a possible future zero-velocity update. The D-34 ESC handshake consumer was deleted by race mode.
+**Consumers.** `edge_rate` and `pending_direction` → drive-adapter
+wheelspin cross-check (§4.15). A possible future zero-velocity update remains
+deferred. The D-34 ESC handshake consumer was deleted by race mode.
 
 ### 4.7–4.9 RF2O, covariance, wheel odometry
 
@@ -315,11 +317,9 @@ Nav2 → /cmd_vel_nav (SI) → drive_adapter → /cmd_vel_auto (normalized) → 
 
 The measured 0.370 → 0.209 m/s point is **excluded** as a single sample with σ = 0.094 m/s; 0.360 was measured twice at 0.229 and 0.237. Requests above 0.290 m/s clamp to 0.380.
 
-**Breakaway is direction-dependent.** In one direction nothing below 0.380 started the car from rest; in the opposite direction 0.340 did. Three confounded causes (floor slope, drivetrain warm-up, sweep order) could not be separated. `breakaway_throttle = 0.380` is the worst case observed and is conservative by construction.
+**Stage 4 terrain assist.** The old 0.380 breakaway kick added no torque at the 0.290 m/s table maximum, where feedforward was already 0.380. It is replaced by one bounded `IDLE → NORMAL → QUALIFYING → RAMPING → HOLDING → DECAYING → COOLDOWN` state machine. It ramps from feedforward at 0.10 normalized throttle/s to at most 0.50, holds confirmed motion for 0.30 s, decays at 0.15/s, limits the complete elevated event to 1.50 s, and prevents re-arm for 0.50 s.
 
-**Parameters:** `steering_min_speed` 0.05 m/s; `minimum_moving_speed` 0.126 m/s; `floor_promotion_min_ratio` 0.50 (promotion band 0.063–0.126 m/s); `breakaway_throttle` 0.380; `breakaway_timeout` 0.75 s; `motion_confirm_edge_rate` 1.0 edges/s (≈3× the 0.331 edges/s speed-noise equivalent); `cmd_vel_nav_timeout` 0.25 s; `encoder_state_timeout` 0.25 s; 20 Hz publication.
-
-**Breakaway kick** is gated on `/wheel/encoder_state.stationary`, ends on motion confirmation or timeout, and **re-arms whenever `stationary` transitions to false** — so a mid-path stall gets a fresh kick, while a vehicle that never moves gets exactly one.
+**Motion evidence.** `/odometry/filtered.twist.twist.linear.x` is primary vehicle translation. Stage 4 stall noise was −0.0096 to 0.0330 m/s while genuine motion exceeded 0.06 m/s continuously for 0.266 s. Encoder edge rate and commanded direction cross-check wheelspin. Stale EKF or encoder data cannot authorize boost. Full evidence, parameters, diagnostics, and procedures are in `docs/stall_assist.md`.
 
 **Stale input produces silence, not brake.** Publishing brake on stale input would keep commands flowing to `/cmd_vel` and prevent the motor watchdog (D-09) from firing, masking a dead Nav2 from the mechanism designated as primary safety.
 
@@ -487,6 +487,7 @@ Append-only. D-01…D-40 unchanged (v0.5–v0.8).
 | D-55 | **Drive adapter owns SI-to-normalized conversion.** `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized). `motor_node`'s contract is unchanged. Throttle is feedforward-only from a measured lookup table. | Nav2 and `motor_node` use different units on the same message type — the live instance of D-38, producing ~1.7× oversteer at 0.5 rad/s and 1 m/s with speed-dependent error. Explicit topic names make the boundary visible. Feedforward avoids integrator wind-up and keeps failure deterministic; a PID, if Stage 4 justifies one, goes inside this node and affects only the autonomy path. |
 | D-56 | **Steering infeasibility brakes; it does not reduce speed.** | The reduce-speed instruction was wrong: curvature is ω/v, so at fixed ω reducing v *increases* required curvature. Brake-on-infeasible is correct for bench validation, but RPP can emit transiently infeasible commands when correcting onto a path, so the rate must be instrumented at Stage 3 and the policy changed to clamp-and-understeer if it is not rare. |
 | D-57 | **Validation effort scales with hardware contact, not perceived importance.** Three tiers: (1) full bench acceptance for anything that can command the motor autonomously for the first time; (2) smoke check only — starts, claims resources, publishes ten seconds — for nodes that touch hardware but cannot drive it; (3) unit tests only for pure computation. | Heavy acceptance caught three real failures, all hardware-contact: the lgpio dead-callback path, and two deliveries that built green and did not start. It produced no value on deterministic logic already covered by unit tests, where a 13-case acceptance table and microsecond state-transition timing were ceremony. Re-verifying closed work is never justified — check the commit log instead. |
+| D-58 | **Terrain robustness uses a bounded stall-assist ramp, not a higher feedforward table or speed controller.** EKF body-forward velocity confirms vehicle translation; encoder motion cross-checks wheelspin. | Stage 4 held 0.290 m/s at feedforward 0.380 while the old 0.380 kick added zero torque. EKF stall noise was cleanly below the 0.06 m/s confirmation threshold, and encoder silence ruled out wheelspin in the measured stall. |
 
 ---
 
