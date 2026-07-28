@@ -77,6 +77,14 @@ def test_planner_uses_measured_base_link_turning_radius():
     assert planner['minimum_turning_radius'] == 0.470
 
 
+def test_smac_smoothing_is_disabled_to_preserve_feasible_curvature():
+    """The returned path retains the search path's curvature constraint."""
+    planner = _params()['planner_server']['ros__parameters']['GridBased']
+
+    assert planner['smooth_path'] is False
+    assert 'smoother' not in planner
+
+
 def test_goal_checker_requires_position_and_loose_final_heading():
     """Goal completion checks pose without latching an early XY crossing."""
     checker = _params()['controller_server']['ros__parameters'][

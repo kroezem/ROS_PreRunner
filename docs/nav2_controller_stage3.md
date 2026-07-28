@@ -26,6 +26,14 @@ confirmed all four bonds and active states. On shutdown, `controller_server`
 deactivated its controller and local costmap, cleaned both up, and exited
 cleanly.
 
+## Smac Hybrid-A*
+
+Smac uses its curvature-constrained DUBIN search path directly. `smooth_path`
+is false because the Jazzy gradient smoother tightened a measured
+2.1278 m^-1 search path to 2.4329 m^-1, beyond the vehicle's measured
+2.1236 m^-1 limit. With smoothing disabled, `/plan` retains the geometry
+published on `/unsmoothed_plan`.
+
 ## Regulated Pure Pursuit
 
 The installed Nav2 version is 1.3.12. The controller class is:

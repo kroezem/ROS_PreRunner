@@ -25,7 +25,9 @@ planner_server:
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
       minimum_turning_radius: 0.470
-      smooth_path: true
+      # Jazzy's gradient smoother tightened measured paths beyond this
+      # Ackermann vehicle's curvature limit.
+      smooth_path: false
 
 controller_server:
   ros__parameters:
