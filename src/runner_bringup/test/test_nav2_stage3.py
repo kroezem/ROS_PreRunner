@@ -63,6 +63,13 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert controller['enable_stamped_cmd_vel'] is False
 
 
+def test_planner_uses_measured_base_link_turning_radius():
+    """Smac uses the measured base-link radius, not outer-wheel sweep."""
+    planner = _params()['planner_server']['ros__parameters']['GridBased']
+
+    assert planner['minimum_turning_radius'] == 0.470
+
+
 def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     """The rolling controller costmap uses raw scan and exact footprint."""
     local = _params()['local_costmap']['local_costmap']['ros__parameters']

@@ -1,7 +1,7 @@
 drive_adapter:
   ros__parameters:
     wheelbase: 0.178
-    max_steering_angle: 0.3054
+    max_steering_angle: 0.3614
     steering_min_speed: 0.05
 
     # Monotonic steady-state feedforward measurements. The measured

@@ -376,6 +376,13 @@ def test_existing_steering_infeasible_full_brake_is_unchanged():
     assert decision.normalized_steering == 0.0
 
 
+def test_default_steering_limit_matches_measured_turning_radius():
+    config = AdapterConfig()
+
+    assert config.max_steering_angle == 0.3614
+    assert 1.0 / config.maximum_curvature == pytest.approx(0.4709, abs=1e-4)
+
+
 def test_old_breakaway_mechanism_is_absent():
     fields = AdapterConfig.__dataclass_fields__
     assert 'breakaway_throttle' not in fields

@@ -91,7 +91,7 @@ class AdapterConfig:
     """Validated drive-adapter configuration."""
 
     wheelbase: float = 0.178
-    max_steering_angle: float = 0.3054
+    max_steering_angle: float = 0.3614
     steering_min_speed: float = 0.05
     throttle_breakpoints: tuple[float, ...] = (
         0.340,
