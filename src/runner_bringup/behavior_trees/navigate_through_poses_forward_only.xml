@@ -2,7 +2,10 @@
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
-      <RateController hz="1.0">
+      <ReactiveFallback name="ReplanRouteWhenPathInvalid">
+        <RateController hz="1.0">
+          <IsPathValid path="{path}"/>
+        </RateController>
         <ReactiveSequence>
           <RemovePassedGoals
             input_goals="{goals}"
@@ -14,7 +17,7 @@
             planner_id="GridBased"
             error_code_id="{compute_path_error_code}"/>
         </ReactiveSequence>
-      </RateController>
+      </ReactiveFallback>
       <FollowPath
         path="{path}"
         controller_id="FollowPath"

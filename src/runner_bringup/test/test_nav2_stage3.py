@@ -138,16 +138,24 @@ def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
 
 
 def test_behavior_tree_is_minimal_and_forward_only():
-    """The explicit tree replans at 1 Hz and has no motion recovery."""
+    """The explicit tree checks path validity at 1 Hz before replanning."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
-    rate = root.find('.//RateController')
+    fallback = root.find('.//ReactiveFallback')
+    rate = fallback.find('./RateController')
 
     assert tags.count('ComputePathToPose') == 1
+    assert tags.count('IsPathValid') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
+    assert tags.count('ReactiveFallback') == 1
+    assert [child.tag for child in fallback] == [
+        'RateController',
+        'ComputePathToPose',
+    ]
     assert rate is not None
     assert rate.attrib['hz'] == '1.0'
+    assert [child.tag for child in rate] == ['IsPathValid']
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'DriveOnHeading' not in tags
@@ -155,17 +163,30 @@ def test_behavior_tree_is_minimal_and_forward_only():
 
 
 def test_route_behavior_tree_replans_without_motion_recovery():
-    """Route navigation uses one continuous through-poses path."""
+    """Route navigation replans its through-poses path only when invalid."""
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
-    rate = root.find('.//RateController')
+    fallback = root.find('.//ReactiveFallback')
+    rate = fallback.find('./RateController')
+    replan = fallback.find('./ReactiveSequence')
 
     assert tags.count('ComputePathThroughPoses') == 1
+    assert tags.count('IsPathValid') == 1
     assert tags.count('RemovePassedGoals') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
+    assert tags.count('ReactiveFallback') == 1
+    assert [child.tag for child in fallback] == [
+        'RateController',
+        'ReactiveSequence',
+    ]
     assert rate is not None
     assert rate.attrib['hz'] == '1.0'
+    assert [child.tag for child in rate] == ['IsPathValid']
+    assert [child.tag for child in replan] == [
+        'RemovePassedGoals',
+        'ComputePathThroughPoses',
+    ]
     assert 'ComputePathToPose' not in tags
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
