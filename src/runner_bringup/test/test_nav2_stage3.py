@@ -150,10 +150,19 @@ def test_behavior_tree_is_minimal_and_forward_only():
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
+    assert tags.count('GlobalUpdatedGoal') == 1
     assert [child.tag for child in fallback] == [
-        'IsPathValid',
+        'ReactiveSequence',
         'ComputePathToPose',
     ]
+    path_check = fallback.find(
+        "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
+    )
+    assert [child.tag for child in path_check] == [
+        'Inverter',
+        'IsPathValid',
+    ]
+    assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
     assert 'RateController' not in tags
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
@@ -168,7 +177,7 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     fallback = root.find('.//ReactiveFallback')
-    replan = fallback.find('./ReactiveSequence')
+    replan = fallback.findall('./ReactiveSequence')[1]
 
     assert tags.count('ComputePathThroughPoses') == 1
     assert tags.count('IsPathValid') == 1
@@ -176,11 +185,20 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
+    assert tags.count('GlobalUpdatedGoal') == 1
     assert [child.tag for child in fallback] == [
-        'IsPathValid',
+        'ReactiveSequence',
         'ReactiveSequence',
     ]
     assert 'RateController' not in tags
+    path_check = fallback.find(
+        "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
+    )
+    assert [child.tag for child in path_check] == [
+        'Inverter',
+        'IsPathValid',
+    ]
+    assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
     assert [child.tag for child in replan] == [
         'RemovePassedGoals',
         'ComputePathThroughPoses',

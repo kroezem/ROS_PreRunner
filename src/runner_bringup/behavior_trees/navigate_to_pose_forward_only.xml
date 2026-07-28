@@ -3,7 +3,12 @@
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanningForwardOnly">
       <ReactiveFallback name="ReplanWhenPathInvalid">
-        <IsPathValid path="{path}"/>
+        <ReactiveSequence name="CheckIfNewPathNeeded">
+          <Inverter>
+            <GlobalUpdatedGoal/>
+          </Inverter>
+          <IsPathValid path="{path}"/>
+        </ReactiveSequence>
         <ComputePathToPose
           goal="{goal}"
           path="{path}"
