@@ -103,8 +103,18 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     )
     assert obstacle['observation_sources'] == 'scan'
     assert obstacle['scan']['topic'] == '/scan'
+    assert obstacle['scan']['data_type'] == 'LaserScan'
+    assert obstacle['scan']['marking'] is True
+    assert obstacle['scan']['clearing'] is True
+    assert obstacle['scan']['min_obstacle_height'] == 0.0
+    assert obstacle['scan']['max_obstacle_height'] == 2.0
+    assert obstacle['scan']['obstacle_min_range'] == 0.05
     assert obstacle['scan']['obstacle_max_range'] == 1.0
+    assert obstacle['scan']['raytrace_min_range'] == 0.0
     assert obstacle['scan']['raytrace_max_range'] == 1.2
+    assert obstacle['scan']['expected_update_rate'] == 0.0
+    assert obstacle['scan']['observation_persistence'] == 0.0
+    assert obstacle['scan']['inf_is_valid'] is True
     assert local['inflation_layer']['inflation_radius'] == 0.30
     assert local['inflation_layer']['cost_scaling_factor'] == 5.0
     assert '/scan_slam' not in yaml.safe_dump(
