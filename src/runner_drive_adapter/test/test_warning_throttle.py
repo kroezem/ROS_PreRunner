@@ -19,13 +19,13 @@ from runner_drive_adapter.drive_adapter_node import WarningThrottle
 
 def test_repeated_infeasible_warning_key_is_throttled():
     gate = WarningThrottle(interval=5.0)
-    assert gate.allows('steering_infeasible', 0.0)
-    assert not gate.allows('steering_infeasible', 0.1)
-    assert not gate.allows('steering_infeasible', 4.999)
-    assert gate.allows('steering_infeasible', 5.0)
+    assert gate.allows('steering_saturated', 0.0)
+    assert not gate.allows('steering_saturated', 0.1)
+    assert not gate.allows('steering_saturated', 4.999)
+    assert gate.allows('steering_saturated', 5.0)
 
 
 def test_warning_keys_are_independent():
     gate = WarningThrottle(interval=5.0)
-    assert gate.allows('steering_infeasible', 1.0)
+    assert gate.allows('steering_saturated', 1.0)
     assert gate.allows('negative_speed', 1.0)

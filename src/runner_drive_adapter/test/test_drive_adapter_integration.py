@@ -108,6 +108,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert 'measured_speed=' in states[-1].data
         assert 'integrator_state=' in states[-1].data
         assert 'wheelspin_guard=' in states[-1].data
+        assert 'steering_saturated=false' in states[-1].data
         assert probe.get_publishers_info_by_topic('/stall_assist/state') == []
 
         _spin_for(executor, 0.30)

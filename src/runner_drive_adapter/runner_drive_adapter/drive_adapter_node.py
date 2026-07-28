@@ -178,11 +178,11 @@ class DriveAdapterNode(Node):
                 f'{self.config.maximum_commanded_speed:.9f} m/s; clamping',
                 now,
             )
-        elif decision.reason == 'steering_infeasible':
+        if decision.steering_saturated:
             curvature = yaw_rate / speed
             self._warning(
-                'steering_infeasible',
-                'Rejecting infeasible steering request: '
+                'steering_saturated',
+                'Clamping infeasible steering request: '
                 f'v={speed:.9f} m/s omega={yaw_rate:.9f} rad/s '
                 f'curvature={curvature:.12f} 1/m '
                 f'maximum_curvature='

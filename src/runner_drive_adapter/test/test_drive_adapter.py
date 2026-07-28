@@ -262,17 +262,35 @@ def test_nonfinite_input_is_safely_braked(speed, yaw):
     assert decision.final_throttle == -1.0
 
 
-def test_steering_infeasible_full_brake_is_retained():
+@pytest.mark.parametrize('direction', [-1.0, 1.0])
+def test_infeasible_steering_is_clamped_without_braking(direction):
+    config = AdapterConfig()
+    decision = _update(
+        DriveAdapter(config),
+        0.0,
+        speed=0.152,
+        yaw=direction * 0.3625,
+        measured=0.152,
+    )
+
+    assert abs(0.3625 / 0.152) > config.maximum_curvature
+    assert decision.mode == 'forward'
+    assert decision.reason == 'closed_loop'
+    assert decision.normalized_steering == direction
+    assert decision.steering_saturated
+    assert decision.final_throttle > 0.0
+
+
+def test_feasible_steering_is_not_reported_as_saturated():
     config = AdapterConfig()
     decision = _update(
         DriveAdapter(config),
         0.0,
         speed=0.20,
-        yaw=0.20 * config.maximum_curvature + 1e-6,
+        yaw=0.20 * config.maximum_curvature * 0.5,
     )
 
-    assert decision.reason == 'steering_infeasible'
-    assert decision.final_throttle == -1.0
+    assert not decision.steering_saturated
 
 
 def test_diagnostics_contain_all_tuning_fields():
@@ -292,6 +310,7 @@ def test_diagnostics_contain_all_tuning_fields():
         'saturation_state=',
         'wheelspin_guard=',
         'final_throttle=',
+        'steering_saturated=',
     )
 
     assert all(field in text for field in required)

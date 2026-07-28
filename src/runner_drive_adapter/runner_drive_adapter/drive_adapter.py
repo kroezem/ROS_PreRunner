@@ -19,10 +19,6 @@ import math
 from typing import Optional, Sequence
 
 
-CURVATURE_REL_TOLERANCE = 1e-12
-CURVATURE_ABS_TOLERANCE = 1e-12
-
-
 def validate_table(
     throttle_breakpoints: Sequence[float],
     speed_breakpoints: Sequence[float],
@@ -234,6 +230,7 @@ class AdapterDecision:
     wheelspin_guard: bool = False
     final_throttle: float = -1.0
     normalized_steering: float = 0.0
+    steering_saturated: bool = False
 
     def diagnostic_text(self) -> str:
         """Serialize a stable, compact diagnostic record."""
@@ -251,7 +248,9 @@ class AdapterDecision:
             f'saturation_state={self.saturation_state};'
             f'wheelspin_guard={str(self.wheelspin_guard).lower()};'
             f'final_throttle={self.final_throttle:.9f};'
-            f'normalized_steering={self.normalized_steering:.9f}'
+            f'normalized_steering={self.normalized_steering:.9f};'
+            f'steering_saturated='
+            f'{str(self.steering_saturated).lower()}'
         )
 
 
@@ -365,15 +364,9 @@ class DriveAdapter:
             return self._brake('below_promotion_threshold')
 
         requested_curvature = yaw_rate / speed
-        tolerance = max(
-            CURVATURE_ABS_TOLERANCE,
-            self.config.maximum_curvature * CURVATURE_REL_TOLERANCE,
+        steering_saturated = (
+            abs(requested_curvature) > self.config.maximum_curvature
         )
-        if (
-            abs(requested_curvature)
-            > self.config.maximum_curvature + tolerance
-        ):
-            return self._brake('steering_infeasible')
 
         commanded_speed = min(speed, self.config.maximum_commanded_speed)
         effective_speed = max(
@@ -475,6 +468,7 @@ class DriveAdapter:
             wheelspin_guard,
             final,
             steering,
+            steering_saturated,
         )
 
     def _wheelspin_guard(self, now: float, encoder_speed: float) -> bool:
