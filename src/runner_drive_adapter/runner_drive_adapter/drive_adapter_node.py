@@ -18,7 +18,8 @@ Adapt physical Nav2 Twist commands to normalized Runner drive commands.
 ``/cmd_vel_nav`` is ``geometry_msgs/msg/Twist`` with ``linear.x`` in m/s and
 ``angular.z`` in rad/s. ``/cmd_vel_auto`` is ``geometry_msgs/msg/Twist`` with
 ``linear.x`` as normalized throttle/brake and ``angular.z`` as normalized
-steering. During Stage 1, this output is not connected to ``motor_node``.
+steering. Stage 2 connects this output to ``motor_node`` only through
+``twist_mux`` and its normalized ``/cmd_vel`` output.
 """
 
 import time

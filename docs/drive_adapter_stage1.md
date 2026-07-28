@@ -2,19 +2,21 @@
 
 ## Scope and topic ownership
 
-Stage 1 introduces `runner_drive_adapter/drive_adapter`. It is deliberately
-isolated from the motor:
+Stage 1 introduced `runner_drive_adapter/drive_adapter` with deliberate
+isolation from the motor. Stage 2 now connects the normalized command sources
+only through `twist_mux`; see `twist_mux_stage2.md`.
 
 | Owner | Subscription | Publication | Semantics |
 |---|---|---|---|
 | `drive_adapter` | `/cmd_vel_nav` | `/cmd_vel_auto` | Physical Nav2 Twist in; normalized command out |
 | `drive_adapter` | `/wheel/encoder_state` | `/drive_adapter/state` | Motion state in; compact diagnostics out |
-| `runner_teleop` | `/joy` | `/cmd_vel` | Existing manual path |
+| `runner_teleop` | `/joy` | `/cmd_vel_teleop` | Normalized human command |
+| `twist_mux` | `/cmd_vel_teleop`, `/cmd_vel_auto` | `/cmd_vel` | Stage 2 command owner |
 | `runner_motor` | `/cmd_vel` | PWM | Existing sole PWM owner |
 
-`/cmd_vel_auto` has no route, relay, remap, mux, or bridge to `/cmd_vel`.
-The adapter-only launch file does not start `motor_node`. A future Stage 2 mux
-may consume `/cmd_vel_auto`, but that boundary is not implemented here.
+The adapter-only launch file still does not start `motor_node`. In the Stage 2
+bench launch, `/cmd_vel_auto` reaches `/cmd_vel` only through `twist_mux`;
+there is no direct relay, remap, or bridge.
 
 `/cmd_vel_nav` is `geometry_msgs/msg/Twist`:
 
@@ -27,7 +29,8 @@ have different semantics:
 - `linear.x`: normalized throttle in `[0, 1]`, or `-1` for full brake
 - `angular.z`: normalized steering in `[-1, 1]`
 
-During Stage 1 the output is not connected to `motor_node`.
+During Stage 1 the output was not connected to `motor_node`. Stage 2 preserves
+the same adapter semantics and routes it through the mux.
 
 ## Parameters
 

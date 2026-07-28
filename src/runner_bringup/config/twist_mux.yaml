@@ -1,0 +1,13 @@
+twist_mux:
+  ros__parameters:
+    # Jazzy twist_mux 4.5 defaults to TwistStamped unless this is explicit.
+    use_stamped: false
+    topics:
+      autonomy:
+        topic: /cmd_vel_auto
+        timeout: 0.30
+        priority: 50
+      teleop:
+        topic: /cmd_vel_teleop
+        timeout: 0.20
+        priority: 100

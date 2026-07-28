@@ -6,7 +6,8 @@ drives manually. The analyzer only reads the resulting MCAP bag.
 
 ## Known command semantics
 
-`/cmd_vel.linear.x` is a normalized ESC command, not metres per second.
+`/cmd_vel_teleop.linear.x` and mux output `/cmd_vel.linear.x` are normalized
+ESC commands, not metres per second.
 `runner_teleop/teleop_node.py` maps R2 to `0.0` through `+1.0` and L2 to
 `0.0` through `-1.0` while X is held. With no motion button held, it
 continuously publishes the race-mode full-brake command `-1.0`.
@@ -29,9 +30,9 @@ unknown until the test.
 - **X:** hold for normal manual drive. R2 supplies positive throttle.
 - **R1:** hold for fixed-throttle drive. R2 does not change its positive
   throttle.
-- **L1:** operator-facing autonomy enable. Technically this is
-  `teleop_suppress`: teleop stops publishing `/cmd_vel` while L1 alone is
-  held. L1 by itself does not make autonomy safe or active.
+- **L1:** `teleop_suppress`: teleop stops publishing `/cmd_vel_teleop` while
+  L1 alone is held. L1 by itself is not an autonomy arming gate and does not
+  make autonomy safe or active.
 - **D-pad up/down:** raise/lower the process-lifetime fixed-throttle setpoint
   by one configured step per press.
 - **L2:** proportional brake in both X and R1 modes; it overrides positive
@@ -70,12 +71,11 @@ publishes the selected setpoint. `/teleop/active_mode`
 (`std_msgs/msg/String`) continuously publishes one of `brake`, `manual`,
 `fixed_throttle`, `teleop_suppress`, or `fixed_throttle_inhibited`.
 
-No command mux is implemented yet. A future mux will fall through to autonomy
-after its teleop input times out while L1 is held. Human teleop preemption
-will be immediate, while autonomy engagement will be delayed by that timeout.
-Configure the future teleop input timeout deliberately around `0.2 s`; do not
-leave it at an arbitrary default. The future mux and motor watchdog are the
-downstream safety gates.
+The Stage 2 mux falls through to autonomy after its 0.20 s teleop input
+timeout while L1 suppression is held. Human teleop preemption is immediate,
+while autonomy engagement is delayed by that timeout and the next autonomy
+publication. The independent motor watchdog remains the final safety
+mechanism.
 
 ## Area, vehicle, and safety
 

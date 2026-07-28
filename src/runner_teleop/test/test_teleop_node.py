@@ -1,6 +1,11 @@
 import math
+import time
 
+from geometry_msgs.msg import Twist
 import pytest
+import rclpy
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
 
 from runner_teleop.teleop_node import _active_mode
 from runner_teleop.teleop_node import _validate_fixed_throttle_config
@@ -16,6 +21,7 @@ from runner_teleop.teleop_node import TELEOP_SUPPRESS_MODE
 from runner_teleop.teleop_node import TeleopNode
 from runner_teleop.teleop_node import X_BUTTON_INDEX
 from sensor_msgs.msg import Joy
+from std_msgs.msg import Float32, String
 
 
 class Publisher:
@@ -482,3 +488,86 @@ def test_active_mode_values_are_explicit_and_stable():
         'teleop_suppress',
         'fixed_throttle_inhibited',
     }
+
+
+def _spin_for(executor, duration):
+    deadline = time.monotonic() + duration
+    while time.monotonic() < deadline:
+        executor.spin_once(timeout_sec=0.01)
+
+
+def test_graph_topic_contract_rate_suppression_and_diagnostics():
+    rclpy.init()
+    teleop = TeleopNode()
+    probe = Node('teleop_stage2_test_probe')
+    executor = SingleThreadedExecutor()
+    executor.add_node(teleop)
+    executor.add_node(probe)
+
+    commands = []
+    command_times = []
+    modes = []
+    setpoints = []
+
+    def on_command(message):
+        commands.append(message)
+        command_times.append(time.monotonic())
+
+    probe.create_subscription(
+        Twist, '/cmd_vel_teleop', on_command, 10
+    )
+    probe.create_subscription(
+        String, '/teleop/active_mode', modes.append, 10
+    )
+    probe.create_subscription(
+        Float32,
+        '/teleop/fixed_throttle_setpoint',
+        setpoints.append,
+        10,
+    )
+    joy_pub = probe.create_publisher(Joy, '/joy', 10)
+
+    try:
+        _spin_for(executor, 0.32)
+        assert len(commands) >= 5
+        assert all(command.linear.x == -1.0 for command in commands)
+        intervals = [
+            later - earlier
+            for earlier, later in zip(command_times, command_times[1:])
+        ]
+        assert intervals
+        assert sum(intervals) / len(intervals) == pytest.approx(
+            0.05, abs=0.015
+        )
+        assert modes
+        assert setpoints
+
+        teleop_publishers = probe.get_publishers_info_by_topic(
+            '/cmd_vel_teleop'
+        )
+        assert sum(
+            endpoint.node_name == 'runner_teleop'
+            for endpoint in teleop_publishers
+        ) == 1
+        assert not any(
+            endpoint.node_name == 'runner_teleop'
+            for endpoint in probe.get_publishers_info_by_topic('/cmd_vel')
+        )
+
+        joy_pub.publish(joy(l1=True))
+        _spin_for(executor, 0.08)
+        commands.clear()
+        mode_count = len(modes)
+        setpoint_count = len(setpoints)
+        _spin_for(executor, 0.20)
+        assert commands == []
+        assert len(modes) > mode_count
+        assert len(setpoints) > setpoint_count
+        assert modes[-1].data == TELEOP_SUPPRESS_MODE
+    finally:
+        executor.remove_node(probe)
+        executor.remove_node(teleop)
+        probe.destroy_node()
+        teleop.destroy_node()
+        executor.shutdown()
+        rclpy.shutdown()

@@ -36,6 +36,13 @@
       "problemMatcher": []
     },
     {
+      "label": "Runner: Autonomy Bench",
+      "type": "shell",
+      "command": "ros2 launch runner_bringup autonomy_bench.launch.py",
+      "dependsOn": "Stop all launches",
+      "problemMatcher": []
+    },
+    {
       "label": "Runner: Record Rosbag",
       "type": "shell",
       "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; set -eo pipefail; NAME=\"${input:rosbagName}\"; if [[ ! \"$NAME\" =~ ^[A-Za-z0-9._-]+$ ]]; then echo \"Invalid bag name. Use only letters, numbers, dots, underscores, and hyphens.\" >&2; exit 1; fi; mkdir -p \"$HOME/runner_ws/bags\"; OUTPUT=\"$HOME/runner_ws/bags/${NAME}_$(date +%Y%m%d_%H%M%S)\"; echo \"Recording all topics to:\"; echo \"$OUTPUT\"; echo \"Stop with Ctrl+C to finalize the bag.\"; exec ros2 bag record --storage mcap --all-topics --output \"$OUTPUT\"'",

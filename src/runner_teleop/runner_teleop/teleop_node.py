@@ -1,3 +1,11 @@
+"""
+Publish normalized human drive commands for Stage 2 arbitration.
+
+``/cmd_vel_teleop`` is ``geometry_msgs/msg/Twist``:
+``linear.x`` is normalized throttle/brake and ``angular.z`` is normalized
+steering. The node never publishes the mux-owned ``/cmd_vel`` topic.
+"""
+
 from decimal import Decimal
 import math
 
@@ -159,7 +167,7 @@ class TeleopNode(Node):
             ) from None
 
         self._fixed_throttle_setpoint = initial
-        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pub = self.create_publisher(Twist, '/cmd_vel_teleop', 10)
         self._setpoint_pub = self.create_publisher(
             Float32, '/teleop/fixed_throttle_setpoint', 10
         )

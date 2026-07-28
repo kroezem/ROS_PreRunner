@@ -25,17 +25,20 @@
   <depend>rclpy</depend>
   <depend>robot_localization</depend>
   <depend>runner_imu</depend>
+  <depend>runner_drive_adapter</depend>
   <depend>runner_teleop</depend>
   <depend>runner_motor</depend>
   <depend>sensor_msgs</depend>
   <depend>slam_toolbox</depend>
   <depend>tf2_ros</depend>
+  <depend>twist_mux</depend>
   <exec_depend>runner_encoder</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

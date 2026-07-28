@@ -3,11 +3,19 @@
 # Running more than one may duplicate UART sensor or PWM motor ownership.
 # Internal tiers under launch/include are not standalone production entry points.
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
+    mux_parameters = os.path.join(
+        get_package_share_directory('runner_bringup'),
+        'config',
+        'twist_mux.yaml',
+    )
     return LaunchDescription([
         Node(
             package='joy',
@@ -29,6 +37,14 @@ def generate_launch_description():
                 'fixed_throttle_max_setpoint': 0.50,
                 'fixed_throttle_min_setpoint': 0.00,
             }],
+        ),
+        Node(
+            package='twist_mux',
+            executable='twist_mux',
+            name='twist_mux',
+            output='screen',
+            parameters=[mux_parameters],
+            remappings=[('/cmd_vel_out', '/cmd_vel')],
         ),
         Node(
             package='runner_motor',
