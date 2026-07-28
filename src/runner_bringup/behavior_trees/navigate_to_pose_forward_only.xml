@@ -3,9 +3,7 @@
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanningForwardOnly">
       <ReactiveFallback name="ReplanWhenPathInvalid">
-        <RateController hz="1.0">
-          <IsPathValid path="{path}"/>
-        </RateController>
+        <IsPathValid path="{path}"/>
         <ComputePathToPose
           goal="{goal}"
           path="{path}"

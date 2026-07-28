@@ -3,9 +3,7 @@
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
       <ReactiveFallback name="ReplanRouteWhenPathInvalid">
-        <RateController hz="1.0">
-          <IsPathValid path="{path}"/>
-        </RateController>
+        <IsPathValid path="{path}"/>
         <ReactiveSequence>
           <RemovePassedGoals
             input_goals="{goals}"

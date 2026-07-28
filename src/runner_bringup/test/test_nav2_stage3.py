@@ -140,11 +140,10 @@ def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
 
 
 def test_behavior_tree_is_minimal_and_forward_only():
-    """The explicit tree checks path validity at 1 Hz before replanning."""
+    """The explicit tree checks path validity before replanning."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     fallback = root.find('.//ReactiveFallback')
-    rate = fallback.find('./RateController')
 
     assert tags.count('ComputePathToPose') == 1
     assert tags.count('IsPathValid') == 1
@@ -152,15 +151,15 @@ def test_behavior_tree_is_minimal_and_forward_only():
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
     assert [child.tag for child in fallback] == [
-        'RateController',
+        'IsPathValid',
         'ComputePathToPose',
     ]
-    assert rate is not None
-    assert rate.attrib['hz'] == '1.0'
-    assert [child.tag for child in rate] == ['IsPathValid']
+    assert 'RateController' not in tags
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'DriveOnHeading' not in tags
+    assert 'Rotate' not in tags
+    assert 'RotateToHeading' not in tags
     assert 'RecoveryNode' not in tags
 
 
@@ -169,7 +168,6 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     fallback = root.find('.//ReactiveFallback')
-    rate = fallback.find('./RateController')
     replan = fallback.find('./ReactiveSequence')
 
     assert tags.count('ComputePathThroughPoses') == 1
@@ -179,12 +177,10 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
     assert [child.tag for child in fallback] == [
-        'RateController',
+        'IsPathValid',
         'ReactiveSequence',
     ]
-    assert rate is not None
-    assert rate.attrib['hz'] == '1.0'
-    assert [child.tag for child in rate] == ['IsPathValid']
+    assert 'RateController' not in tags
     assert [child.tag for child in replan] == [
         'RemovePassedGoals',
         'ComputePathThroughPoses',
@@ -193,6 +189,8 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'DriveOnHeading' not in tags
+    assert 'Rotate' not in tags
+    assert 'RotateToHeading' not in tags
     assert 'RecoveryNode' not in tags
 
 
