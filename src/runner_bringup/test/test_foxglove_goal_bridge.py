@@ -135,7 +135,8 @@ def bridge():
     yield node, action_client
     if not node._shutting_down:
         node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 def make_pose(x, y=0.0):
@@ -399,6 +400,16 @@ def test_shutdown_retries_synchronous_cancel_failure(bridge):
 
     assert handle.cancel_calls == 2
     assert sent_x(action_client) == [1.0]
+
+
+def test_shutdown_after_context_is_invalid_does_not_create_executor(bridge):
+    """Launch SIGINT may invalidate the context before node cleanup runs."""
+    node, _ = bridge
+    rclpy.shutdown()
+
+    node.shutdown()
+
+    assert node._shutting_down is True
 
 
 def accept_first_after_pose(

@@ -1,4 +1,4 @@
-# nav2.launch.py is the complete planning-only Nav2 entry point.
+# nav2.launch.py is the complete forward-only Nav2 entry point.
 
 import os
 from pathlib import Path
@@ -81,10 +81,10 @@ def generate_launch_description():
     launch_dir = os.path.join(package_share, 'launch')
     include_dir = os.path.join(launch_dir, 'include')
     nav2_params = os.path.join(package_share, 'config', 'nav2_params.yaml')
-    planning_bt = os.path.join(
+    navigation_bt = os.path.join(
         package_share,
         'behavior_trees',
-        'navigate_to_pose_planning_only.xml',
+        'navigate_to_pose_forward_only.xml',
     )
     map_file_name = LaunchConfiguration('map_file_name')
     static_yaml = LaunchConfiguration('static_yaml')
@@ -130,13 +130,21 @@ def generate_launch_description():
             parameters=[nav2_params],
         ),
         Node(
+            package='nav2_controller',
+            executable='controller_server',
+            name='controller_server',
+            output='screen',
+            parameters=[nav2_params],
+            remappings=[('cmd_vel', '/cmd_vel_nav')],
+        ),
+        Node(
             package='nav2_bt_navigator',
             executable='bt_navigator',
             name='bt_navigator',
             output='screen',
             parameters=[
                 nav2_params,
-                {'default_nav_to_pose_bt_xml': planning_bt},
+                {'default_nav_to_pose_bt_xml': navigation_bt},
             ],
         ),
         Node(
@@ -156,6 +164,7 @@ def generate_launch_description():
                 'node_names': [
                     'map_server',
                     'planner_server',
+                    'controller_server',
                     'bt_navigator',
                 ],
                 'use_sim_time': False,

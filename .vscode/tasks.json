@@ -22,7 +22,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Runner: Nav2 Planning",
+      "label": "Runner: Nav2",
       "type": "shell",
       "command": "ros2 launch runner_bringup nav2.launch.py map_name:=${input:runnerMap}",
       "dependsOn": "Stop all launches",

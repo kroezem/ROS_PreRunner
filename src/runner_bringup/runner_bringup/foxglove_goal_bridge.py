@@ -382,6 +382,10 @@ class FoxgloveGoalBridge(Node):
         )
         deadline = time.monotonic() + max(0.0, timeout)
 
+        if not rclpy.ok(context=self.context):
+            self.destroy_node()
+            return
+
         if self._goal_handle is not None:
             self._request_cancel(force=True)
         executor = SingleThreadedExecutor(context=self.context)
