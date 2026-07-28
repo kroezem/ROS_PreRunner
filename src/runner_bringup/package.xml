@@ -20,6 +20,7 @@
   <depend>nav2_lifecycle_manager</depend>
   <depend>nav2_map_server</depend>
   <depend>nav2_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>nav2_planner</depend>
   <depend>nav2_regulated_pure_pursuit_controller</depend>
   <depend>nav2_smac_planner</depend>
@@ -31,6 +32,7 @@
   <depend>runner_teleop</depend>
   <depend>runner_motor</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>slam_toolbox</depend>
   <depend>tf2_ros</depend>
   <depend>twist_mux</depend>

@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
+      <RateController hz="1.0">
+        <ReactiveSequence>
+          <RemovePassedGoals
+            input_goals="{goals}"
+            output_goals="{goals}"
+            radius="0.20"/>
+          <ComputePathThroughPoses
+            goals="{goals}"
+            path="{path}"
+            planner_id="GridBased"
+            error_code_id="{compute_path_error_code}"/>
+        </ReactiveSequence>
+      </RateController>
+      <FollowPath
+        path="{path}"
+        controller_id="FollowPath"
+        goal_checker_id="goal_checker"
+        error_code_id="{follow_path_error_code}"/>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>

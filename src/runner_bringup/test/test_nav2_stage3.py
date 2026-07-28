@@ -14,6 +14,10 @@ PARAMS_PATH = PACKAGE / 'config' / 'nav2_params.yaml'
 BT_PATH = (
     PACKAGE / 'behavior_trees' / 'navigate_to_pose_forward_only.xml'
 )
+ROUTE_BT_PATH = (
+    PACKAGE / 'behavior_trees'
+    / 'navigate_through_poses_forward_only.xml'
+)
 
 
 def _params():
@@ -134,16 +138,56 @@ def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
 
 
 def test_behavior_tree_is_minimal_and_forward_only():
-    """The explicit tree plans once, follows, and has no motion recovery."""
+    """The explicit tree replans at 1 Hz and has no motion recovery."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
+    rate = root.find('.//RateController')
 
     assert tags.count('ComputePathToPose') == 1
     assert tags.count('FollowPath') == 1
+    assert tags.count('PipelineSequence') == 1
+    assert rate is not None
+    assert rate.attrib['hz'] == '1.0'
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'DriveOnHeading' not in tags
     assert 'RecoveryNode' not in tags
+
+
+def test_route_behavior_tree_replans_without_motion_recovery():
+    """Route navigation uses one continuous through-poses path."""
+    root = ET.parse(ROUTE_BT_PATH).getroot()
+    tags = [element.tag for element in root.iter()]
+    rate = root.find('.//RateController')
+
+    assert tags.count('ComputePathThroughPoses') == 1
+    assert tags.count('RemovePassedGoals') == 1
+    assert tags.count('FollowPath') == 1
+    assert tags.count('PipelineSequence') == 1
+    assert rate is not None
+    assert rate.attrib['hz'] == '1.0'
+    assert 'ComputePathToPose' not in tags
+    assert 'Spin' not in tags
+    assert 'BackUp' not in tags
+    assert 'DriveOnHeading' not in tags
+    assert 'RecoveryNode' not in tags
+
+
+def test_both_navigators_are_configured_with_explicit_trees():
+    """Nav2 exposes both action servers with Runner's trees."""
+    navigator = _params()['bt_navigator']['ros__parameters']
+    launch = LAUNCH_PATH.read_text()
+
+    assert navigator['navigators'] == [
+        'navigate_to_pose',
+        'navigate_through_poses',
+    ]
+    assert (
+        navigator['navigate_through_poses']['plugin']
+        == 'nav2_bt_navigator::NavigateThroughPosesNavigator'
+    )
+    assert 'default_nav_to_pose_bt_xml' in launch
+    assert 'default_nav_through_poses_bt_xml' in launch
 
 
 def test_stage2_topic_ownership_and_no_collision_monitor_remain():

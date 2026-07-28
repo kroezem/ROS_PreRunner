@@ -1,4 +1,4 @@
-"""Focused tests for the Foxglove NavigateToPose goal bridge."""
+"""Focused tests for Foxglove simple-goal and route actions."""
 
 import time
 
@@ -8,7 +8,11 @@ from nav2_msgs.action import NavigateToPose
 import pytest
 import rclpy
 
-from runner_bringup.foxglove_goal_bridge import FoxgloveGoalBridge
+from runner_bringup.foxglove_goal_bridge import (
+    _Request,
+    FoxgloveGoalBridge,
+)
+from std_msgs.msg import String
 
 
 class FakeFuture:
@@ -125,11 +129,16 @@ class FakeActionClient:
 
 
 @pytest.fixture
-def bridge():
+def bridge(tmp_path):
     """Create a bridge with a fake action client."""
     rclpy.init()
     action_client = FakeActionClient()
-    node = FoxgloveGoalBridge(action_client=action_client)
+    route_action_client = FakeActionClient()
+    node = FoxgloveGoalBridge(
+        action_client=action_client,
+        route_action_client=route_action_client,
+        route_file=tmp_path / 'route.json',
+    )
     node.CANCEL_RETRY_INTERVAL = 0.0
     node.RESULT_RETRY_INTERVAL = 0.0
     yield node, action_client
@@ -161,6 +170,14 @@ def accept_first(action_client, handle=None):
 
 def finish(handle, status=GoalStatus.STATUS_CANCELED):
     handle.result_future.resolve(FakeResultResponse(status))
+
+
+def route_goal_xs(route_action_client):
+    """Return x coordinates for every sent route."""
+    return [
+        [pose.pose.position.x for pose in goal.poses]
+        for goal in route_action_client.goals
+    ]
 
 
 def test_single_pose_forwarding(bridge):
@@ -218,7 +235,7 @@ def test_newer_pending_pose_replaces_older_pending_pose(bridge):
     node._goal_callback(make_pose(2.0))
     node._goal_callback(make_pose(4.0))
 
-    assert node._pending_pose.pose.position.x == 4.0
+    assert node._pending_request.poses[0].pose.position.x == 4.0
     first_handle.cancel_futures[0].resolve(FakeCancelResponse())
     finish(first_handle)
     assert sent_x(action_client) == [1.0, 4.0]
@@ -230,7 +247,7 @@ def test_synchronous_send_exception_is_retried_by_timer(bridge):
 
     node._goal_callback(make_pose(1.0))
 
-    assert node._pending_pose.pose.position.x == 1.0
+    assert node._pending_request.poses[0].pose.position.x == 1.0
     assert node._send_future is None
     node._pump()
     assert sent_x(action_client) == [1.0]
@@ -337,7 +354,9 @@ def test_stale_send_callback_cannot_clear_newer_send_state(bridge):
     stale_future = action_client.send_futures[0]
     stale_generation = node._send_generation
     node._clear_send_state()
-    node._pending_pose = make_pose(2.0)
+    node._pending_request = _Request(
+        'NavigateToPose', (make_pose(2.0),)
+    )
     node._pump()
     current_future = node._send_future
     current_generation = node._send_generation
@@ -346,7 +365,7 @@ def test_stale_send_callback_cannot_clear_newer_send_state(bridge):
         stale_future,
         stale_generation,
         stale_future,
-        make_pose(1.0),
+        _Request('NavigateToPose', (make_pose(1.0),)),
     )
 
     assert node._send_future is current_future
@@ -358,7 +377,9 @@ def test_stale_result_callback_cannot_clear_newer_active_goal(bridge):
     old_handle = accept_first_after_pose(node, action_client, 1.0)
     old_generation = node._active_generation
     node._clear_active_state()
-    node._pending_pose = make_pose(2.0)
+    node._pending_request = _Request(
+        'NavigateToPose', (make_pose(2.0),)
+    )
     node._pump()
     new_handle = FakeGoalHandle()
     action_client.send_futures[1].resolve(new_handle)
@@ -378,7 +399,9 @@ def test_stale_result_callback_cannot_clear_newer_active_goal(bridge):
 def test_shutdown_requests_cancel_and_exits_within_bound(bridge):
     node, action_client = bridge
     handle = accept_first_after_pose(node, action_client, 1.0)
-    node._pending_pose = make_pose(2.0)
+    node._pending_request = _Request(
+        'NavigateToPose', (make_pose(2.0),)
+    )
 
     started = time.monotonic()
     node.shutdown(timeout_sec=0.05)
@@ -410,6 +433,130 @@ def test_shutdown_after_context_is_invalid_does_not_create_executor(bridge):
     node.shutdown()
 
     assert node._shutting_down is True
+
+
+def test_route_accumulation_and_start_dispatch(bridge):
+    node, _ = bridge
+    route_client = node._route_action_client
+
+    node._waypoint_callback(make_pose(1.0))
+    node._waypoint_callback(make_pose(2.0))
+    node._route_control_callback(String(data='start'))
+
+    assert [pose.pose.position.x for pose in node.route] == [1.0, 2.0]
+    assert route_goal_xs(route_client) == [[1.0, 2.0]]
+
+
+def test_route_control_clear_and_loop_commands_persist(bridge):
+    node, _ = bridge
+    node._waypoint_callback(make_pose(1.0))
+
+    node._route_control_callback(String(data='loop_on'))
+    assert node.loop_enabled
+    document = node._route_file.read_text()
+    assert '"loop_enabled": true' in document
+
+    node._route_control_callback(String(data='loop_off'))
+    assert not node.loop_enabled
+    node._route_control_callback(String(data='clear'))
+    assert node.route == ()
+    assert '"poses": []' in node._route_file.read_text()
+
+
+def test_persistence_round_trip(tmp_path):
+    route_file = tmp_path / 'route.json'
+    rclpy.init()
+    first = FoxgloveGoalBridge(
+        action_client=FakeActionClient(),
+        route_action_client=FakeActionClient(),
+        route_file=route_file,
+    )
+    first._waypoint_callback(make_pose(1.0, 2.0))
+    first._waypoint_callback(make_pose(3.0, 4.0))
+    first._route_control_callback(String(data='loop_on'))
+    first.destroy_node()
+
+    second = FoxgloveGoalBridge(
+        action_client=FakeActionClient(),
+        route_action_client=FakeActionClient(),
+        route_file=route_file,
+    )
+    try:
+        assert [
+            (pose.pose.position.x, pose.pose.position.y)
+            for pose in second.route
+        ] == [(1.0, 2.0), (3.0, 4.0)]
+        assert second.loop_enabled
+    finally:
+        second.destroy_node()
+        rclpy.shutdown()
+
+
+def test_successful_loop_route_redispatches(bridge):
+    node, _ = bridge
+    route_client = node._route_action_client
+    node._waypoint_callback(make_pose(1.0))
+    node._waypoint_callback(make_pose(2.0))
+    node._route_control_callback(String(data='loop_on'))
+    node._route_control_callback(String(data='start'))
+    handle = FakeGoalHandle()
+    route_client.send_futures[0].resolve(handle)
+
+    finish(handle, GoalStatus.STATUS_SUCCEEDED)
+
+    assert route_goal_xs(route_client) == [
+        [1.0, 2.0],
+        [1.0, 2.0],
+    ]
+
+
+def test_stop_prevents_loop_redispatch(bridge):
+    node, _ = bridge
+    route_client = node._route_action_client
+    node._waypoint_callback(make_pose(1.0))
+    node._route_control_callback(String(data='loop_on'))
+    node._route_control_callback(String(data='start'))
+    handle = FakeGoalHandle()
+    route_client.send_futures[0].resolve(handle)
+
+    node._route_control_callback(String(data='stop'))
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle)
+
+    assert len(route_client.goals) == 1
+    assert not node._route_run_enabled
+
+
+def test_malformed_waypoints_and_commands_are_rejected(bridge):
+    node, _ = bridge
+    warnings = []
+    node.get_logger().warning = warnings.append
+    invalid = make_pose(1.0)
+    invalid.header.frame_id = ''
+
+    node._waypoint_callback(invalid)
+    node._route_control_callback(String(data=' START '))
+    node._route_control_callback(String(data='unknown'))
+
+    assert node.route == ()
+    assert any('malformed' in warning for warning in warnings)
+    assert sum('unknown route command' in warning for warning in warnings) == 2
+
+
+def test_malformed_persisted_route_is_ignored(tmp_path):
+    route_file = tmp_path / 'route.json'
+    route_file.write_text('{"poses": "not-a-list"}')
+    rclpy.init()
+    node = FoxgloveGoalBridge(
+        action_client=FakeActionClient(),
+        route_action_client=FakeActionClient(),
+        route_file=route_file,
+    )
+    try:
+        assert node.route == ()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 def accept_first_after_pose(

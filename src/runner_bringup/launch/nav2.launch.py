@@ -86,8 +86,14 @@ def generate_launch_description():
         'behavior_trees',
         'navigate_to_pose_forward_only.xml',
     )
+    route_bt = os.path.join(
+        package_share,
+        'behavior_trees',
+        'navigate_through_poses_forward_only.xml',
+    )
     map_file_name = LaunchConfiguration('map_file_name')
     static_yaml = LaunchConfiguration('static_yaml')
+    route_file = LaunchConfiguration('route_file')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -95,6 +101,11 @@ def generate_launch_description():
             default_value=DEFAULT_MAP_NAME,
             description='Basename of both map artifact sets in '
             f'{MAP_DIRECTORY}',
+        ),
+        DeclareLaunchArgument(
+            'route_file',
+            default_value='~/.ros/runner_route.json',
+            description='Persistent Foxglove route file',
         ),
         OpaqueFunction(function=_configure_map),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
@@ -144,7 +155,10 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 nav2_params,
-                {'default_nav_to_pose_bt_xml': navigation_bt},
+                {
+                    'default_nav_to_pose_bt_xml': navigation_bt,
+                    'default_nav_through_poses_bt_xml': route_bt,
+                },
             ],
         ),
         Node(
@@ -152,6 +166,7 @@ def generate_launch_description():
             executable='foxglove_goal_bridge',
             name='foxglove_goal_bridge',
             output='screen',
+            parameters=[{'route_file': route_file}],
         ),
         Node(
             package='nav2_lifecycle_manager',
