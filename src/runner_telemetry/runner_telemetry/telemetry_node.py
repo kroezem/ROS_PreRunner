@@ -23,7 +23,10 @@ from rclpy.node import Node
 from runner_interfaces.msg import SystemTelemetry
 
 from runner_telemetry.telemetry import (
+    calculate_cpu_utilization,
     decode_throttled,
+    parse_loadavg,
+    parse_proc_stat,
     read_soc_temperature,
     read_throttled_sysfs,
     run_vcgencmd,
@@ -36,6 +39,8 @@ THERMAL_TYPE_PATH = Path('/sys/class/thermal/thermal_zone0/type')
 THROTTLED_SYSFS_PATH = Path(
     '/sys/devices/platform/soc/soc:firmware/get_throttled',
 )
+PROC_STAT_PATH = Path('/proc/stat')
+PROC_LOADAVG_PATH = Path('/proc/loadavg')
 ERROR_THROTTLE_SECONDS = 10.0
 
 
@@ -51,6 +56,7 @@ class TelemetryNode(Node):
         )
         self._use_throttled_sysfs = THROTTLED_SYSFS_PATH.is_file()
         self._warnings = WarningTransitions()
+        self._previous_cpu_sample = None
         self._timer = self.create_timer(1.0, self._publish_sample)
         throttle_source = (
             str(THROTTLED_SYSFS_PATH)
@@ -70,14 +76,16 @@ class TelemetryNode(Node):
     def _publish_sample(self) -> None:
         temperature = math.nan
         throttled = None
-        valid = True
+        pi_valid = True
+        cpu_utilization = None
+        load = None
         try:
             temperature, _ = read_soc_temperature(
                 THERMAL_TEMP_PATH,
                 THERMAL_TYPE_PATH,
             )
         except (OSError, UnicodeError, ValueError) as error:
-            valid = False
+            pi_valid = False
             self.get_logger().error(
                 f'SoC temperature source failed: {error}',
                 throttle_duration_sec=ERROR_THROTTLE_SECONDS,
@@ -87,15 +95,42 @@ class TelemetryNode(Node):
             raw = self._read_throttled()
             throttled = decode_throttled(raw)
         except (OSError, UnicodeError, ValueError) as error:
-            valid = False
+            pi_valid = False
             self.get_logger().error(
                 f'throttling mask source failed: {error}',
                 throttle_duration_sec=ERROR_THROTTLE_SECONDS,
             )
 
+        try:
+            cpu_sample = parse_proc_stat(
+                PROC_STAT_PATH.read_text(encoding='ascii')
+            )
+            previous_cpu_sample = self._previous_cpu_sample
+            self._previous_cpu_sample = cpu_sample
+            if previous_cpu_sample is not None:
+                cpu_utilization = calculate_cpu_utilization(
+                    previous_cpu_sample,
+                    cpu_sample,
+                )
+        except (OSError, UnicodeError, ValueError) as error:
+            self.get_logger().error(
+                f'CPU utilization source failed: {error}',
+                throttle_duration_sec=ERROR_THROTTLE_SECONDS,
+            )
+
+        try:
+            load = parse_loadavg(
+                PROC_LOADAVG_PATH.read_text(encoding='ascii')
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            self.get_logger().error(
+                f'load average source failed: {error}',
+                throttle_duration_sec=ERROR_THROTTLE_SECONDS,
+            )
+
         message = SystemTelemetry()
         message.stamp = self.get_clock().now().to_msg()
-        message.pi_valid = valid
+        message.pi_valid = pi_valid
         message.soc_temperature_celsius = temperature
         if throttled is not None:
             message.throttled_raw = throttled.raw
@@ -111,9 +146,23 @@ class TelemetryNode(Node):
             message.sticky_throttled = throttled.sticky_throttled
             message.sticky_soft_temperature_limit = \
                 throttled.sticky_soft_temperature_limit
+        if cpu_utilization is not None:
+            message.cpu_valid = True
+            message.total_cpu_utilization_percent = \
+                cpu_utilization.total_percent
+            message.cpu_core_ids = list(cpu_utilization.core_ids)
+            message.per_core_cpu_utilization_percent = list(
+                cpu_utilization.per_core_percent
+            )
+        if load is not None:
+            message.load_valid = True
+            message.load_average_1min = load.one_minute
+            message.load_average_5min = load.five_minutes
+            message.load_average_15min = load.fifteen_minutes
+            message.runnable_processes = load.runnable_processes
 
         current_warning, sticky_warning = self._warnings.observe(
-            valid,
+            pi_valid,
             throttled,
         )
         if current_warning:

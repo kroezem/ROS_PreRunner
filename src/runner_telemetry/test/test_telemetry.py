@@ -20,13 +20,87 @@ from types import SimpleNamespace
 import pytest
 
 from runner_telemetry.telemetry import (
+    calculate_cpu_utilization,
     decode_throttled,
+    parse_loadavg,
+    parse_proc_stat,
     parse_temperature_millidegrees,
     parse_throttled,
     read_soc_temperature,
     run_vcgencmd,
     WarningTransitions,
 )
+
+
+PROC_STAT_FIRST = """\
+cpu  100 10 30 400 20 5 5 0 0 0
+cpu0 50 5 15 200 10 2 3 0 0 0
+cpu1 50 5 15 200 10 3 2 0 0 0
+intr 123
+"""
+PROC_STAT_SECOND = """\
+cpu  130 10 50 450 20 5 5 0 0 0
+cpu0 60 5 25 220 10 2 3 0 0 0
+cpu1 70 5 25 230 10 3 2 0 0 0
+intr 456
+"""
+
+
+def test_proc_stat_delta_reports_total_and_each_core():
+    first = parse_proc_stat(PROC_STAT_FIRST)
+    second = parse_proc_stat(PROC_STAT_SECOND)
+
+    utilization = calculate_cpu_utilization(first, second)
+
+    assert utilization.total_percent == pytest.approx(50.0)
+    assert utilization.core_ids == (0, 1)
+    assert utilization.per_core_percent == pytest.approx((50.0, 50.0))
+
+
+@pytest.mark.parametrize(
+    'content',
+    [
+        '',
+        'intr 123\n',
+        'cpu 1 2 bad 4\ncpu0 1 2 3 4\n',
+        'cpu 1 2 3 4\n',
+    ],
+)
+def test_malformed_proc_stat_is_rejected(content):
+    with pytest.raises(ValueError):
+        parse_proc_stat(content)
+
+
+def test_proc_stat_rejects_counter_regression():
+    first = parse_proc_stat(PROC_STAT_SECOND)
+    second = parse_proc_stat(PROC_STAT_FIRST)
+
+    with pytest.raises(ValueError, match='counter delta'):
+        calculate_cpu_utilization(first, second)
+
+
+def test_loadavg_includes_runnable_queue_count():
+    load = parse_loadavg('10.88 7.25 3.50 5/412 12345\n')
+
+    assert load.one_minute == pytest.approx(10.88)
+    assert load.five_minutes == pytest.approx(7.25)
+    assert load.fifteen_minutes == pytest.approx(3.50)
+    assert load.runnable_processes == 5
+
+
+@pytest.mark.parametrize(
+    'content',
+    [
+        '',
+        '1.0 2.0',
+        'x 2.0 3.0 1/20 5',
+        '1 2 3 bad 5',
+        '1 2 3 21/20 5',
+    ],
+)
+def test_malformed_loadavg_is_rejected(content):
+    with pytest.raises(ValueError):
+        parse_loadavg(content)
 
 
 @pytest.mark.parametrize(

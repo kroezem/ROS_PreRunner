@@ -15,6 +15,7 @@
 """Parsing and transition logic for Raspberry Pi telemetry."""
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -65,6 +66,41 @@ class ThrottledState:
             name for bit, name in STICKY_BITS.items()
             if self.raw & (1 << bit)
         )
+
+
+@dataclass(frozen=True)
+class CpuTimes:
+    """Aggregate scheduler counters from one /proc/stat CPU row."""
+
+    total: int
+    idle: int
+
+
+@dataclass(frozen=True)
+class CpuSample:
+    """Total and numerically ordered per-core scheduler counters."""
+
+    total: CpuTimes
+    cores: tuple[tuple[int, CpuTimes], ...]
+
+
+@dataclass(frozen=True)
+class CpuUtilization:
+    """Total and per-core busy percentages over a sampling interval."""
+
+    total_percent: float
+    core_ids: tuple[int, ...]
+    per_core_percent: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class LoadAverage:
+    """Load averages and current runnable scheduler-entity count."""
+
+    one_minute: float
+    five_minutes: float
+    fifteen_minutes: float
+    runnable_processes: int
 
 
 def parse_temperature_millidegrees(content: str) -> float:
@@ -124,6 +160,93 @@ def run_vcgencmd(
     except (OSError, subprocess.SubprocessError) as error:
         raise OSError(f'vcgencmd get_throttled failed: {error}') from error
     return parse_throttled(completed.stdout)
+
+
+def parse_proc_stat(content: str) -> CpuSample:
+    """Parse total and per-core CPU counters from /proc/stat."""
+    rows = {}
+    for line in content.splitlines():
+        fields = line.split()
+        if not fields or not re.fullmatch(r'cpu\d*', fields[0]):
+            continue
+        if len(fields) < 5 or not all(
+            re.fullmatch(r'\d+', value) for value in fields[1:]
+        ):
+            raise ValueError(f'malformed /proc/stat CPU row: {line!r}')
+        label = fields[0]
+        if label in rows:
+            raise ValueError(f'duplicate /proc/stat CPU row: {label}')
+        counters = tuple(int(value) for value in fields[1:])
+        # guest and guest_nice are already included in user and nice.
+        total = sum(counters[:8])
+        idle = counters[3] + (counters[4] if len(counters) > 4 else 0)
+        rows[label] = CpuTimes(total=total, idle=idle)
+
+    if 'cpu' not in rows:
+        raise ValueError('/proc/stat does not contain an aggregate CPU row')
+    cores = tuple(
+        sorted(
+            (
+                (int(label[3:]), times)
+                for label, times in rows.items()
+                if label != 'cpu'
+            ),
+            key=lambda item: item[0],
+        )
+    )
+    if not cores:
+        raise ValueError('/proc/stat does not contain per-core CPU rows')
+    return CpuSample(total=rows['cpu'], cores=cores)
+
+
+def calculate_cpu_utilization(
+    previous: CpuSample,
+    current: CpuSample,
+) -> CpuUtilization:
+    """Calculate busy percentages from two /proc/stat counter samples."""
+    previous_cores = dict(previous.cores)
+    current_cores = dict(current.cores)
+    if previous_cores.keys() != current_cores.keys():
+        raise ValueError('per-core /proc/stat rows changed between samples')
+
+    def percentage(old: CpuTimes, new: CpuTimes) -> float:
+        total_delta = new.total - old.total
+        idle_delta = new.idle - old.idle
+        if total_delta <= 0 or idle_delta < 0 or idle_delta > total_delta:
+            raise ValueError('invalid /proc/stat counter delta')
+        busy = total_delta - idle_delta
+        return min(100.0, max(0.0, 100.0 * busy / total_delta))
+
+    core_ids = tuple(current_cores)
+    return CpuUtilization(
+        total_percent=percentage(previous.total, current.total),
+        core_ids=core_ids,
+        per_core_percent=tuple(
+            percentage(previous_cores[index], current_cores[index])
+            for index in core_ids
+        ),
+    )
+
+
+def parse_loadavg(content: str) -> LoadAverage:
+    """Parse load averages and runnable count from /proc/loadavg."""
+    fields = content.split()
+    if len(fields) < 4:
+        raise ValueError(f'malformed /proc/loadavg: {content!r}')
+    try:
+        averages = tuple(float(value) for value in fields[:3])
+    except ValueError:
+        raise ValueError(f'malformed /proc/loadavg: {content!r}') from None
+    if not all(math.isfinite(value) and value >= 0.0 for value in averages):
+        raise ValueError(f'malformed /proc/loadavg: {content!r}')
+    runnable_match = re.fullmatch(r'(\d+)/(\d+)', fields[3])
+    if runnable_match is None:
+        raise ValueError(f'malformed /proc/loadavg: {content!r}')
+    runnable = int(runnable_match.group(1))
+    total = int(runnable_match.group(2))
+    if runnable > total:
+        raise ValueError(f'malformed /proc/loadavg: {content!r}')
+    return LoadAverage(*averages, runnable_processes=runnable)
 
 
 def decode_throttled(raw: int) -> ThrottledState:
