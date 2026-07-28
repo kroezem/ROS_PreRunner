@@ -22,7 +22,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from runner_drive_adapter.drive_adapter_node import DriveAdapterNode
-from runner_interfaces.msg import EncoderState
+from runner_interfaces.msg import AdapterState, EncoderState
 from std_msgs.msg import String
 
 
@@ -42,6 +42,7 @@ def test_graph_ownership_staleness_and_diagnostics():
 
     commands = []
     states = []
+    typed_states = []
     probe.create_subscription(
         Twist,
         '/cmd_vel_auto',
@@ -52,6 +53,12 @@ def test_graph_ownership_staleness_and_diagnostics():
         String,
         '/drive_adapter/state',
         states.append,
+        10,
+    )
+    probe.create_subscription(
+        AdapterState,
+        '/drive_adapter/state_typed',
+        typed_states.append,
         10,
     )
     nav_pub = probe.create_publisher(Twist, '/cmd_vel_nav', 10)
@@ -96,19 +103,28 @@ def test_graph_ownership_staleness_and_diagnostics():
         ))
         motion = Odometry()
         motion.twist.twist.linear.x = 0.20
+        motion.twist.twist.angular.z = 0.15
         motion_pub.publish(motion)
         command = Twist()
         command.linear.x = 0.20
+        command.angular.z = 0.10
         nav_pub.publish(command)
         _spin_for(executor, 0.15)
         assert commands
         assert commands[-1].linear.x > 0.0
-        assert commands[-1].angular.z == 0.0
+        assert commands[-1].angular.z > 0.0
         assert any('mode=forward' in state.data for state in states)
         assert 'measured_speed=' in states[-1].data
         assert 'integrator_state=' in states[-1].data
         assert 'wheelspin_guard=' in states[-1].data
         assert 'steering_saturated=false' in states[-1].data
+        assert typed_states
+        assert typed_states[-1].commanded_speed == 0.20
+        assert typed_states[-1].commanded_yaw_rate == 0.10
+        assert typed_states[-1].measured_yaw_rate == 0.15
+        assert typed_states[-1].steering_curvature_requested == 0.5
+        assert typed_states[-1].steering_curvature_max > 0.0
+        assert typed_states[-1].mode == 'forward'
         assert probe.get_publishers_info_by_topic('/stall_assist/state') == []
 
         _spin_for(executor, 0.30)

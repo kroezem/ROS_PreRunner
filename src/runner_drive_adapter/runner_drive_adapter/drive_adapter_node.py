@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ROS interface for Runner closed-loop speed conversion."""
+"""
+ROS interface for Runner closed-loop speed conversion.
 
+Measured yaw rate is sourced from
+``/odometry/filtered.twist.twist.angular.z``. Steering control remains
+open-loop; this odometry signal is its first measured response diagnostic.
+"""
+
+import math
 import time
 
 from geometry_msgs.msg import Twist
@@ -22,7 +29,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from runner_drive_adapter.drive_adapter import AdapterConfig, DriveAdapter
-from runner_interfaces.msg import EncoderState
+from runner_interfaces.msg import AdapterState, EncoderState
 from std_msgs.msg import String
 
 
@@ -106,6 +113,10 @@ class DriveAdapterNode(Node):
         self._state_pub = self.create_publisher(
             String, '/drive_adapter/state', 10
         )
+        self._typed_state_pub = self.create_publisher(
+            AdapterState, '/drive_adapter/state_typed', 10
+        )
+        self._measured_yaw_rate = 0.0
         self.create_subscription(
             Twist, '/cmd_vel_nav', self._on_command, 10
         )
@@ -129,6 +140,7 @@ class DriveAdapterNode(Node):
         )
 
     def _on_motion(self, message: Odometry) -> None:
+        self._measured_yaw_rate = message.twist.twist.angular.z
         self.adapter.update_motion(
             message.twist.twist.linear.x,
             time.monotonic(),
@@ -146,6 +158,7 @@ class DriveAdapterNode(Node):
         now = time.monotonic()
         decision = self.adapter.step(now)
         self._state_pub.publish(String(data=decision.diagnostic_text()))
+        self._typed_state_pub.publish(self._typed_state(decision))
         self._warn_for_decision(decision, now)
         if not decision.publish_command:
             return
@@ -153,6 +166,40 @@ class DriveAdapterNode(Node):
         output.linear.x = decision.final_throttle
         output.angular.z = decision.normalized_steering
         self._cmd_pub.publish(output)
+
+    def _typed_state(self, decision) -> AdapterState:
+        """Build the plot-friendly view of one adapter decision."""
+        command = self.adapter.latest_command
+        commanded_yaw_rate = command[1] if command is not None else 0.0
+        curvature = 0.0
+        if (
+            command is not None
+            and math.isfinite(command[0])
+            and math.isfinite(commanded_yaw_rate)
+            and command[0] != 0.0
+        ):
+            curvature = commanded_yaw_rate / command[0]
+
+        message = AdapterState()
+        message.stamp = self.get_clock().now().to_msg()
+        message.commanded_speed = decision.commanded_speed
+        message.measured_speed = decision.measured_speed
+        message.speed_error = decision.speed_error
+        message.feedforward_throttle = decision.feedforward_throttle
+        message.proportional_term = decision.proportional_term
+        message.integrator_state = decision.integrator_state
+        message.pi_term = decision.pi_term
+        message.final_throttle = decision.final_throttle
+        message.commanded_yaw_rate = commanded_yaw_rate
+        message.measured_yaw_rate = self._measured_yaw_rate
+        message.normalized_steering = decision.normalized_steering
+        message.steering_curvature_requested = curvature
+        message.steering_curvature_max = self.config.maximum_curvature
+        message.integrator_enabled = decision.integrator_enabled
+        message.steering_saturated = decision.steering_saturated
+        message.wheelspin_guard = decision.wheelspin_guard
+        message.mode = decision.mode
+        return message
 
     def _warn_for_decision(self, decision, now: float) -> None:
         command = self.adapter.latest_command
