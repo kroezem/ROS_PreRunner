@@ -1,0 +1,27 @@
+drive_adapter:
+  ros__parameters:
+    wheelbase: 0.178
+    max_steering_angle: 0.3054
+    steering_min_speed: 0.05
+
+    # Monotonic steady-state feedforward measurements. The measured
+    # 0.370 -> 0.209 m/s point is excluded: it was a single noisy sample with
+    # run standard deviation 0.094 m/s, while 0.360 was measured twice at
+    # 0.229 and 0.237 m/s.
+    throttle_breakpoints: [0.340, 0.350, 0.360, 0.380]
+    speed_breakpoints: [0.126, 0.188, 0.233, 0.290]
+
+    minimum_moving_speed: 0.126
+    floor_promotion_min_ratio: 0.50
+    breakaway_throttle: 0.380
+    breakaway_timeout: 0.75
+
+    # EncoderState.edge_rate is unsigned physical edges/s. One sigma of the
+    # measured speed noise is 0.0034 / 0.010282 = 0.331 edges/s. This 1.0
+    # edges/s threshold is approximately 3 sigma, equals 0.010282 m/s, and is
+    # well below the 0.126 m/s minimum moving speed (12.254 edges/s).
+    motion_confirm_edge_rate: 1.0
+    encoder_state_timeout: 0.25
+
+    cmd_vel_nav_timeout: 0.25
+    publication_rate: 20.0
