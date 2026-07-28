@@ -52,6 +52,20 @@ def generate_launch_description():
         ),
         Node(
             package='runner_teleop',
+            executable='keyboard_bridge',
+            name='keyboard_bridge',
+            output='screen',
+            parameters=[{
+                'bind_address': '0.0.0.0',
+                'port': 49321,
+                'allowed_source_ip': '',
+                'input_timeout': 0.15,
+                'speed_cap': 0.50,
+                'publication_rate': 20.0,
+            }],
+        ),
+        Node(
+            package='runner_teleop',
             executable='teleop_node',
             name='runner_teleop',
             output='screen',
@@ -64,6 +78,8 @@ def generate_launch_description():
                 'fixed_throttle_step': 0.01,
                 'fixed_throttle_max_setpoint': 0.50,
                 'fixed_throttle_min_setpoint': 0.00,
+                'controller_timeout': 0.15,
+                'keyboard_state_timeout': 0.15,
             }],
         ),
         Node(

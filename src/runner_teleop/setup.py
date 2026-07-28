@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'keyboard_bridge = runner_teleop.keyboard_bridge:main',
             'teleop_node = runner_teleop.teleop_node:main',
         ],
     },

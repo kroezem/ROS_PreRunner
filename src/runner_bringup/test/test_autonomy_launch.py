@@ -40,11 +40,12 @@ def test_composite_includes_nav2_once_and_passes_map_name():
 
 
 def test_composite_adds_only_missing_command_chain_nodes():
-    """Nav2 supplies sensors and encoder; the composite adds five owners."""
+    """Nav2 supplies sensors and encoder; composite adds the command chain."""
     packages = _node_packages(AUTONOMY_LAUNCH)
 
     assert packages == [
         'joy',
+        'runner_teleop',
         'runner_teleop',
         'runner_drive_adapter',
         'twist_mux',
@@ -62,7 +63,12 @@ def test_command_chain_parameters_match_the_stage2_bench():
     required_fragments = (
         "'autorepeat_rate': 20.0, 'deadzone': 0.05",
         "'deadman_button': 0",
+        "'controller_timeout': 0.15",
+        "'keyboard_state_timeout': 0.15",
         "'fixed_throttle_initial_setpoint': 0.30",
+        "executable='keyboard_bridge'",
+        "'input_timeout': 0.15",
+        "'speed_cap': 0.50",
         "package='runner_drive_adapter'",
         'parameters=[adapter_parameters]',
         "package='twist_mux'",

@@ -1,0 +1,78 @@
+"""Deterministic wire protocol for supervised keyboard teleoperation."""
+
+from dataclasses import dataclass
+import math
+import struct
+
+
+MAGIC = b'RKEY'
+VERSION = 1
+MODE_DRIVE = 0
+MODE_BRAKE = 1
+MODE_SUPPRESS = 2
+MODE_BRAKE_SUPPRESS = MODE_BRAKE | MODE_SUPPRESS
+VALID_MODE_MASK = MODE_BRAKE | MODE_SUPPRESS
+PACKET_FORMAT = '!4sBBQIff'
+PACKET_SIZE = struct.calcsize(PACKET_FORMAT)
+SERIAL_HALF_RANGE = 1 << 31
+SERIAL_MASK = (1 << 32) - 1
+
+
+class PacketError(ValueError):
+    """Raised when a datagram violates the keyboard protocol."""
+
+
+@dataclass(frozen=True)
+class KeyboardPacket:
+    """Validated sender state carried by one UDP datagram."""
+
+    mode: int
+    session_id: int
+    sequence: int
+    throttle: float
+    steering: float
+
+
+def decode_packet(data: bytes) -> KeyboardPacket:
+    """Decode and validate one exact-length version-one datagram."""
+    if len(data) != PACKET_SIZE:
+        raise PacketError(
+            f'wrong packet length {len(data)}; expected {PACKET_SIZE}'
+        )
+    magic, version, mode, session_id, sequence, throttle, steering = (
+        struct.unpack(PACKET_FORMAT, data)
+    )
+    if magic != MAGIC:
+        raise PacketError('wrong packet magic')
+    if version != VERSION:
+        raise PacketError(f'unsupported protocol version {version}')
+    if mode & ~VALID_MODE_MASK:
+        raise PacketError(f'unsupported mode flags 0x{mode:02x}')
+    if session_id == 0:
+        raise PacketError('session ID must be nonzero')
+    if not math.isfinite(throttle):
+        raise PacketError('throttle must be finite')
+    if not math.isfinite(steering):
+        raise PacketError('steering must be finite')
+    if not 0.0 <= throttle <= 1.0:
+        raise PacketError('throttle must be within [0.0, 1.0]')
+    if not -1.0 <= steering <= 1.0:
+        raise PacketError('steering must be within [-1.0, 1.0]')
+    return KeyboardPacket(
+        mode=mode,
+        session_id=session_id,
+        sequence=sequence,
+        throttle=throttle,
+        steering=steering,
+    )
+
+
+def sequence_delta(new: int, previous: int) -> int:
+    """Return the deliberate uint32 serial-number delta."""
+    return (new - previous) & SERIAL_MASK
+
+
+def is_newer_sequence(new: int, previous: int) -> bool:
+    """Apply RFC-1982-style ordering to uint32 sequence values."""
+    delta = sequence_delta(new, previous)
+    return 0 < delta < SERIAL_HALF_RANGE
