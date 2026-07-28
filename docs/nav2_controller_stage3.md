@@ -32,7 +32,10 @@ Smac uses its curvature-constrained DUBIN search path directly. `smooth_path`
 is false because the Jazzy gradient smoother tightened a measured
 2.1278 m^-1 search path to 2.4329 m^-1, beyond the vehicle's measured
 2.1236 m^-1 limit. With smoothing disabled, `/plan` retains the geometry
-published on `/unsmoothed_plan`.
+published on `/unsmoothed_plan`. Its minimum turning radius is 0.60 m, capping
+planned curvature at 1.667 m^-1. The measured 2.1236 m^-1 physical limit is
+unchanged; the difference reserves about 27% path-following curvature
+headroom for cross-track correction.
 
 ## Regulated Pure Pursuit
 

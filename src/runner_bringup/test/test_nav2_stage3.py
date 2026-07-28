@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
+import pytest
 import yaml
 
 
@@ -70,11 +71,15 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert controller['enable_stamped_cmd_vel'] is False
 
 
-def test_planner_uses_measured_base_link_turning_radius():
-    """Smac uses the measured base-link radius, not outer-wheel sweep."""
+def test_planner_reserves_curvature_headroom_for_path_tracking():
+    """Smac plans below the physical limit so RPP can correct tracking."""
     planner = _params()['planner_server']['ros__parameters']['GridBased']
 
-    assert planner['minimum_turning_radius'] == 0.470
+    assert planner['minimum_turning_radius'] == 0.60
+    planned_curvature = 1.0 / planner['minimum_turning_radius']
+    physical_curvature = 2.1236
+    assert planned_curvature == pytest.approx(1.6667, abs=0.0001)
+    assert planned_curvature / physical_curvature < 0.79
 
 
 def test_smac_smoothing_is_disabled_to_preserve_feasible_curvature():

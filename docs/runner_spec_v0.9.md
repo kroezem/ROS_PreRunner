@@ -401,7 +401,7 @@ Straight-line wheelspin is tolerated (pure-X error, usually snaps back). Fishtai
 
 - `map_server` owns `/map`, serving the static `.pgm`/`.yaml`. **slam_toolbox's map output is remapped to `/slam_map`** — its published bounds vary within a session (D-40: width 254–428, origin x −14.097 to −11.342), so it cannot back a global costmap.
 - slam_toolbox retains `map→odom`. **No AMCL** — it would contend for that edge.
-- Smac Hybrid-A\*, **DUBIN**, `minimum_turning_radius: 0.565`, `allow_unknown: false`. Reverse disabled through the motion model; there is no separate reverse parameter.
+- Smac Hybrid-A\*, **DUBIN**, `minimum_turning_radius: 0.60`, `allow_unknown: false`. Reverse is disabled through the motion model. The radius deliberately reserves curvature headroom below the measured steering limit for path-following correction.
 - Static map **re-exported at 0.025 m/cell** (was 0.050; at 0.05 the vehicle is only 3.4 cells wide, too coarse for Smac footprint checking). The 0.050 pair is preserved under backup names. `.posegraph`/`.data` unmodified.
 - **Inflation radius 0.30 m, cost scaling 5.0.** Nav2's 0.55 m default would flood the interior with elevated cost, flattening the gradient the planner uses to prefer open routes. Validated: a 0.98 m doorway retains a ~0.85 m sub-inscribed channel with a ~0.33 m zero-cost core.
 - **Planning-only behaviour tree** containing only `ComputePathToPose` — no `FollowPath`, `Spin`, `BackUp`, `RecoveryNode`, or `ClearEntireCostmap`.
