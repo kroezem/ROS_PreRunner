@@ -66,10 +66,13 @@ at 1.25 m^-1. This is 0.235 m above the physical 0.565 m minimum radius and
 below the generic 0.90 m plugin default. With 0.80 m configured, observed
 1.522-1.556 m^-1 commands slowed from 0.290 m/s to a median 0.234751 m/s.
 
-`nav2_controller::PositionGoalChecker` owns goal completion with a 0.10 m XY
-tolerance and ignores final yaw. This avoids a final rotate-in-place request.
-The planner still uses the requested goal orientation to form a
-kinematically feasible Dubins path.
+`nav2_controller::SimpleGoalChecker` owns goal completion with a 0.10 m XY
+tolerance and a deliberately loose 0.5 rad yaw tolerance. The planner uses
+the requested orientation to form a kinematically feasible Dubins path; goal
+completion now waits for the path's final heading arc without demanding the
+precision of a rotate-in-place platform. `stateful` is false so entering the
+XY window early does not permanently latch position while the car continues
+along that arc: position and heading must be satisfied together.
 
 ## Local costmap
 

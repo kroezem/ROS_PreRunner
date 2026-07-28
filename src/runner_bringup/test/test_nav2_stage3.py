@@ -77,6 +77,18 @@ def test_planner_uses_measured_base_link_turning_radius():
     assert planner['minimum_turning_radius'] == 0.470
 
 
+def test_goal_checker_requires_position_and_loose_final_heading():
+    """Goal completion checks pose without latching an early XY crossing."""
+    checker = _params()['controller_server']['ros__parameters'][
+        'goal_checker'
+    ]
+
+    assert checker['plugin'] == 'nav2_controller::SimpleGoalChecker'
+    assert checker['xy_goal_tolerance'] == 0.10
+    assert checker['yaw_goal_tolerance'] == 0.5
+    assert checker['stateful'] is False
+
+
 def test_default_static_map_matches_global_costmap_resolution():
     """Smac configures against the ratified static-map resolution."""
     map_name = re.search(

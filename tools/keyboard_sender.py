@@ -27,7 +27,7 @@ PACKET_FORMAT = '!4sBBQIffB'
 DEFAULT_PORT = 49321
 SEND_PERIOD = 0.05
 SHUTDOWN_PACKET_COUNT = 5
-DEFAULT_AUTONOMY_HOLD_TIMEOUT = 30.0
+DEFAULT_AUTONOMY_HOLD_TIMEOUT = 600.0
 ROUTE_KEYS = {
     'route_start': ROUTE_START,
     'route_stop': ROUTE_STOP,
@@ -230,7 +230,7 @@ def main(argv=None):
         '--autonomy-hold-timeout',
         type=positive_seconds,
         default=DEFAULT_AUTONOMY_HOLD_TIMEOUT,
-        help='maximum continuous ` hold in seconds (default: 30)',
+        help='maximum continuous ` hold in seconds (default: 600)',
     )
     args = parser.parse_args(argv)
     try:

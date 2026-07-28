@@ -17,6 +17,10 @@ sender = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sender)
 
 
+def test_default_autonomy_hold_covers_long_routes():
+    assert sender.DEFAULT_AUTONOMY_HOLD_TIMEOUT == 600.0
+
+
 @pytest.fixture
 def state():
     return sender.KeyboardInput(0.30, 30.0)

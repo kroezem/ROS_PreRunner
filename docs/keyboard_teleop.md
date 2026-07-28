@@ -16,7 +16,7 @@ Space is the driving hold-to-run key. While Space is held, W requests the
 selected throttle, S requests full brake, and A/D request full steering.
 Releasing Space disarms WASD and requests brake. The backtick key enables
 autonomy suppression, equivalent to controller L1. A continuous backtick hold
-expires after 30 seconds by default and requires release and re-press; override
+expires after 600 seconds by default and requires release and re-press; override
 it with `--autonomy-hold-timeout`. `=`/`-` change the throttle setpoint by
 0.01 once per physical press. Escape clears all held-key state and requests
 brake.
@@ -52,5 +52,5 @@ refreshing liveness.
 
 After controller preemption, packet timeout, network loss, or laptop sleep, a
 held W cannot resume motion until W is released and pressed again. A held
-backtick cannot resume autonomy suppression after its 30-second timeout until
+backtick cannot resume autonomy suppression after its 600-second timeout until
 it is released and pressed again.
