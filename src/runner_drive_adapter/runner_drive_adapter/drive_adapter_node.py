@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ROS interface for Runner SI conversion and bounded stall assistance."""
+"""ROS interface for Runner closed-loop speed conversion."""
 
 import time
 
@@ -23,7 +23,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from runner_drive_adapter.drive_adapter import AdapterConfig, DriveAdapter
 from runner_interfaces.msg import EncoderState
-from std_msgs.msg import Float32, String, UInt32
+from std_msgs.msg import String
 
 
 WARNING_THROTTLE_SECONDS = 5.0
@@ -57,23 +57,18 @@ class DriveAdapterNode(Node):
             'steering_min_speed',
             'minimum_moving_speed',
             'floor_promotion_min_ratio',
-            'stall_assist_enabled',
-            'under_speed_ratio',
-            'under_speed_absolute_ceiling',
-            'under_speed_qualification_sec',
-            'command_stability_tolerance',
-            'ramp_rate_per_sec',
-            'boost_throttle_ceiling',
-            'maximum_assist_duration_sec',
-            'motion_confirm_speed',
-            'motion_confirm_duration_sec',
-            'motion_hold_duration_sec',
-            'decay_rate_per_sec',
-            'overspeed_margin',
-            'wheelspin_edge_rate_threshold',
-            'wheelspin_vehicle_speed_threshold',
+            'maximum_commanded_speed',
+            'proportional_gain',
+            'integral_gain',
+            'integrator_min',
+            'integrator_max',
+            'output_min',
+            'output_max',
+            'breakaway_integrator_preload',
+            'encoder_metres_per_edge',
+            'wheelspin_speed_ratio',
+            'wheelspin_min_speed_excess',
             'wheelspin_qualification_sec',
-            'cooldown_duration_sec',
             'motion_signal_timeout_sec',
             'encoder_state_timeout_sec',
             'cmd_vel_nav_timeout',
@@ -110,18 +105,6 @@ class DriveAdapterNode(Node):
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto', 10)
         self._state_pub = self.create_publisher(
             String, '/drive_adapter/state', 10
-        )
-        self._assist_state_pub = self.create_publisher(
-            String, '/stall_assist/state', 10
-        )
-        self._boost_pub = self.create_publisher(
-            Float32, '/stall_assist/applied_boost', 10
-        )
-        self._event_count_pub = self.create_publisher(
-            UInt32, '/stall_assist/event_count', 10
-        )
-        self._exit_reason_pub = self.create_publisher(
-            String, '/stall_assist/last_exit_reason', 10
         )
         self.create_subscription(
             Twist, '/cmd_vel_nav', self._on_command, 10
@@ -162,8 +145,7 @@ class DriveAdapterNode(Node):
     def _publish(self) -> None:
         now = time.monotonic()
         decision = self.adapter.step(now)
-        self._publish_diagnostics(decision)
-        self._log_events()
+        self._state_pub.publish(String(data=decision.diagnostic_text()))
         self._warn_for_decision(decision, now)
         if not decision.publish_command:
             return
@@ -171,37 +153,6 @@ class DriveAdapterNode(Node):
         output.linear.x = decision.final_throttle
         output.angular.z = decision.normalized_steering
         self._cmd_pub.publish(output)
-
-    def _publish_diagnostics(self, decision) -> None:
-        self._state_pub.publish(String(data=decision.diagnostic_text()))
-        self._assist_state_pub.publish(
-            String(data=decision.assist_state)
-        )
-        self._boost_pub.publish(
-            Float32(data=float(decision.applied_boost))
-        )
-        self._event_count_pub.publish(
-            UInt32(data=decision.event_count)
-        )
-        self._exit_reason_pub.publish(
-            String(data=decision.last_exit_reason)
-        )
-
-    def _log_events(self) -> None:
-        for event in self.adapter.take_transition_events():
-            if event.startswith('start:'):
-                self.get_logger().info(
-                    f'Stall assist started: {event.removeprefix("start:")}'
-                )
-            else:
-                self.get_logger().info(
-                    'Stall assist state: '
-                    f'{event.removeprefix("transition:")}'
-                )
-        for summary in self.adapter.take_event_summaries():
-            self.get_logger().info(
-                f'Stall assist summary: {summary.diagnostic_text()}'
-            )
 
     def _warn_for_decision(self, decision, now: float) -> None:
         command = self.adapter.latest_command
@@ -220,11 +171,11 @@ class DriveAdapterNode(Node):
                 'Rejecting non-finite /cmd_vel_nav input; full brake',
                 now,
             )
-        elif decision.reason == 'above_table_clamped':
+        elif decision.reason == 'maximum_speed_clamped':
             self._warning(
-                'above_table_clamped',
-                f'Requested speed {speed:.9f} m/s exceeds table maximum '
-                f'{self.config.speed_breakpoints[-1]:.9f} m/s; clamping',
+                'maximum_speed_clamped',
+                f'Requested speed {speed:.9f} m/s exceeds configured maximum '
+                f'{self.config.maximum_commanded_speed:.9f} m/s; clamping',
                 now,
             )
         elif decision.reason == 'steering_infeasible':
@@ -238,22 +189,12 @@ class DriveAdapterNode(Node):
                 f'{self.config.maximum_curvature:.12f} 1/m',
                 now,
             )
-        if (
-            decision.mode == 'forward'
-            and decision.assist_state in {'NORMAL', 'QUALIFYING'}
-        ):
-            if self.adapter.motion_is_stale(now):
-                self._warning(
-                    'motion_signal_stale',
-                    'EKF motion signal is stale; stall assist suppressed',
-                    now,
-                )
-            elif self.adapter.encoder_is_stale(now):
-                self._warning(
-                    'encoder_stale',
-                    'Encoder state is stale; stall assist suppressed',
-                    now,
-                )
+        if decision.reason == 'encoder_stale_feedforward':
+            self._warning(
+                'encoder_stale',
+                'Encoder state is stale; using feedforward with frozen PI',
+                now,
+            )
 
     def _warning(self, key: str, message: str, now: float) -> None:
         if self._warnings.allows(key, now):
@@ -272,21 +213,19 @@ class DriveAdapterNode(Node):
             f'maximum_curvature={c.maximum_curvature:.12f} 1/m'
         )
         self.get_logger().info(
-            'Drive table unchanged: '
+            'Drive table retained: '
             f'speeds={list(c.speed_breakpoints)} m/s, '
             f'throttles={list(c.throttle_breakpoints)}, '
-            f'maximum_supported_speed={c.speed_breakpoints[-1]:.6f} m/s'
+            f'maximum_commanded_speed={c.maximum_commanded_speed:.6f} m/s'
         )
         self.get_logger().info(
-            'Stall assist: primary_motion_signal=ekf_velocity, '
-            f'enabled={c.stall_assist_enabled}, '
-            f'under_speed_ratio={c.under_speed_ratio:.6f}, '
-            f'under_speed_absolute_ceiling='
-            f'{c.under_speed_absolute_ceiling:.6f} m/s, '
-            f'qualification={c.under_speed_qualification_sec:.6f} s, '
-            f'ramp_rate={c.ramp_rate_per_sec:.6f}/s, '
-            f'ceiling={c.boost_throttle_ceiling:.6f}, '
-            f'maximum_duration={c.maximum_assist_duration_sec:.6f} s'
+            'Speed control: primary_feedback=encoder_edge_rate, '
+            f'kp={c.proportional_gain:.6f}, '
+            f'ki={c.integral_gain:.6f}, '
+            f'output_bounds=[{c.output_min:.6f}, {c.output_max:.6f}], '
+            f'wheelspin_ratio={c.wheelspin_speed_ratio:.6f}, '
+            f'wheelspin_qualification='
+            f'{c.wheelspin_qualification_sec:.6f} s'
         )
 
     def record_shutdown(self) -> None:
@@ -295,7 +234,6 @@ class DriveAdapterNode(Node):
             return
         self._shutdown_recorded = True
         self.adapter.shutdown(time.monotonic())
-        self._log_events()
 
     def destroy_node(self):
         """End any active event without publishing another motor command."""

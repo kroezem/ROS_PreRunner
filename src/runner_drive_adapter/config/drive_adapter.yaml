@@ -13,26 +13,20 @@ drive_adapter:
 
     minimum_moving_speed: 0.126
     floor_promotion_min_ratio: 0.50
+    maximum_commanded_speed: 0.60
 
-    # Bounded terrain assist. EKF body-forward velocity is primary; encoder
-    # edge rate and pending command direction are the wheelspin cross-check.
-    stall_assist_enabled: true
-    under_speed_ratio: 0.40
-    under_speed_absolute_ceiling: 0.10
-    under_speed_qualification_sec: 0.30
-    command_stability_tolerance: 0.02
-    ramp_rate_per_sec: 0.10
-    boost_throttle_ceiling: 0.50
-    maximum_assist_duration_sec: 1.50
-    motion_confirm_speed: 0.06
-    motion_confirm_duration_sec: 0.20
-    motion_hold_duration_sec: 0.30
-    decay_rate_per_sec: 0.15
-    overspeed_margin: 0.02
-    wheelspin_edge_rate_threshold: 1.0
-    wheelspin_vehicle_speed_threshold: 0.02
-    wheelspin_qualification_sec: 0.25
-    cooldown_duration_sec: 0.50
+    proportional_gain: 0.30
+    integral_gain: 0.12
+    integrator_min: -0.25
+    integrator_max: 0.16
+    output_min: -0.20
+    output_max: 0.50
+    breakaway_integrator_preload: 0.04
+
+    encoder_metres_per_edge: 0.010282
+    wheelspin_speed_ratio: 1.50
+    wheelspin_min_speed_excess: 0.10
+    wheelspin_qualification_sec: 0.20
     motion_signal_timeout_sec: 0.25
     encoder_state_timeout_sec: 0.25
 
