@@ -8,11 +8,12 @@ drives manually. The analyzer only reads the resulting MCAP bag.
 
 `/cmd_vel.linear.x` is a normalized ESC command, not metres per second.
 `runner_teleop/teleop_node.py` maps R2 to `0.0` through `+1.0` and L2 to
-`0.0` through `-1.0` while the X dead-man is held. It publishes zero when
-the dead-man is released. `runner_motor/motor_node.py` clamps the field to
-`[-1.0, +1.0]`: positive is forward, values below `-0.05` request
-brake/reverse, and values from `-0.05` through zero produce the 1500 us
-neutral pulse. Zero is neutral/coast at this layer, not an active brake.
+`0.0` through `-1.0` while X is held. With no motion button held, it
+continuously publishes the race-mode full-brake command `-1.0`.
+`runner_motor/motor_node.py` clamps the field to `[-1.0, +1.0]`: positive is
+forward, values below `-0.05` request brake, and values from `-0.05` through
+zero produce the 1500 us neutral pulse. Zero is neutral/coast at this layer,
+not an active brake.
 
 The ESC conversion is in `motor_node.py`, after `/cmd_vel`: the first 0.05
 of positive magnitude ramps from 1500 to the configured 1550 us forward
@@ -22,6 +23,59 @@ brake/reverse limit. Those software values do **not** establish the physical
 ground-motion deadband; this protocol measures it. The published normalized
 values in the ladders below are therefore valid, but physical motion remains
 unknown until the test.
+
+## Operator controls
+
+- **X:** hold for normal manual drive. R2 supplies positive throttle.
+- **R1:** hold for fixed-throttle drive. R2 does not change its positive
+  throttle.
+- **L1:** operator-facing autonomy enable. Technically this is
+  `teleop_suppress`: teleop stops publishing `/cmd_vel` while L1 alone is
+  held. L1 by itself does not make autonomy safe or active.
+- **D-pad up/down:** raise/lower the process-lifetime fixed-throttle setpoint
+  by one configured step per press.
+- **L2:** proportional brake in both X and R1 modes; it overrides positive
+  throttle.
+- **Left stick:** steering remains live in X and R1 modes.
+- **Release all motion buttons:** full brake within the next 50 ms publication
+  cycle.
+
+The priority is:
+
+```text
+X > R1 > L1 > brake
+```
+
+| X | R1 | L1 | Effective behavior |
+|---|---|---|---|
+| released | released | released | Full brake |
+| held | any | any | Normal manual control |
+| released | held | any | Fixed-throttle control, unless inhibited |
+| released | released | held | Teleop publishes nothing |
+
+If X takes over while R1 is held, releasing X does not resume fixed throttle.
+Teleop reports `fixed_throttle_inhibited` and publishes full brake until R1
+is released. R1 must then be pressed again to request fixed throttle.
+
+The production defaults are an initial setpoint of `0.30`, step `0.01`,
+minimum `0.00`, and maximum `0.50`. The selected setpoint persists only for
+the teleop process lifetime and resets to `0.30` at every process start unless
+the production launch explicitly overrides the initial parameter. Every R1
+press logs the selected setpoint and expected race-mode ESC pulse. That pulse
+is calculated from the configured software mapping; it is not measured
+feedback.
+
+`/teleop/fixed_throttle_setpoint` (`std_msgs/msg/Float32`) continuously
+publishes the selected setpoint. `/teleop/active_mode`
+(`std_msgs/msg/String`) continuously publishes one of `brake`, `manual`,
+`fixed_throttle`, `teleop_suppress`, or `fixed_throttle_inhibited`.
+
+No command mux is implemented yet. A future mux will fall through to autonomy
+after its teleop input times out while L1 is held. Human teleop preemption
+will be immediate, while autonomy engagement will be delayed by that timeout.
+Configure the future teleop input timeout deliberately around `0.2 s`; do not
+leave it at an arbitrary default. The future mux and motor watchdog are the
+downstream safety gates.
 
 ## Area, vehicle, and safety
 
@@ -74,11 +128,13 @@ instead of recording if a required topic is absent or unhealthy.
 
 ## Required recording
 
-The bag must contain all six topics:
+The bag must contain all eight topics:
 
 | Topic | Why it is required |
 |---|---|
 | `/cmd_vel` | Source normalized command and constant-run boundaries. |
+| `/teleop/fixed_throttle_setpoint` | Selected repeatable positive command. |
+| `/teleop/active_mode` | Command provenance and suppression state. |
 | `/wheel/encoder_state` | Stationary status and unsigned edge-rate cross-check. |
 | `/wheel/odom` | Primary signed encoder-derived velocity. |
 | `/odometry/filtered` | EKF signed velocity comparison. |
@@ -86,7 +142,7 @@ The bag must contain all six topics:
 | `/scan` | Localization sensor coverage and later forensic checks. |
 
 Recording all topics is acceptable if that is operationally simpler, but
-verify these exact six afterward. Use MCAP. Do not enable shell nounset before
+verify these exact eight afterward. Use MCAP. Do not enable shell nounset before
 sourcing ROS; the Jazzy setup script is not nounset-safe in this environment.
 
 ```bash
@@ -98,6 +154,8 @@ ros2 bag record \
   --storage mcap \
   --output "$OUTPUT" \
   /cmd_vel \
+  /teleop/fixed_throttle_setpoint \
+  /teleop/active_mode \
   /wheel/encoder_state \
   /wheel/odom \
   /odometry/filtered \
@@ -111,7 +169,7 @@ Start recording before the first run and stop it after all end repeats. Then:
 ros2 bag info "$OUTPUT"
 ```
 
-Explicitly verify that all six required topics appear and that their message
+Explicitly verify that all eight required topics appear and that their message
 counts are plausible for the recorded duration.
 
 ## Timing and segment execution
