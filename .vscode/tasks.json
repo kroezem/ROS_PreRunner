@@ -4,7 +4,7 @@
     {
       "label": "Runner: Map",
       "type": "shell",
-      "command": "ros2 launch runner_bringup map.launch.py",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup map.launch.py'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
@@ -17,35 +17,35 @@
     {
       "label": "Runner: Localize",
       "type": "shell",
-      "command": "ros2 launch runner_bringup localize.launch.py map_name:=${input:runnerMap}",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup localize.launch.py map_name:=${input:runnerMap}'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
     {
       "label": "Runner: Nav2",
       "type": "shell",
-      "command": "ros2 launch runner_bringup nav2.launch.py map_name:=${input:runnerMap}",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup nav2.launch.py map_name:=${input:runnerMap}'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
     {
       "label": "Runner: Teleop",
       "type": "shell",
-      "command": "ros2 launch runner_bringup teleop.launch.py",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup teleop.launch.py'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
     {
       "label": "Runner: Autonomy Bench",
       "type": "shell",
-      "command": "ros2 launch runner_bringup autonomy_bench.launch.py",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup autonomy_bench.launch.py'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
     {
       "label": "Runner: Autonomy",
       "type": "shell",
-      "command": "ros2 launch runner_bringup autonomy.launch.py map_name:=${input:runnerMap}",
+      "command": "bash -lc 'source /opt/ros/jazzy/setup.bash; source \"$HOME/runner_ws/install/setup.bash\"; exec ros2 launch runner_bringup autonomy.launch.py map_name:=${input:runnerMap}'",
       "dependsOn": "Stop all launches",
       "problemMatcher": []
     },
