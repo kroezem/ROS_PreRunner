@@ -18,7 +18,7 @@ from launch_ros.actions import Node, SetRemap
 
 
 MAP_DIRECTORY = '/home/matti/runner_ws/maps'
-DEFAULT_MAP_NAME = 'house_good_v1'
+DEFAULT_MAP_NAME = 'collingwood'
 
 
 def _configure_map(context):

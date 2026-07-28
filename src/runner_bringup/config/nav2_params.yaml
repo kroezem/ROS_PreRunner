@@ -117,7 +117,7 @@ global_costmap:
       update_frequency: 5.0
       publish_frequency: 1.0
       transform_tolerance: 0.3
-      resolution: 0.025
+      resolution: 0.050
       rolling_window: false
       track_unknown_space: true
       always_send_full_costmap: true

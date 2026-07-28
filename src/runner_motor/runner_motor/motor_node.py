@@ -162,8 +162,10 @@ class MotorNode(Node):
         if time.monotonic() - self._last_cmd <= CMD_TIMEOUT_S:
             return
         if not self._cmd_timed_out:
+            pulse_us = watchdog_pulse_us(self._esc_mode)
             self.get_logger().warn(
-                '/cmd_vel watchdog timeout; ESC set to neutral'
+                '/cmd_vel watchdog timeout; '
+                f'esc_mode={self._esc_mode}; ESC pulse={pulse_us} us'
             )
             self._cmd_timed_out = True
             state_changed = self._dir_state != STOP
@@ -171,9 +173,7 @@ class MotorNode(Node):
             self._direction_pub.publish(Int8(data=0))
             if state_changed:
                 self._state_pub.publish(String(data=STOP))
-        self.esc.duty_cycle_ns = us_to_ns(
-            watchdog_pulse_us(self._esc_mode)
-        )
+        self.esc.duty_cycle_ns = us_to_ns(watchdog_pulse_us(self._esc_mode))
 
     def stop(self):
         self._write(NEUTRAL_US, STEER_CTR)

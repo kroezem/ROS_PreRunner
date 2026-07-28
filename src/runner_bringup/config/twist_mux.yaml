@@ -9,5 +9,5 @@ twist_mux:
         priority: 50
       teleop:
         topic: /cmd_vel_teleop
-        timeout: 0.20
+        timeout: 0.15
         priority: 100

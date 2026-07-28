@@ -32,11 +32,11 @@ No lock topics are configured. Any fresh teleop publication therefore
 preempts autonomy in the mux input callback, without waiting for a timeout.
 This includes manual X, fixed-throttle R1, and the normal full-brake command.
 
-The teleop timeout is `0.20 s`. Teleop normally publishes at 20 Hz, so four
+The teleop timeout is `0.15 s`. Teleop normally publishes at 20 Hz, so three
 nominal periods fit in the timeout: one missed 50 ms publication does not
 cause fallthrough. When L1 selects `teleop_suppress`, teleop publishes no
 command. A continuously publishing autonomy input can first pass on its next
-callback after the last teleop command is older than 0.20 s. Mux scheduling
+callback after the last teleop command is older than 0.15 s. Mux scheduling
 therefore adds up to approximately one 50 ms autonomy period. L1 is
 `teleop_suppress`; it is not, by itself, an autonomy arming gate.
 
@@ -54,7 +54,7 @@ and the watchdog brakes. If `drive_adapter` exits during L1 suppression,
 `/cmd_vel_auto` and then `/cmd_vel` become silent and the watchdog brakes.
 If teleop exits with no autonomy traffic, the watchdog brakes after the last
 mux output. If teleop exits while autonomy is publishing, the mux may fall
-through to autonomy after the 0.20 s teleop timeout; that is the ratified
+through to autonomy after the 0.15 s teleop timeout; that is the ratified
 priority-and-timeout behavior.
 
 The Stage 2 bench launch is:

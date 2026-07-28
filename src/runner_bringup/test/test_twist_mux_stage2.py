@@ -46,7 +46,7 @@ def test_mux_configuration_is_explicit_and_uses_only_stage2_inputs():
     assert set(parameters['topics']) == {'teleop', 'autonomy'}
     assert parameters['topics']['teleop'] == {
         'topic': '/cmd_vel_teleop',
-        'timeout': 0.20,
+        'timeout': 0.15,
         'priority': 100,
     }
     assert parameters['topics']['autonomy'] == {
@@ -204,7 +204,7 @@ def test_runtime_arbitration_preemption_fallthrough_and_stale_silence(
                     first_fallthrough = output_times[index]
                     break
         assert first_fallthrough is not None
-        assert 0.20 <= first_fallthrough - last_teleop <= 0.27
+        assert 0.15 <= first_fallthrough - last_teleop <= 0.22
 
         published_at = time.monotonic()
         teleop_pub.publish(teleop)

@@ -8,6 +8,7 @@ import yaml
 
 
 PACKAGE = Path(__file__).parents[1]
+WORKSPACE = PACKAGE.parents[1]
 LAUNCH_PATH = PACKAGE / 'launch' / 'nav2.launch.py'
 PARAMS_PATH = PACKAGE / 'config' / 'nav2_params.yaml'
 BT_PATH = (
@@ -68,6 +69,21 @@ def test_planner_uses_measured_base_link_turning_radius():
     planner = _params()['planner_server']['ros__parameters']['GridBased']
 
     assert planner['minimum_turning_radius'] == 0.470
+
+
+def test_default_static_map_matches_global_costmap_resolution():
+    """Smac configures against the ratified static-map resolution."""
+    map_name = re.search(
+        r"DEFAULT_MAP_NAME = '([^']+)'", LAUNCH_PATH.read_text()
+    ).group(1)
+    map_yaml = yaml.safe_load(
+        (WORKSPACE / 'maps' / f'{map_name}.yaml').read_text()
+    )
+    global_costmap = _params()['global_costmap']['global_costmap'][
+        'ros__parameters'
+    ]
+
+    assert map_yaml['resolution'] == global_costmap['resolution']
 
 
 def test_local_costmap_uses_raw_scan_and_ratified_geometry():

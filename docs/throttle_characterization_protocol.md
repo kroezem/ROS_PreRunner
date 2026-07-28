@@ -71,7 +71,7 @@ publishes the selected setpoint. `/teleop/active_mode`
 (`std_msgs/msg/String`) continuously publishes one of `brake`, `manual`,
 `fixed_throttle`, `teleop_suppress`, or `fixed_throttle_inhibited`.
 
-The Stage 2 mux falls through to autonomy after its 0.20 s teleop input
+The Stage 2 mux falls through to autonomy after its 0.15 s teleop input
 timeout while L1 suppression is held. Human teleop preemption is immediate,
 while autonomy engagement is delayed by that timeout and the next autonomy
 publication. The independent motor watchdog remains the final safety

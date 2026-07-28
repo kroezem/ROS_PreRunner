@@ -164,8 +164,10 @@ def test_watchdog_sets_stop_and_publishes_zero(motor_factory, mode):
 
     direction_messages = []
     state_messages = []
+    warnings = []
     node._direction_pub.publish = direction_messages.append
     node._state_pub.publish = state_messages.append
+    node.get_logger().warn = warnings.append
 
     node._watchdog()
 
@@ -174,3 +176,7 @@ def test_watchdog_sets_stop_and_publishes_zero(motor_factory, mode):
     assert state_messages[-1].data == motor_node.STOP
     expected = 1000 if mode == 'race' else 1500
     assert node.esc.duty_cycle_ns == motor_node.us_to_ns(expected)
+    assert warnings == [
+        '/cmd_vel watchdog timeout; '
+        f'esc_mode={mode}; ESC pulse={expected} us'
+    ]
