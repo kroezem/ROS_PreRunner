@@ -93,7 +93,8 @@ local_costmap:
       rolling_window: true
       track_unknown_space: false
       always_send_full_costmap: true
-      footprint: "[[0.235, 0.100], [0.235, -0.100], [-0.060, -0.100], [-0.060, 0.100]]"
+      footprint: "[[0.230, 0.0825], [0.230, -0.0825], [-0.060, -0.0825], [-0.060, 0.0825]]"
+      footprint_padding: 0.0
       plugins:
         - obstacle_layer
         - inflation_layer
@@ -133,7 +134,8 @@ global_costmap:
       rolling_window: false
       track_unknown_space: true
       always_send_full_costmap: true
-      footprint: "[[0.235, 0.100], [0.235, -0.100], [-0.060, -0.100], [-0.060, 0.100]]"
+      footprint: "[[0.230, 0.0825], [0.230, -0.0825], [-0.060, -0.0825], [-0.060, 0.0825]]"
+      footprint_padding: 0.0
       plugins:
         - static_layer
         - inflation_layer

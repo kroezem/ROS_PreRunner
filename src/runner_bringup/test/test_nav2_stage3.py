@@ -135,9 +135,10 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     assert local['update_frequency'] == 10.0
     assert local['publish_frequency'] == 5.0
     assert local['footprint'] == (
-        '[[0.235, 0.100], [0.235, -0.100], '
-        '[-0.060, -0.100], [-0.060, 0.100]]'
+        '[[0.230, 0.0825], [0.230, -0.0825], '
+        '[-0.060, -0.0825], [-0.060, 0.0825]]'
     )
+    assert local['footprint_padding'] == 0.0
     assert obstacle['observation_sources'] == 'scan'
     assert obstacle['scan']['topic'] == '/scan'
     assert obstacle['scan']['data_type'] == 'LaserScan'
