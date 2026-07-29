@@ -82,6 +82,8 @@ class DriveAdapterNode(Node):
             'motion_signal_timeout_sec',
             'encoder_state_timeout_sec',
             'cmd_vel_nav_timeout',
+            'active_mode_timeout_sec',
+            'preemption_integrator_decay_rate',
             'publication_rate',
         )
         for name in names:
@@ -132,6 +134,9 @@ class DriveAdapterNode(Node):
             self._on_encoder,
             10,
         )
+        self.create_subscription(
+            String, '/teleop/active_mode', self._on_active_mode, 10
+        )
         self.create_timer(1.0 / config.publication_rate, self._publish)
         self._log_startup()
 
@@ -156,6 +161,9 @@ class DriveAdapterNode(Node):
             message.pending_direction,
             time.monotonic(),
         )
+
+    def _on_active_mode(self, message: String) -> None:
+        self.adapter.update_active_mode(message.data, time.monotonic())
 
     def _publish(self) -> None:
         now = time.monotonic()
@@ -201,7 +209,17 @@ class DriveAdapterNode(Node):
         message.integrator_enabled = decision.integrator_enabled
         message.steering_saturated = decision.steering_saturated
         message.wheelspin_guard = decision.wheelspin_guard
-        message.mode = decision.mode
+        message.mode = (
+            f'{decision.mode};'
+            f'active_mode_received='
+            f'{str(decision.active_mode_received).lower()};'
+            f'active_mode_fresh='
+            f'{str(decision.active_mode_fresh).lower()};'
+            f'active_mode={decision.active_mode};'
+            f'preempted={str(decision.preempted).lower()};'
+            f'integral_decay_active='
+            f'{str(decision.integral_decay_active).lower()}'
+        )
         return message
 
     def _warn_for_decision(self, decision, now: float) -> None:
@@ -290,7 +308,10 @@ class DriveAdapterNode(Node):
             f'output_bounds=[{c.output_min:.6f}, {c.output_max:.6f}], '
             f'wheelspin_ratio={c.wheelspin_speed_ratio:.6f}, '
             f'wheelspin_qualification='
-            f'{c.wheelspin_qualification_sec:.6f} s'
+            f'{c.wheelspin_qualification_sec:.6f} s, '
+            f'active_mode_timeout={c.active_mode_timeout_sec:.6f} s, '
+            f'preemption_integrator_decay_rate='
+            f'{c.preemption_integrator_decay_rate:.6f}/s'
         )
 
     def record_shutdown(self) -> None:

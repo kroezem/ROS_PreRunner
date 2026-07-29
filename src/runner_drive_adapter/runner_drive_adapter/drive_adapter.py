@@ -120,6 +120,8 @@ class AdapterConfig:
     motion_signal_timeout_sec: float = 0.25
     encoder_state_timeout_sec: float = 0.25
     cmd_vel_nav_timeout: float = 0.25
+    active_mode_timeout_sec: float = 0.20
+    preemption_integrator_decay_rate: float = 0.0625
     publication_rate: float = 20.0
 
     def __post_init__(self) -> None:
@@ -151,6 +153,9 @@ class AdapterConfig:
             'motion_signal_timeout_sec': self.motion_signal_timeout_sec,
             'encoder_state_timeout_sec': self.encoder_state_timeout_sec,
             'cmd_vel_nav_timeout': self.cmd_vel_nav_timeout,
+            'active_mode_timeout_sec': self.active_mode_timeout_sec,
+            'preemption_integrator_decay_rate':
+                self.preemption_integrator_decay_rate,
             'publication_rate': self.publication_rate,
         }
         for name, value in positive.items():
@@ -257,6 +262,11 @@ class AdapterDecision:
     steering_saturated: bool = False
     integral_gain: float = 0.0
     stall_integral_gain_active: bool = False
+    active_mode_received: bool = False
+    active_mode_fresh: bool = False
+    active_mode: str = ''
+    preempted: bool = False
+    integral_decay_active: bool = False
 
     def diagnostic_text(self) -> str:
         """Serialize a stable, compact diagnostic record."""
@@ -276,6 +286,13 @@ class AdapterDecision:
             f'integral_gain={self.integral_gain:.9f};'
             f'stall_integral_gain_active='
             f'{str(self.stall_integral_gain_active).lower()};'
+            f'active_mode_received='
+            f'{str(self.active_mode_received).lower()};'
+            f'active_mode_fresh={str(self.active_mode_fresh).lower()};'
+            f'active_mode={self.active_mode};'
+            f'preempted={str(self.preempted).lower()};'
+            f'integral_decay_active='
+            f'{str(self.integral_decay_active).lower()};'
             f'final_throttle={self.final_throttle:.9f};'
             f'normalized_steering={self.normalized_steering:.9f};'
             f'steering_saturated='
@@ -300,6 +317,8 @@ class DriveAdapter:
         self._last_step_time: Optional[float] = None
         self._wheelspin_since: Optional[float] = None
         self._stall_integral_gain_active = False
+        self._active_mode: Optional[str] = None
+        self._active_mode_time: Optional[float] = None
 
     @property
     def latest_command(self) -> Optional[tuple[float, float]]:
@@ -325,6 +344,26 @@ class DriveAdapter:
         """Store EKF body-forward velocity for the wheelspin guard."""
         self._motion_speed = forward_speed
         self._motion_time = now
+
+    def update_active_mode(self, mode: str, now: float) -> None:
+        """Store the latest teleop arbitration state and receive time."""
+        self._active_mode = mode
+        self._active_mode_time = now
+
+    def active_mode_is_fresh(self, now: float) -> bool:
+        """Return whether teleop state was received within its timeout."""
+        return (
+            self._active_mode_time is not None
+            and now - self._active_mode_time
+            <= self.config.active_mode_timeout_sec
+        )
+
+    def is_confirmed_preempted(self, now: float) -> bool:
+        """Treat only a fresh non-suppression mode as preemption."""
+        return (
+            self.active_mode_is_fresh(now)
+            and self._active_mode != 'teleop_suppress'
+        )
 
     def update_encoder(
         self,
@@ -369,6 +408,16 @@ class DriveAdapter:
 
     def step(self, now: float) -> AdapterDecision:
         """Produce one deterministic timer-cycle decision."""
+        active_mode_received = self._active_mode_time is not None
+        active_mode_fresh = self.active_mode_is_fresh(now)
+        active_mode = self._active_mode or ''
+        preempted = self.is_confirmed_preempted(now)
+        preemption_fields = {
+            'active_mode_received': active_mode_received,
+            'active_mode_fresh': active_mode_fresh,
+            'active_mode': active_mode,
+            'preempted': preempted,
+        }
         dt = 0.0
         if self._last_step_time is not None:
             dt = max(0.0, now - self._last_step_time)
@@ -376,22 +425,26 @@ class DriveAdapter:
 
         if self._command is None or self._command_time is None:
             self._reset_controller()
-            return self._silence('no_command')
+            return self._silence('no_command', **preemption_fields)
         if now - self._command_time > self.config.cmd_vel_nav_timeout:
             self._reset_controller()
-            return self._silence('stale_command')
+            return self._silence('stale_command', **preemption_fields)
 
         speed, yaw_rate = self._command
         if not math.isfinite(speed) or not math.isfinite(yaw_rate):
-            return self._brake('nonfinite_input')
+            return self._brake('nonfinite_input', **preemption_fields)
         if speed < 0.0:
-            return self._brake('negative_speed')
+            return self._brake('negative_speed', **preemption_fields)
         if speed == 0.0:
-            return self._brake('explicit_stop')
+            return self._brake('explicit_stop', **preemption_fields)
         if speed < self.config.steering_min_speed:
-            return self._brake('below_steering_min_speed')
+            return self._brake(
+                'below_steering_min_speed', **preemption_fields
+            )
         if speed < self.config.promotion_threshold:
-            return self._brake('below_promotion_threshold')
+            return self._brake(
+                'below_promotion_threshold', **preemption_fields
+            )
 
         requested_curvature = yaw_rate / speed
         steering_saturated = (
@@ -424,12 +477,18 @@ class DriveAdapter:
         below_floor = speed < self.config.minimum_moving_speed
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
-        integrator_enabled = not below_floor and feedback_fresh
+        base_integration_enabled = not below_floor and feedback_fresh
         integral_gain = self._select_integral_gain(
             measured_speed,
             commanded_speed,
-            integrator_enabled,
+            base_integration_enabled,
         )
+        accumulation_enabled = (
+            base_integration_enabled
+            and not wheelspin_guard
+            and not preempted
+        )
+        integral_decay_active = False
 
         if below_floor:
             self._integrator = 0.0
@@ -438,7 +497,8 @@ class DriveAdapter:
             saturation = 'none'
         else:
             if (
-                integrator_enabled
+                base_integration_enabled
+                and not preempted
                 and self._stationary_transition_pending
                 and self._encoder_stationary
             ):
@@ -453,11 +513,15 @@ class DriveAdapter:
                 if feedback_fresh else 0.0
             )
             candidate = self._integrator
-            may_integrate = (
-                integrator_enabled
-                and not wheelspin_guard
-                and dt > 0.0
-            )
+            may_integrate = accumulation_enabled and dt > 0.0
+            if preempted and dt > 0.0 and self._integrator != 0.0:
+                decayed = self._decay_toward_zero(
+                    self._integrator,
+                    self.config.preemption_integrator_decay_rate * dt,
+                )
+                integral_decay_active = decayed != self._integrator
+                self._integrator = decayed
+                candidate = decayed
             if may_integrate:
                 candidate = max(
                     self.config.integrator_min,
@@ -498,7 +562,7 @@ class DriveAdapter:
             proportional,
             self._integrator,
             pi_term,
-            integrator_enabled,
+            accumulation_enabled,
             saturation,
             wheelspin_guard,
             final,
@@ -506,7 +570,21 @@ class DriveAdapter:
             steering_saturated,
             integral_gain,
             self._stall_integral_gain_active,
+            active_mode_received,
+            active_mode_fresh,
+            active_mode,
+            preempted,
+            integral_decay_active,
         )
+
+    @staticmethod
+    def _decay_toward_zero(value: float, amount: float) -> float:
+        """Reduce magnitude by a bounded time-scaled amount without crossing."""
+        if value > 0.0:
+            return max(0.0, value - amount)
+        if value < 0.0:
+            return min(0.0, value + amount)
+        return 0.0
 
     def _select_integral_gain(
         self,
@@ -573,9 +651,9 @@ class DriveAdapter:
         self._wheelspin_since = None
         self._stall_integral_gain_active = False
 
-    def _brake(self, reason: str) -> AdapterDecision:
+    def _brake(self, reason: str, **fields) -> AdapterDecision:
         self._reset_controller()
-        return AdapterDecision(True, 'brake', reason)
+        return AdapterDecision(True, 'brake', reason, **fields)
 
-    def _silence(self, reason: str) -> AdapterDecision:
-        return AdapterDecision(False, 'silence', reason)
+    def _silence(self, reason: str, **fields) -> AdapterDecision:
+        return AdapterDecision(False, 'silence', reason, **fields)

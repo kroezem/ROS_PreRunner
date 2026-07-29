@@ -34,4 +34,10 @@ drive_adapter:
     encoder_state_timeout_sec: 0.25
 
     cmd_vel_nav_timeout: 0.25
+    # /teleop/active_mode publishes at 20 Hz. Four nominal periods tolerate
+    # scheduler jitter; stale/absent state deliberately restores old behavior.
+    active_mode_timeout_sec: 0.20
+    # Normalized integral contribution per second. The -0.25 bound reaches
+    # zero in 4.0 s; the +0.16 bound reaches zero in 2.56 s.
+    preemption_integrator_decay_rate: 0.0625
     publication_rate: 20.0

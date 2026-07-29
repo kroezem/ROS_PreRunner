@@ -70,6 +70,9 @@ def test_graph_ownership_staleness_and_diagnostics():
     motion_pub = probe.create_publisher(
         Odometry, '/odometry/filtered', 10
     )
+    active_mode_pub = probe.create_publisher(
+        String, '/teleop/active_mode', 10
+    )
 
     try:
         _spin_for(executor, 0.15)
@@ -87,6 +90,9 @@ def test_graph_ownership_staleness_and_diagnostics():
         encoder_subscriptions = probe.get_subscriptions_info_by_topic(
             '/wheel/encoder_state'
         )
+        active_mode_subscriptions = probe.get_subscriptions_info_by_topic(
+            '/teleop/active_mode'
+        )
         assert sum(
             endpoint.node_name == 'drive_adapter'
             for endpoint in nav_subscriptions
@@ -94,6 +100,10 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert sum(
             endpoint.node_name == 'drive_adapter'
             for endpoint in encoder_subscriptions
+        ) == 1
+        assert sum(
+            endpoint.node_name == 'drive_adapter'
+            for endpoint in active_mode_subscriptions
         ) == 1
 
         encoder_pub.publish(EncoderState(
@@ -124,8 +134,40 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert typed_states[-1].measured_yaw_rate == 0.15
         assert typed_states[-1].steering_curvature_requested == 0.5
         assert typed_states[-1].steering_curvature_max > 0.0
-        assert typed_states[-1].mode == 'forward'
+        assert typed_states[-1].mode.startswith('forward;')
+        assert 'active_mode_received=false' in typed_states[-1].mode
         assert probe.get_publishers_info_by_topic('/stall_assist/state') == []
+
+        active_mode_pub.publish(String(data='manual'))
+        nav_pub.publish(command)
+        encoder_pub.publish(EncoderState(
+            stationary=False,
+            edge_rate=2.0,
+            pending_direction=1,
+        ))
+        motion_pub.publish(motion)
+        _spin_for(executor, 0.10)
+        assert commands
+        assert 'active_mode=manual' in typed_states[-1].mode
+        assert 'preempted=true' in typed_states[-1].mode
+        assert not typed_states[-1].integrator_enabled
+        assert any(
+            'active_mode=manual' in state.mode
+            and 'integral_decay_active=true' in state.mode
+            for state in typed_states
+        )
+
+        active_mode_pub.publish(String(data='teleop_suppress'))
+        nav_pub.publish(command)
+        encoder_pub.publish(EncoderState(
+            stationary=False,
+            edge_rate=2.0,
+            pending_direction=1,
+        ))
+        motion_pub.publish(motion)
+        _spin_for(executor, 0.10)
+        assert 'active_mode=teleop_suppress' in typed_states[-1].mode
+        assert 'preempted=false' in typed_states[-1].mode
 
         _spin_for(executor, 0.30)
         commands.clear()
