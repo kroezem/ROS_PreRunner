@@ -58,7 +58,7 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
         == 'nav2_regulated_pure_pursuit_controller::'
         'RegulatedPurePursuitController'
     )
-    assert rpp['desired_linear_vel'] == 0.290
+    assert rpp['desired_linear_vel'] == 0.45
     assert rpp['min_approach_linear_velocity'] == 0.126
     assert rpp['allow_reversing'] is False
     assert rpp['use_rotate_to_heading'] is False
