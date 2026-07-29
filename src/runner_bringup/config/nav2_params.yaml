@@ -67,12 +67,12 @@ controller_server:
       lookahead_time: 1.0
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.75
-      regulated_linear_scaling_min_speed: 0.126
+      regulated_linear_scaling_min_speed: 0.15
       use_cost_regulated_linear_velocity_scaling: true
       inflation_cost_scaling_factor: 10.0
-      cost_scaling_dist: 0.20
+      cost_scaling_dist: 0.45
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 0.5
+      max_allowed_time_to_collision_up_to_carrot: 0.15
       use_rotate_to_heading: false
       allow_reversing: false
       transform_tolerance: 0.3

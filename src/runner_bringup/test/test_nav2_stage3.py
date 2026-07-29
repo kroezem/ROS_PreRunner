@@ -68,12 +68,12 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert rpp['max_lookahead_dist'] == 0.80
     assert rpp['lookahead_time'] == 1.0
     assert rpp['regulated_linear_scaling_min_radius'] == 0.75
-    assert rpp['regulated_linear_scaling_min_speed'] == 0.126
+    assert rpp['regulated_linear_scaling_min_speed'] == 0.15
     assert rpp['use_cost_regulated_linear_velocity_scaling'] is True
     assert rpp['inflation_cost_scaling_factor'] == 10.0
-    assert rpp['cost_scaling_dist'] == 0.20
+    assert rpp['cost_scaling_dist'] == 0.45
     assert rpp['use_collision_detection'] is True
-    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.5
+    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.15
     assert controller['enable_stamped_cmd_vel'] is False
 
 
