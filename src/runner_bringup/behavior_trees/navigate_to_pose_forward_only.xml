@@ -3,19 +3,26 @@
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateWithReplanningForwardOnly">
       <RateController hz="3.0">
-        <ReactiveFallback name="ReplanWhenPathInvalid">
-          <ReactiveSequence name="CheckIfNewPathNeeded">
-            <Inverter>
-              <GlobalUpdatedGoal/>
-            </Inverter>
-            <IsPathValid path="{path}"/>
-          </ReactiveSequence>
-          <ComputePathToPose
-            goal="{goal}"
-            path="{path}"
-            planner_id="GridBased"
-            error_code_id="{compute_path_error_code}"/>
-        </ReactiveFallback>
+        <RecoveryNode
+          number_of_retries="1"
+          name="ClearGlobalCostmapOnPlanningFailure">
+          <Fallback name="ReplanWhenPathInvalid">
+            <ReactiveSequence name="CheckIfNewPathNeeded">
+              <Inverter>
+                <GlobalUpdatedGoal/>
+              </Inverter>
+              <IsPathValid path="{path}"/>
+            </ReactiveSequence>
+            <ComputePathToPose
+              goal="{goal}"
+              path="{path}"
+              planner_id="GridBased"
+              error_code_id="{compute_path_error_code}"/>
+          </Fallback>
+          <ClearEntireCostmap
+            name="ClearGlobalCostmap"
+            service_name="global_costmap/clear_entirely_global_costmap"/>
+        </RecoveryNode>
       </RateController>
       <FollowPath
         path="{path}"

@@ -202,31 +202,47 @@ def test_global_costmap_obstacle_layer_is_runtime_opt_in_and_overwrites():
     assert inflation['cost_scaling_factor'] == 10.0
 
 
-def test_behavior_tree_is_minimal_and_forward_only():
-    """The complete planning branch is limited without gating FollowPath."""
+def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
+    """Only the rate-controlled planning branch has bounded recovery."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
-    fallback = root.find('.//ReactiveFallback')
+    fallback = root.find('.//Fallback')
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
+    recovery = rate.find('./RecoveryNode')
+    planner = fallback.find('./ComputePathToPose')
+    clear = recovery.find('./ClearEntireCostmap')
+    follow = pipeline.find('./FollowPath')
 
     assert tags.count('ComputePathToPose') == 1
     assert tags.count('IsPathValid') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('ReactiveFallback') == 1
+    assert tags.count('Fallback') == 1
+    assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
+    assert tags.count('RecoveryNode') == 1
+    assert tags.count('ClearEntireCostmap') == 1
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
         'FollowPath',
     ]
-    assert [child.tag for child in rate] == ['ReactiveFallback']
+    assert [child.tag for child in rate] == ['RecoveryNode']
+    assert recovery.attrib == {
+        'number_of_retries': '1',
+        'name': 'ClearGlobalCostmapOnPlanningFailure',
+    }
+    assert [child.tag for child in recovery] == [
+        'Fallback',
+        'ClearEntireCostmap',
+    ]
     assert [child.tag for child in fallback] == [
         'ReactiveSequence',
         'ComputePathToPose',
     ]
+    assert fallback.attrib == {'name': 'ReplanWhenPathInvalid'}
     path_check = fallback.find(
         "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
     )
@@ -235,6 +251,22 @@ def test_behavior_tree_is_minimal_and_forward_only():
         'IsPathValid',
     ]
     assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
+    assert planner.attrib == {
+        'goal': '{goal}',
+        'path': '{path}',
+        'planner_id': 'GridBased',
+        'error_code_id': '{compute_path_error_code}',
+    }
+    assert follow.attrib == {
+        'path': '{path}',
+        'controller_id': 'FollowPath',
+        'goal_checker_id': 'goal_checker',
+        'error_code_id': '{follow_path_error_code}',
+    }
+    assert clear.attrib == {
+        'name': 'ClearGlobalCostmap',
+        'service_name': 'global_costmap/clear_entirely_global_costmap',
+    }
     assert rate.find('.//IsPathValid') is not None
     assert rate.find('.//ComputePathToPose') is not None
     assert rate.find('.//FollowPath') is None
@@ -243,36 +275,51 @@ def test_behavior_tree_is_minimal_and_forward_only():
     assert 'DriveOnHeading' not in tags
     assert 'Rotate' not in tags
     assert 'RotateToHeading' not in tags
-    assert 'RecoveryNode' not in tags
 
 
-def test_route_behavior_tree_replans_without_motion_recovery():
-    """Route planning is rate-limited while route following keeps ticking."""
+def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
+    """Route planning has the same bounded, non-motion recovery."""
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
-    fallback = root.find('.//ReactiveFallback')
+    fallback = root.find('.//Fallback')
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
+    recovery = rate.find('./RecoveryNode')
     replan = fallback.findall('./ReactiveSequence')[1]
+    planner = replan.find('./ComputePathThroughPoses')
+    clear = recovery.find('./ClearEntireCostmap')
+    follow = pipeline.find('./FollowPath')
 
     assert tags.count('ComputePathThroughPoses') == 1
     assert tags.count('IsPathValid') == 1
     assert tags.count('RemovePassedGoals') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('ReactiveFallback') == 1
+    assert tags.count('Fallback') == 1
+    assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
+    assert tags.count('RecoveryNode') == 1
+    assert tags.count('ClearEntireCostmap') == 1
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
         'FollowPath',
     ]
-    assert [child.tag for child in rate] == ['ReactiveFallback']
+    assert [child.tag for child in rate] == ['RecoveryNode']
+    assert recovery.attrib == {
+        'number_of_retries': '1',
+        'name': 'ClearGlobalCostmapOnPlanningFailure',
+    }
+    assert [child.tag for child in recovery] == [
+        'Fallback',
+        'ClearEntireCostmap',
+    ]
     assert [child.tag for child in fallback] == [
         'ReactiveSequence',
         'ReactiveSequence',
     ]
+    assert fallback.attrib == {'name': 'ReplanRouteWhenPathInvalid'}
     path_check = fallback.find(
         "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
     )
@@ -285,6 +332,22 @@ def test_route_behavior_tree_replans_without_motion_recovery():
         'RemovePassedGoals',
         'ComputePathThroughPoses',
     ]
+    assert planner.attrib == {
+        'goals': '{goals}',
+        'path': '{path}',
+        'planner_id': 'GridBased',
+        'error_code_id': '{compute_path_error_code}',
+    }
+    assert follow.attrib == {
+        'path': '{path}',
+        'controller_id': 'FollowPath',
+        'goal_checker_id': 'goal_checker',
+        'error_code_id': '{follow_path_error_code}',
+    }
+    assert clear.attrib == {
+        'name': 'ClearGlobalCostmap',
+        'service_name': 'global_costmap/clear_entirely_global_costmap',
+    }
     assert rate.find('.//IsPathValid') is not None
     assert rate.find('.//ComputePathThroughPoses') is not None
     assert rate.find('.//FollowPath') is None
@@ -294,7 +357,6 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert 'DriveOnHeading' not in tags
     assert 'Rotate' not in tags
     assert 'RotateToHeading' not in tags
-    assert 'RecoveryNode' not in tags
 
 
 def test_both_navigators_are_configured_with_explicit_trees():
