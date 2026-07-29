@@ -136,7 +136,6 @@ global_costmap:
       footprint: "[[0.235, 0.100], [0.235, -0.100], [-0.060, -0.100], [-0.060, 0.100]]"
       plugins:
         - static_layer
-        - obstacle_layer
         - inflation_layer
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
