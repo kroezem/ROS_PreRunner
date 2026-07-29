@@ -69,6 +69,9 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert rpp['lookahead_time'] == 1.0
     assert rpp['regulated_linear_scaling_min_radius'] == 0.75
     assert rpp['regulated_linear_scaling_min_speed'] == 0.126
+    assert rpp['use_cost_regulated_linear_velocity_scaling'] is True
+    assert rpp['inflation_cost_scaling_factor'] == 10.0
+    assert rpp['cost_scaling_dist'] == 0.45
     assert rpp['use_collision_detection'] is True
     assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.5
     assert controller['enable_stamped_cmd_vel'] is False
@@ -149,7 +152,7 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     assert obstacle['scan']['expected_update_rate'] == 0.0
     assert obstacle['scan']['observation_persistence'] == 0.0
     assert obstacle['scan']['inf_is_valid'] is True
-    assert local['inflation_layer']['inflation_radius'] == 0.15
+    assert local['inflation_layer']['inflation_radius'] == 0.45
     assert local['inflation_layer']['cost_scaling_factor'] == 10.0
     assert '/scan_slam' not in yaml.safe_dump(
         {'local_costmap': _params()['local_costmap']}
