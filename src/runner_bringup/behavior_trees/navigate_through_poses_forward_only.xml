@@ -2,25 +2,27 @@
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
-      <ReactiveFallback name="ReplanRouteWhenPathInvalid">
-        <ReactiveSequence name="CheckIfNewPathNeeded">
-          <Inverter>
-            <GlobalUpdatedGoal/>
-          </Inverter>
-          <IsPathValid path="{path}"/>
-        </ReactiveSequence>
-        <ReactiveSequence>
-          <RemovePassedGoals
-            input_goals="{goals}"
-            output_goals="{goals}"
-            radius="0.20"/>
-          <ComputePathThroughPoses
-            goals="{goals}"
-            path="{path}"
-            planner_id="GridBased"
-            error_code_id="{compute_path_error_code}"/>
-        </ReactiveSequence>
-      </ReactiveFallback>
+      <RateController hz="1.0">
+        <ReactiveFallback name="ReplanRouteWhenPathInvalid">
+          <ReactiveSequence name="CheckIfNewPathNeeded">
+            <Inverter>
+              <GlobalUpdatedGoal/>
+            </Inverter>
+            <IsPathValid path="{path}"/>
+          </ReactiveSequence>
+          <ReactiveSequence>
+            <RemovePassedGoals
+              input_goals="{goals}"
+              output_goals="{goals}"
+              radius="0.20"/>
+            <ComputePathThroughPoses
+              goals="{goals}"
+              path="{path}"
+              planner_id="GridBased"
+              error_code_id="{compute_path_error_code}"/>
+          </ReactiveSequence>
+        </ReactiveFallback>
+      </RateController>
       <FollowPath
         path="{path}"
         controller_id="FollowPath"

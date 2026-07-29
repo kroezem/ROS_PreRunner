@@ -165,10 +165,12 @@ def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
 
 
 def test_behavior_tree_is_minimal_and_forward_only():
-    """The explicit tree checks path validity before replanning."""
+    """The complete planning branch is limited without gating FollowPath."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     fallback = root.find('.//ReactiveFallback')
+    pipeline = root.find('.//PipelineSequence')
+    rate = pipeline.find('./RateController')
 
     assert tags.count('ComputePathToPose') == 1
     assert tags.count('IsPathValid') == 1
@@ -176,6 +178,13 @@ def test_behavior_tree_is_minimal_and_forward_only():
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
     assert tags.count('GlobalUpdatedGoal') == 1
+    assert tags.count('RateController') == 1
+    assert rate.attrib == {'hz': '1.0'}
+    assert [child.tag for child in pipeline] == [
+        'RateController',
+        'FollowPath',
+    ]
+    assert [child.tag for child in rate] == ['ReactiveFallback']
     assert [child.tag for child in fallback] == [
         'ReactiveSequence',
         'ComputePathToPose',
@@ -188,7 +197,9 @@ def test_behavior_tree_is_minimal_and_forward_only():
         'IsPathValid',
     ]
     assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
-    assert 'RateController' not in tags
+    assert rate.find('.//IsPathValid') is not None
+    assert rate.find('.//ComputePathToPose') is not None
+    assert rate.find('.//FollowPath') is None
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
     assert 'DriveOnHeading' not in tags
@@ -198,10 +209,12 @@ def test_behavior_tree_is_minimal_and_forward_only():
 
 
 def test_route_behavior_tree_replans_without_motion_recovery():
-    """Route navigation replans its through-poses path only when invalid."""
+    """Route planning is rate-limited while route following keeps ticking."""
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     fallback = root.find('.//ReactiveFallback')
+    pipeline = root.find('.//PipelineSequence')
+    rate = pipeline.find('./RateController')
     replan = fallback.findall('./ReactiveSequence')[1]
 
     assert tags.count('ComputePathThroughPoses') == 1
@@ -211,11 +224,17 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert tags.count('PipelineSequence') == 1
     assert tags.count('ReactiveFallback') == 1
     assert tags.count('GlobalUpdatedGoal') == 1
+    assert tags.count('RateController') == 1
+    assert rate.attrib == {'hz': '1.0'}
+    assert [child.tag for child in pipeline] == [
+        'RateController',
+        'FollowPath',
+    ]
+    assert [child.tag for child in rate] == ['ReactiveFallback']
     assert [child.tag for child in fallback] == [
         'ReactiveSequence',
         'ReactiveSequence',
     ]
-    assert 'RateController' not in tags
     path_check = fallback.find(
         "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
     )
@@ -228,6 +247,9 @@ def test_route_behavior_tree_replans_without_motion_recovery():
         'RemovePassedGoals',
         'ComputePathThroughPoses',
     ]
+    assert rate.find('.//IsPathValid') is not None
+    assert rate.find('.//ComputePathThroughPoses') is not None
+    assert rate.find('.//FollowPath') is None
     assert 'ComputePathToPose' not in tags
     assert 'Spin' not in tags
     assert 'BackUp' not in tags
