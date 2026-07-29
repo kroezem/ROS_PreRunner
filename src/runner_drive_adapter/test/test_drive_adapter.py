@@ -128,6 +128,119 @@ def test_integrator_accumulates_when_unsaturated():
     assert decision.final_throttle == pytest.approx(0.40754)
 
 
+def test_stall_integral_gain_activates_below_ratio_and_uses_high_gain():
+    adapter = DriveAdapter(AdapterConfig())
+    _update(adapter, 0.0, speed=0.29, measured=0.115, ekf=0.115)
+    decision = _update(
+        adapter, 0.10, speed=0.29, measured=0.115, ekf=0.115
+    )
+
+    assert decision.stall_integral_gain_active
+    assert decision.integral_gain == 0.30
+    assert decision.integrator_state == pytest.approx(
+        0.30 * (0.29 - 0.115) * 0.10
+    )
+
+
+def test_stall_integral_gain_switch_has_hysteresis():
+    adapter = DriveAdapter(AdapterConfig())
+    entered = _update(
+        adapter, 0.0, speed=0.29, measured=0.115, ekf=0.115
+    )
+    held = _update(
+        adapter, 0.10, speed=0.29, measured=0.13, ekf=0.13
+    )
+    released = _update(
+        adapter, 0.20, speed=0.29, measured=0.145, ekf=0.145
+    )
+
+    assert entered.stall_integral_gain_active
+    assert held.stall_integral_gain_active
+    assert not released.stall_integral_gain_active
+    assert released.integral_gain == 0.06
+
+
+def test_high_integral_gain_activates_above_overspeed_ratio():
+    adapter = DriveAdapter(AdapterConfig())
+    _update(adapter, 0.0, speed=0.29, measured=0.465, ekf=0.465)
+    decision = _update(
+        adapter, 0.10, speed=0.29, measured=0.465, ekf=0.465
+    )
+
+    assert decision.stall_integral_gain_active
+    assert decision.integral_gain == 0.30
+    assert decision.integrator_state == pytest.approx(
+        0.30 * (0.29 - 0.465) * 0.10
+    )
+
+
+def test_overspeed_integral_gain_switch_has_hysteresis():
+    adapter = DriveAdapter(AdapterConfig())
+    entered = _update(
+        adapter, 0.0, speed=0.29, measured=0.465, ekf=0.465
+    )
+    held = _update(
+        adapter, 0.10, speed=0.29, measured=0.44, ekf=0.44
+    )
+    released = _update(
+        adapter, 0.20, speed=0.29, measured=0.43, ekf=0.43
+    )
+
+    assert entered.stall_integral_gain_active
+    assert held.stall_integral_gain_active
+    assert not released.stall_integral_gain_active
+    assert released.integral_gain == 0.06
+
+
+def test_integral_gain_activation_boundaries_are_strict():
+    config = AdapterConfig()
+    adapter = DriveAdapter(config)
+
+    low = _update(
+        adapter,
+        0.0,
+        speed=0.29,
+        measured=0.40 * 0.29,
+        ekf=0.40 * 0.29,
+    )
+    high = _update(
+        adapter,
+        0.10,
+        speed=0.29,
+        measured=1.60 * 0.29,
+        ekf=1.60 * 0.29,
+    )
+
+    assert not low.stall_integral_gain_active
+    assert not high.stall_integral_gain_active
+
+
+def test_stall_integral_gain_crosses_full_span_in_three_to_five_seconds():
+    config = AdapterConfig()
+    span = config.integrator_max - config.integrator_min
+
+    assert span / (config.stall_integral_gain * 0.29) == pytest.approx(
+        4.71, abs=0.01
+    )
+    assert span / (config.stall_integral_gain * 0.45) == pytest.approx(
+        3.04, abs=0.01
+    )
+
+
+def test_overspeed_correction_reaches_negative_bound_in_2_25_seconds():
+    config = AdapterConfig()
+    overspeed_error = 0.37
+
+    correction_time = (
+        abs(config.integrator_min)
+        / (config.stall_integral_gain * overspeed_error)
+    )
+
+    assert config.integrator_min == -0.25
+    assert config.output_min == -0.20
+    assert correction_time == pytest.approx(2.25, abs=0.01)
+
+
 def test_integrator_freezes_after_qualified_wheelspin():
     adapter = DriveAdapter(AdapterConfig())
     _update(adapter, 0.0, speed=0.40, measured=0.30, ekf=0.10)
@@ -307,6 +420,8 @@ def test_diagnostics_contain_all_tuning_fields():
         'integrator_state=',
         'feedforward_throttle=',
         'pi_term=',
+        'integral_gain=',
+        'stall_integral_gain_active=',
         'saturation_state=',
         'wheelspin_guard=',
         'final_throttle=',
@@ -322,6 +437,14 @@ def test_diagnostics_contain_all_tuning_fields():
         {'maximum_commanded_speed': 0.10},
         {'proportional_gain': 0.0},
         {'integral_gain': 0.0},
+        {'stall_integral_gain': 0.06},
+        {'stall_integral_gain_activation_ratio': 0.0},
+        {'stall_integral_gain_activation_ratio': 1.0},
+        {'stall_integral_gain_hysteresis': 0.0},
+        {
+            'stall_integral_gain_activation_ratio': 0.95,
+            'stall_integral_gain_hysteresis': 0.10,
+        },
         {'integrator_min': 0.20},
         {'integrator_max': -0.30},
         {'output_min': 0.0},

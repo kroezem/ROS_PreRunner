@@ -17,6 +17,9 @@ drive_adapter:
 
     proportional_gain: 0.30
     integral_gain: 0.06
+    stall_integral_gain: 0.30
+    stall_integral_gain_activation_ratio: 0.40
+    stall_integral_gain_hysteresis: 0.10
     integrator_min: -0.25
     integrator_max: 0.16
     output_min: -0.20

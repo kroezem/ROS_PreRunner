@@ -67,6 +67,9 @@ class DriveAdapterNode(Node):
             'maximum_commanded_speed',
             'proportional_gain',
             'integral_gain',
+            'stall_integral_gain',
+            'stall_integral_gain_activation_ratio',
+            'stall_integral_gain_hysteresis',
             'integrator_min',
             'integrator_max',
             'output_min',
@@ -253,6 +256,12 @@ class DriveAdapterNode(Node):
 
     def _log_startup(self) -> None:
         c = self.config
+        overspeed_enter_ratio = (
+            2.0 - c.stall_integral_gain_activation_ratio
+        )
+        overspeed_exit_ratio = (
+            overspeed_enter_ratio - c.stall_integral_gain_hysteresis
+        )
         self.get_logger().info(
             'drive_adapter ready: '
             f'wheelbase={c.wheelbase:.6f} m, '
@@ -269,6 +278,15 @@ class DriveAdapterNode(Node):
             'Speed control: primary_feedback=encoder_edge_rate, '
             f'kp={c.proportional_gain:.6f}, '
             f'ki={c.integral_gain:.6f}, '
+            f'stall_ki={c.stall_integral_gain:.6f}, '
+            f'stall_enter_ratio='
+            f'{c.stall_integral_gain_activation_ratio:.6f}, '
+            f'stall_exit_ratio='
+            f'{c.stall_integral_gain_activation_ratio + c.stall_integral_gain_hysteresis:.6f}, '
+            f'overspeed_enter_ratio='
+            f'{overspeed_enter_ratio:.6f}, '
+            f'overspeed_exit_ratio='
+            f'{overspeed_exit_ratio:.6f}, '
             f'output_bounds=[{c.output_min:.6f}, {c.output_max:.6f}], '
             f'wheelspin_ratio={c.wheelspin_speed_ratio:.6f}, '
             f'wheelspin_qualification='

@@ -105,6 +105,9 @@ class AdapterConfig:
     maximum_commanded_speed: float = 0.60
     proportional_gain: float = 0.30
     integral_gain: float = 0.06
+    stall_integral_gain: float = 0.30
+    stall_integral_gain_activation_ratio: float = 0.40
+    stall_integral_gain_hysteresis: float = 0.10
     integrator_min: float = -0.25
     integrator_max: float = 0.16
     output_min: float = -0.20
@@ -140,6 +143,7 @@ class AdapterConfig:
             'maximum_commanded_speed': self.maximum_commanded_speed,
             'proportional_gain': self.proportional_gain,
             'integral_gain': self.integral_gain,
+            'stall_integral_gain': self.stall_integral_gain,
             'encoder_metres_per_edge': self.encoder_metres_per_edge,
             'wheelspin_speed_ratio': self.wheelspin_speed_ratio,
             'wheelspin_qualification_sec':
@@ -159,6 +163,26 @@ class AdapterConfig:
         if not 0.0 < self.floor_promotion_min_ratio <= 1.0:
             raise ValueError(
                 'floor_promotion_min_ratio must be within (0, 1]'
+            )
+        if self.stall_integral_gain <= self.integral_gain:
+            raise ValueError(
+                'stall_integral_gain must exceed integral_gain'
+            )
+        if not (
+            0.0 < self.stall_integral_gain_activation_ratio < 1.0
+        ):
+            raise ValueError(
+                'stall_integral_gain_activation_ratio must be within (0, 1)'
+            )
+        if not (
+            0.0 < self.stall_integral_gain_hysteresis
+            and self.stall_integral_gain_activation_ratio
+            + self.stall_integral_gain_hysteresis
+            <= 1.0
+        ):
+            raise ValueError(
+                'stall_integral_gain_hysteresis must be positive and its '
+                'exit ratio must not exceed one'
             )
         if self.maximum_commanded_speed < self.minimum_moving_speed:
             raise ValueError(
@@ -231,6 +255,8 @@ class AdapterDecision:
     final_throttle: float = -1.0
     normalized_steering: float = 0.0
     steering_saturated: bool = False
+    integral_gain: float = 0.0
+    stall_integral_gain_active: bool = False
 
     def diagnostic_text(self) -> str:
         """Serialize a stable, compact diagnostic record."""
@@ -247,6 +273,9 @@ class AdapterDecision:
             f'integrator_enabled={str(self.integrator_enabled).lower()};'
             f'saturation_state={self.saturation_state};'
             f'wheelspin_guard={str(self.wheelspin_guard).lower()};'
+            f'integral_gain={self.integral_gain:.9f};'
+            f'stall_integral_gain_active='
+            f'{str(self.stall_integral_gain_active).lower()};'
             f'final_throttle={self.final_throttle:.9f};'
             f'normalized_steering={self.normalized_steering:.9f};'
             f'steering_saturated='
@@ -270,6 +299,7 @@ class DriveAdapter:
         self._integrator = 0.0
         self._last_step_time: Optional[float] = None
         self._wheelspin_since: Optional[float] = None
+        self._stall_integral_gain_active = False
 
     @property
     def latest_command(self) -> Optional[tuple[float, float]]:
@@ -395,6 +425,11 @@ class DriveAdapter:
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
         integrator_enabled = not below_floor and feedback_fresh
+        integral_gain = self._select_integral_gain(
+            measured_speed,
+            commanded_speed,
+            integrator_enabled,
+        )
 
         if below_floor:
             self._integrator = 0.0
@@ -429,7 +464,7 @@ class DriveAdapter:
                     min(
                         self.config.integrator_max,
                         self._integrator
-                        + self.config.integral_gain * speed_error * dt,
+                        + integral_gain * speed_error * dt,
                     ),
                 )
             candidate_raw = feedforward + proportional + candidate
@@ -469,7 +504,38 @@ class DriveAdapter:
             final,
             steering,
             steering_saturated,
+            integral_gain,
+            self._stall_integral_gain_active,
         )
+
+    def _select_integral_gain(
+        self,
+        measured_speed: float,
+        commanded_speed: float,
+        integrator_enabled: bool,
+    ) -> float:
+        if not integrator_enabled:
+            self._stall_integral_gain_active = False
+            return self.config.integral_gain
+
+        speed_ratio = measured_speed / commanded_speed
+        low_activation = self.config.stall_integral_gain_activation_ratio
+        hysteresis = self.config.stall_integral_gain_hysteresis
+        low_release = low_activation + hysteresis
+        high_activation = 2.0 - low_activation
+        high_release = high_activation - hysteresis
+        if self._stall_integral_gain_active:
+            if low_release <= speed_ratio <= high_release:
+                self._stall_integral_gain_active = False
+        elif (
+            speed_ratio < low_activation
+            or speed_ratio > high_activation
+        ):
+            self._stall_integral_gain_active = True
+
+        if self._stall_integral_gain_active:
+            return self.config.stall_integral_gain
+        return self.config.integral_gain
 
     def _wheelspin_guard(self, now: float, encoder_speed: float) -> bool:
         sensors_fresh = (
@@ -505,6 +571,7 @@ class DriveAdapter:
     def _reset_controller(self) -> None:
         self._integrator = 0.0
         self._wheelspin_since = None
+        self._stall_integral_gain_active = False
 
     def _brake(self, reason: str) -> AdapterDecision:
         self._reset_controller()
