@@ -206,6 +206,7 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     """Only the rate-controlled planning branch has bounded recovery."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
+    startup = root.find('./BehaviorTree/Sequence')
     fallback = root.find('.//Fallback')
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
@@ -224,6 +225,13 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     assert tags.count('RateController') == 1
     assert tags.count('RecoveryNode') == 1
     assert tags.count('ClearEntireCostmap') == 1
+    assert tags.count('UnsetBlackboard') == 1
+    assert startup.attrib == {'name': 'StartWithFreshPath'}
+    assert [child.tag for child in startup] == [
+        'UnsetBlackboard',
+        'PipelineSequence',
+    ]
+    assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
@@ -281,6 +289,7 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     """Route planning has the same bounded, non-motion recovery."""
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
+    startup = root.find('./BehaviorTree/Sequence')
     fallback = root.find('.//Fallback')
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
@@ -301,6 +310,13 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     assert tags.count('RateController') == 1
     assert tags.count('RecoveryNode') == 1
     assert tags.count('ClearEntireCostmap') == 1
+    assert tags.count('UnsetBlackboard') == 1
+    assert startup.attrib == {'name': 'StartWithFreshPath'}
+    assert [child.tag for child in startup] == [
+        'UnsetBlackboard',
+        'PipelineSequence',
+    ]
+    assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',

@@ -1,34 +1,37 @@
 <?xml version="1.0"?>
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <PipelineSequence name="NavigateWithReplanningForwardOnly">
-      <RateController hz="3.0">
-        <RecoveryNode
-          number_of_retries="1"
-          name="ClearGlobalCostmapOnPlanningFailure">
-          <Fallback name="ReplanWhenPathInvalid">
-            <ReactiveSequence name="CheckIfNewPathNeeded">
-              <Inverter>
-                <GlobalUpdatedGoal/>
-              </Inverter>
-              <IsPathValid path="{path}"/>
-            </ReactiveSequence>
-            <ComputePathToPose
-              goal="{goal}"
-              path="{path}"
-              planner_id="GridBased"
-              error_code_id="{compute_path_error_code}"/>
-          </Fallback>
-          <ClearEntireCostmap
-            name="ClearGlobalCostmap"
-            service_name="global_costmap/clear_entirely_global_costmap"/>
-        </RecoveryNode>
-      </RateController>
-      <FollowPath
-        path="{path}"
-        controller_id="FollowPath"
-        goal_checker_id="goal_checker"
-        error_code_id="{follow_path_error_code}"/>
-    </PipelineSequence>
+    <Sequence name="StartWithFreshPath">
+      <UnsetBlackboard key="path"/>
+      <PipelineSequence name="NavigateWithReplanningForwardOnly">
+        <RateController hz="3.0">
+          <RecoveryNode
+            number_of_retries="1"
+            name="ClearGlobalCostmapOnPlanningFailure">
+            <Fallback name="ReplanWhenPathInvalid">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose
+                goal="{goal}"
+                path="{path}"
+                planner_id="GridBased"
+                error_code_id="{compute_path_error_code}"/>
+            </Fallback>
+            <ClearEntireCostmap
+              name="ClearGlobalCostmap"
+              service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <FollowPath
+          path="{path}"
+          controller_id="FollowPath"
+          goal_checker_id="goal_checker"
+          error_code_id="{follow_path_error_code}"/>
+      </PipelineSequence>
+    </Sequence>
   </BehaviorTree>
 </root>
