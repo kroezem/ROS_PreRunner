@@ -185,7 +185,7 @@ def test_behavior_tree_is_minimal_and_forward_only():
     assert tags.count('ReactiveFallback') == 1
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
-    assert rate.attrib == {'hz': '1.0'}
+    assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
         'FollowPath',
@@ -231,7 +231,7 @@ def test_route_behavior_tree_replans_without_motion_recovery():
     assert tags.count('ReactiveFallback') == 1
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
-    assert rate.attrib == {'hz': '1.0'}
+    assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
         'FollowPath',
