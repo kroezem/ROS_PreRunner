@@ -62,6 +62,7 @@ def generate_launch_description():
                 'input_timeout': 0.15,
                 'speed_cap': 0.50,
                 'publication_rate': 20.0,
+                'autonomy_latch_timeout': 600.0,
             }],
         ),
         Node(

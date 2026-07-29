@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send global keyboard and route-control state to Runner over UDP."""
+"""Send latched autonomy and keyboard state to Runner over UDP."""
 
 import argparse
 from collections import deque
@@ -26,8 +26,11 @@ ROUTE_REMOVE_LAST = 5
 PACKET_FORMAT = '!4sBBQIffB'
 DEFAULT_PORT = 49321
 SEND_PERIOD = 0.05
-SHUTDOWN_PACKET_COUNT = 5
-DEFAULT_AUTONOMY_HOLD_TIMEOUT = 600.0
+# One extra cadence period guarantees a full second between transmission
+# opportunities even when Escape arrives immediately after a send.
+DISARM_BURST_SECONDS = 1.0 + SEND_PERIOD
+DEFAULT_AUTONOMY_LATCH_TIMEOUT = 600.0
+DEFAULT_AUTONOMY_HOLD_TIMEOUT = DEFAULT_AUTONOMY_LATCH_TIMEOUT
 ROUTE_KEYS = {
     'route_start': ROUTE_START,
     'route_stop': ROUTE_STOP,
@@ -95,19 +98,20 @@ def resolve_destination(host, port):
 class KeyboardInput:
     """Thread-safe pressed-key and discrete setpoint state."""
 
-    def __init__(self, setpoint, autonomy_hold_timeout):
+    def __init__(self, setpoint, autonomy_latch_timeout):
         self.setpoint = setpoint
-        self.autonomy_hold_timeout = autonomy_hold_timeout
+        self.autonomy_latch_timeout = autonomy_latch_timeout
         self.pressed = set()
         self.route_commands = deque()
-        self.autonomy_pressed_at = None
-        self.autonomy_expired = False
+        self.autonomy_armed_at = None
+        self.autonomy_armed = False
+        self.disarm_until = None
         self.lock = threading.Lock()
 
     def press(self, token, now=None):
         """Apply one independent normalized keydown event."""
         if token == 'escape':
-            self.clear()
+            self.clear(now=now)
             return
         valid = {
             'w', 's', 'a', 'd', 'space', '`', '=', '-',
@@ -135,8 +139,12 @@ class KeyboardInput:
                     flush=True,
                 )
             elif token == '`':
-                self.autonomy_pressed_at = timestamp
-                self.autonomy_expired = False
+                if self.autonomy_armed:
+                    self._disarm(timestamp, SEND_PERIOD)
+                else:
+                    self.autonomy_armed = True
+                    self.autonomy_armed_at = timestamp
+                    self.disarm_until = None
             elif token in ROUTE_KEYS:
                 self.route_commands.append(ROUTE_KEYS[token])
 
@@ -144,16 +152,20 @@ class KeyboardInput:
         """Apply one independent normalized keyup event."""
         with self.lock:
             self.pressed.discard(token)
-            if token == '`':
-                self.autonomy_pressed_at = None
-                self.autonomy_expired = False
 
-    def clear(self):
-        """Clear every held key and immediately return to brake state."""
+    def clear(self, now=None):
+        """Clear held/queued state and begin an emergency brake burst."""
+        timestamp = time.monotonic() if now is None else now
         with self.lock:
             self.pressed.clear()
-            self.autonomy_pressed_at = None
-            self.autonomy_expired = False
+            self.route_commands.clear()
+            self._disarm(timestamp, DISARM_BURST_SECONDS)
+
+    def _disarm(self, now, duration):
+        self.autonomy_armed = False
+        self.autonomy_armed_at = None
+        until = now + duration
+        self.disarm_until = max(self.disarm_until or until, until)
 
     def state(self, now=None):
         """Return one packet state and consume at most one route command."""
@@ -162,17 +174,23 @@ class KeyboardInput:
             pressed = set(self.pressed)
             setpoint = self.setpoint
             if (
-                '`' in pressed
-                and self.autonomy_pressed_at is not None
-                and timestamp - self.autonomy_pressed_at
-                >= self.autonomy_hold_timeout
+                self.autonomy_armed
+                and self.autonomy_armed_at is not None
+                and timestamp - self.autonomy_armed_at
+                >= self.autonomy_latch_timeout
             ):
-                self.autonomy_expired = True
-            suppress = '`' in pressed and not self.autonomy_expired
+                self._disarm(timestamp, SEND_PERIOD)
+            suppress = self.autonomy_armed
+            disarming = (
+                self.disarm_until is not None
+                and timestamp <= self.disarm_until
+            )
             route_command = (
                 self.route_commands.popleft()
                 if self.route_commands else ROUTE_NONE
             )
+        if disarming:
+            return MODE_BRAKE, 0.0, 0.0, route_command
         if suppress:
             return MODE_SUPPRESS, 0.0, 0.0, route_command
         if 'space' not in pressed or 's' in pressed:
@@ -190,7 +208,7 @@ def packet(
     steering,
     route_command=ROUTE_NONE,
 ):
-    """Pack one deterministic protocol version-one datagram."""
+    """Pack one deterministic protocol version-two datagram."""
     return struct.pack(
         PACKET_FORMAT,
         MAGIC,
@@ -202,6 +220,12 @@ def packet(
         steering,
         route_command,
     )
+
+
+def close_sender(listener, udp_socket):
+    """Stop local resources without transmitting an implicit disarm."""
+    listener.stop()
+    udp_socket.close()
 
 
 def main(argv=None):
@@ -227,10 +251,12 @@ def main(argv=None):
         help='initial requested W throttle (default: 0.30)',
     )
     parser.add_argument(
+        '--autonomy-latch-timeout',
         '--autonomy-hold-timeout',
+        dest='autonomy_latch_timeout',
         type=positive_seconds,
-        default=DEFAULT_AUTONOMY_HOLD_TIMEOUT,
-        help='maximum continuous ` hold in seconds (default: 600)',
+        default=DEFAULT_AUTONOMY_LATCH_TIMEOUT,
+        help='maximum autonomy latch lifetime in seconds (default: 600)',
     )
     args = parser.parse_args(argv)
     try:
@@ -240,7 +266,7 @@ def main(argv=None):
 
     input_state = KeyboardInput(
         args.initial_throttle,
-        args.autonomy_hold_timeout,
+        args.autonomy_latch_timeout,
     )
     stop = threading.Event()
     session_id = 0
@@ -297,12 +323,29 @@ def main(argv=None):
     print(
         'WARNING: keyboard capture is GLOBAL regardless of window focus.'
     )
-    print('WARNING: The sender must be killed when not in use.')
     print(
-        'Space=arm/release=brake; while armed W=throttle S=brake '
-        'A/D=steer; `=autonomy enable '
-        f'(expires after {args.autonomy_hold_timeout:g}s); '
-        '=/-=setpoint up/down; Escape=clear held state and brake'
+        'Backtick toggles autonomy arm/disarm. Arming persists through sender '
+        'or connection loss.'
+    )
+    print(
+        'Escape is the PRIMARY EMERGENCY STOP: it clears held keyboard state '
+        'and the latch, then sends repeated brake/disarm packets for at least '
+        'one second.'
+    )
+    print(
+        'DualSense X, R1, or L1 clears the latch. '
+        f'The latch expires after {args.autonomy_latch_timeout:g} seconds.'
+    )
+    print(
+        'Space=hold-to-run; while held W=throttle S=brake A/D=steer; '
+        '=/-=setpoint up/down'
+    )
+    print(
+        'Sender termination does not necessarily disarm the Pi-side latch. '
+        'Explicitly disarm before leaving the system unattended.'
+    )
+    print(
+        'Revisit this safety posture before Phase 2 racing speeds.'
     )
     print(
         'Routes: F5=start F6=stop F7=clear F8=loop toggle '
@@ -340,27 +383,12 @@ def main(argv=None):
         print(f'\nUDP send failed: {error}', file=sys.stderr)
         exit_code = 1
     finally:
-        listener.stop()
-        for _ in range(SHUTDOWN_PACKET_COUNT):
-            try:
-                udp_socket.sendto(
-                    packet(
-                        session_id,
-                        sequence,
-                        MODE_BRAKE,
-                        0.0,
-                        0.0,
-                        ROUTE_NONE,
-                    ),
-                    destination,
-                )
-                sequence = (sequence + 1) & 0xffffffff
-                time.sleep(0.01)
-            except OSError:
-                break
-        udp_socket.close()
+        close_sender(listener, udp_socket)
         signal.signal(signal.SIGTERM, previous_sigterm)
-        print('\nSender stopped; shutdown brake packets attempted.')
+        print(
+            '\nSender stopped; no shutdown disarm was sent. Explicitly disarm '
+            'the Pi-side latch before leaving the system unattended.'
+        )
     return exit_code
 
 

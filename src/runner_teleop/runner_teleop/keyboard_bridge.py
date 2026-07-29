@@ -1,7 +1,20 @@
-"""Receive supervised keyboard UDP state and publish safe Pi-owned state."""
+"""
+Receive keyboard UDP state and publish the Pi-owned autonomy latch.
+
+Unlike the previous fail-safe-on-link-loss policy, an armed autonomy latch
+survives intermittent sender loss.  Link loss was stopping the vehicle
+mid-route. Escape is the primary keyboard emergency stop and sends repeated
+brake packets; the unchanged motor watchdog remains an independent stop path
+for current low-speed Phase 1 operation. Backtick toggles the latch, Space
+retains its manual hold-to-run role, DualSense X/R1/L1 clear the latch, and the
+latch expires 600 seconds after an explicit arm. Sender termination does not
+itself disarm the Pi latch, so operators must explicitly disarm before leaving
+the system unattended and revisit this posture before Phase 2 racing speeds.
+"""
 
 from dataclasses import dataclass
 import ipaddress
+import math
 import socket
 import time
 
@@ -22,6 +35,7 @@ from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
 from runner_teleop.keyboard_protocol import ROUTE_START
 from runner_teleop.keyboard_protocol import ROUTE_STOP
 from runner_teleop.keyboard_protocol import sequence_delta
+from sensor_msgs.msg import Joy
 from std_msgs.msg import String
 
 
@@ -29,7 +43,11 @@ DEFAULT_PORT = 49321
 DEFAULT_TIMEOUT = 0.15
 DEFAULT_SPEED_CAP = 0.50
 DEFAULT_PUBLICATION_RATE = 20.0
+DEFAULT_AUTONOMY_LATCH_TIMEOUT = 600.0
 WARNING_PERIOD = 2.0
+X_BUTTON_INDEX = 0
+L1_BUTTON_INDEX = 4
+R1_BUTTON_INDEX = 5
 ROUTE_COMMAND_NAMES = {
     ROUTE_START: 'start',
     ROUTE_STOP: 'stop',
@@ -47,6 +65,62 @@ class AcceptedState:
     source_ip: str
     accepted_at: float
     throttle: float
+
+
+class KeyboardAutonomyLatch:
+    """Apply stateful arm, disarm, controller-clear, and expiry policy."""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+        self.armed = False
+        self.armed_at = None
+        self._suppress_previous = False
+        self._rearm_ready = True
+
+    def process_mode(self, mode: int, now: float) -> bool:
+        """Apply every valid packet; return whether brake was requested."""
+        brake = bool(mode & 1)
+        suppress = bool(mode & 2)
+        if brake:
+            self.disarm(require_release=False)
+        elif not suppress:
+            self._rearm_ready = True
+        elif (
+            not self._suppress_previous
+            and self._rearm_ready
+            and not self.armed
+        ):
+            self.armed = True
+            self.armed_at = now
+            self._rearm_ready = False
+        self._suppress_previous = suppress
+        return brake
+
+    def disarm(self, *, require_release: bool) -> None:
+        """Clear idempotently, optionally requiring a low suppress state."""
+        self.armed = False
+        self.armed_at = None
+        if require_release:
+            self._rearm_ready = False
+        else:
+            self._rearm_ready = True
+        if not require_release:
+            self._suppress_previous = False
+
+    def clear_for_controller(self) -> None:
+        """Disarm until the sender reports suppression released."""
+        self.disarm(require_release=True)
+
+    def expire(self, now: float) -> bool:
+        """Disarm once the original arm event reaches its finite lifetime."""
+        if (
+            self.armed
+            and self.armed_at is not None
+            and now - self.armed_at >= self.timeout
+        ):
+            self.disarm(require_release=True)
+            return True
+        return False
 
 
 class KeyboardReceiver:
@@ -75,13 +149,32 @@ class KeyboardReceiver:
         now: float,
     ) -> tuple[AcceptedState | None, str | None, int | None]:
         """Return state, rejection reason, and optional sequence gap."""
+        packet, error = self.inspect(data, source_ip)
+        if error is not None:
+            return None, error, None
+        return self.accept_packet(packet, source_ip, now)
+
+    def inspect(
+        self,
+        data: bytes,
+        source_ip: str,
+    ) -> tuple[KeyboardPacket | None, str | None]:
+        """Validate source and packet syntax without sequence filtering."""
         if self.allowed_source_ip and source_ip != self.allowed_source_ip:
-            return None, f'unauthorized source {source_ip}', None
+            return None, f'unauthorized source {source_ip}'
         try:
             packet = decode_packet(data)
         except PacketError as error:
-            return None, str(error), None
+            return None, str(error)
+        return packet, None
 
+    def accept_packet(
+        self,
+        packet: KeyboardPacket,
+        source_ip: str,
+        now: float,
+    ) -> tuple[AcceptedState | None, str | None, int | None]:
+        """Apply owner and serial-number ordering to a decoded packet."""
         previous = self.state
         live = self.is_live(now)
         if previous is not None:
@@ -132,6 +225,7 @@ def _validate_configuration(
     timeout: float,
     speed_cap: float,
     publication_rate: float,
+    autonomy_latch_timeout: float,
 ) -> None:
     try:
         ipaddress.IPv4Address(bind_address)
@@ -152,6 +246,12 @@ def _validate_configuration(
         raise ValueError('speed_cap must be within [0.0, 1.0]')
     if publication_rate <= 0.0:
         raise ValueError('publication_rate must be greater than zero')
+    if not math.isfinite(autonomy_latch_timeout) or (
+        autonomy_latch_timeout <= 0.0
+    ):
+        raise ValueError(
+            'autonomy_latch_timeout must be finite and greater than zero'
+        )
 
 
 class KeyboardBridge(Node):
@@ -168,6 +268,10 @@ class KeyboardBridge(Node):
             'publication_rate',
             DEFAULT_PUBLICATION_RATE,
         )
+        self.declare_parameter(
+            'autonomy_latch_timeout',
+            DEFAULT_AUTONOMY_LATCH_TIMEOUT,
+        )
         bind_address = self.get_parameter('bind_address').value
         port = self.get_parameter('port').value
         allowed_source_ip = self.get_parameter(
@@ -176,6 +280,9 @@ class KeyboardBridge(Node):
         timeout = self.get_parameter('input_timeout').value
         speed_cap = self.get_parameter('speed_cap').value
         publication_rate = self.get_parameter('publication_rate').value
+        autonomy_latch_timeout = self.get_parameter(
+            'autonomy_latch_timeout'
+        ).value
         _validate_configuration(
             bind_address,
             port,
@@ -183,6 +290,7 @@ class KeyboardBridge(Node):
             timeout,
             speed_cap,
             publication_rate,
+            autonomy_latch_timeout,
         )
 
         self._receiver = KeyboardReceiver(
@@ -191,6 +299,7 @@ class KeyboardBridge(Node):
             allowed_source_ip,
         )
         self._warnings = {}
+        self._latch = KeyboardAutonomyLatch(autonomy_latch_timeout)
         self._last_published_valid = False
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setblocking(False)
@@ -205,6 +314,7 @@ class KeyboardBridge(Node):
             '/runner/route_control',
             10,
         )
+        self.create_subscription(Joy, '/joy', self._on_joy, 10)
         self.create_timer(0.005, self._receive)
         self.create_timer(0.005, self._publish_timeout_transition)
         self.create_timer(1.0 / publication_rate, self._publish)
@@ -216,7 +326,8 @@ class KeyboardBridge(Node):
             )
         self.get_logger().info(
             f'keyboard_bridge listening on {bind_address}:{port}; '
-            f'timeout={timeout:.3f}s speed_cap={speed_cap:.3f}'
+            f'input_timeout={timeout:.3f}s speed_cap={speed_cap:.3f} '
+            f'autonomy_latch_timeout={autonomy_latch_timeout:.3f}s'
         )
 
     def _warn(self, key: str, message: str, now: float) -> None:
@@ -240,10 +351,22 @@ class KeyboardBridge(Node):
                 )
                 return
             now = time.monotonic()
-            accepted, error, gap = self._receiver.accept(
-                data,
-                address[0],
-                now,
+            packet, error = self._receiver.inspect(data, address[0])
+            if error is not None:
+                self._warn(
+                    error.split()[0],
+                    f'Rejected keyboard packet: {error}',
+                    now,
+                )
+                continue
+            brake_requested = self._latch.process_mode(packet.mode, now)
+            if brake_requested:
+                # Safety mutation precedes sequence filtering: byte-identical
+                # Repeated Escape-generated packets are idempotent and brake
+                # before ordinary sequence/session accounting can reject them.
+                self._publish()
+            accepted, error, gap = self._receiver.accept_packet(
+                packet, address[0], now
             )
             if error is not None:
                 self._warn(
@@ -278,18 +401,39 @@ class KeyboardBridge(Node):
                     ]
                 ))
 
+    def _on_joy(self, message: Joy) -> None:
+        buttons = message.buttons
+        physical_control = any(
+            index < len(buttons) and buttons[index] == 1
+            for index in (X_BUTTON_INDEX, R1_BUTTON_INDEX, L1_BUTTON_INDEX)
+        )
+        if physical_control:
+            self._latch.clear_for_controller()
+            self._publish()
+
     def _publish(self) -> None:
         now = time.monotonic()
+        self._latch.expire(now)
         state = self._receiver.state
         message = KeyboardState()
         message.valid = self._receiver.is_live(now)
-        if state is not None:
-            message.mode = state.packet.mode
+        if self._latch.armed:
+            message.mode = KeyboardState.MODE_SUPPRESS
+            if state is not None:
+                message.session_id = state.packet.session_id
+                message.sequence = state.packet.sequence
+        elif state is not None and message.valid:
+            message.mode = (
+                KeyboardState.MODE_BRAKE
+                if state.packet.mode & KeyboardState.MODE_SUPPRESS
+                else state.packet.mode
+            )
             message.session_id = state.packet.session_id
             message.sequence = state.packet.sequence
-            if message.valid:
-                message.throttle = state.throttle
-                message.steering = state.packet.steering
+            message.throttle = state.throttle
+            message.steering = state.packet.steering
+        else:
+            message.mode = KeyboardState.MODE_BRAKE
         self._publisher.publish(message)
         self._last_published_valid = message.valid
 

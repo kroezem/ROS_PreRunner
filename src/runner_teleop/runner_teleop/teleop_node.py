@@ -33,7 +33,7 @@ TELEOP_SUPPRESS_MODE = 'teleop_suppress'
 FIXED_THROTTLE_INHIBITED_MODE = 'fixed_throttle_inhibited'
 KEYBOARD_BRAKE_MODE = 'keyboard_brake'
 KEYBOARD_MOTION_MODE = 'keyboard_motion'
-KEYBOARD_SUPPRESS_MODE = 'keyboard_suppress'
+KEYBOARD_SUPPRESS_MODE = TELEOP_SUPPRESS_MODE
 KEYBOARD_DISARMED_MODE = 'keyboard_disarmed'
 
 DEFAULT_INPUT_TIMEOUT = 0.15
@@ -239,6 +239,7 @@ class TeleopNode(Node):
         self._keyboard_suppress_previous = False
         self._keyboard_suppress_ready = False
         self._keyboard_suppress_armed = False
+        self._keyboard_suppress_rearm_ready = True
         self.get_logger().info(
             'runner_teleop ready  |  X=manual  R1=fixed throttle  '
             'L1=teleop suppress  L-stick=steer  L2=brake'
@@ -298,6 +299,8 @@ class TeleopNode(Node):
         self._teleop_suppress_held = teleop_suppress_held
         if manual_held or fixed_throttle_held or teleop_suppress_held:
             self._disarm_held_keyboard_forward()
+            self._keyboard_suppress_armed = False
+            self._keyboard_suppress_rearm_ready = False
         self._update_dpad(msg)
 
         if fixed_throttle_rising:
@@ -346,13 +349,9 @@ class TeleopNode(Node):
         self._keyboard_forward_armed = False
         self._keyboard_forward_ready = False
         self._keyboard_suppress_armed = False
-        self._keyboard_suppress_ready = False
 
     def on_keyboard(self, msg: KeyboardState):
         self._last_keyboard_state_at = time.monotonic()
-        if not msg.valid:
-            self._invalidate_keyboard()
-            return
         if (
             msg.mode not in (
                 KeyboardState.MODE_DRIVE,
@@ -370,6 +369,24 @@ class TeleopNode(Node):
 
         brake = bool(msg.mode & KeyboardState.MODE_BRAKE)
         suppress = bool(msg.mode & KeyboardState.MODE_SUPPRESS)
+        if brake:
+            self._keyboard_suppress_armed = False
+            self._keyboard_suppress_rearm_ready = True
+        elif not suppress:
+            self._keyboard_suppress_rearm_ready = True
+        elif self._keyboard_suppress_rearm_ready:
+            self._keyboard_suppress_armed = True
+            self._keyboard_suppress_rearm_ready = False
+
+        if not msg.valid and not suppress:
+            self._invalidate_keyboard()
+            self.publish_cmd()
+            return
+        if not msg.valid and suppress:
+            self._keyboard_valid = False
+            self._keyboard_suppress_requested = True
+            self._keyboard_suppress_previous = True
+            return
         forward = msg.throttle > 0.0 and not brake
 
         if not forward:
@@ -382,16 +399,6 @@ class TeleopNode(Node):
             self._keyboard_forward_armed = True
             self._keyboard_forward_ready = False
 
-        if not suppress:
-            self._keyboard_suppress_ready = True
-            self._keyboard_suppress_armed = False
-        elif (
-            not self._keyboard_suppress_previous
-            and self._keyboard_suppress_ready
-        ):
-            self._keyboard_suppress_armed = True
-            self._keyboard_suppress_ready = False
-
         self._keyboard_valid = True
         self._keyboard_mode = msg.mode
         self._keyboard_throttle = msg.throttle
@@ -400,6 +407,8 @@ class TeleopNode(Node):
         self._keyboard_forward_previous = forward
         self._keyboard_suppress_requested = suppress
         self._keyboard_suppress_previous = suppress
+        if brake:
+            self.publish_cmd()
 
     def _expire_inputs(self, now):
         if (
@@ -451,11 +460,10 @@ class TeleopNode(Node):
             command = -1.0
             self._steer = self._keyboard_steer
         elif (
-            self._keyboard_valid
-            and self._keyboard_suppress_requested
+            self._keyboard_suppress_requested
             and self._keyboard_suppress_armed
         ):
-            mode = KEYBOARD_SUPPRESS_MODE
+            mode = TELEOP_SUPPRESS_MODE
             self._active_mode_pub.publish(String(data=mode))
             return
         elif (

@@ -85,6 +85,7 @@ def make_node():
     node._keyboard_suppress_previous = False
     node._keyboard_suppress_ready = False
     node._keyboard_suppress_armed = False
+    node._keyboard_suppress_rearm_ready = True
     return node
 
 
@@ -638,7 +639,15 @@ def test_controller_preempts_and_held_w_requires_release_repress(buttons):
     assert resumed.linear.x == pytest.approx(0.30)
 
 
-def test_l1_and_space_are_independent_while_keyboard_is_live():
+@pytest.mark.parametrize(
+    'buttons',
+    [
+        {'x': True},
+        {'r1': True},
+        {'l1': True},
+    ],
+)
+def test_each_controller_clear_prevents_silent_autonomy_resume(buttons):
     node = make_node()
     keyboard_cycle(node, keyboard_state())
     keyboard_cycle(
@@ -646,27 +655,32 @@ def test_l1_and_space_are_independent_while_keyboard_is_live():
         keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=2),
     )
 
-    command, mode, _ = cycle(node, joy(l1=True))
-    assert command is None
-    assert mode == TELEOP_SUPPRESS_MODE
+    cycle(node, joy(**buttons))
 
     command, mode, _ = cycle(node, joy())
-    assert command is None
-    assert mode == KEYBOARD_SUPPRESS_MODE
+    assert command.linear.x == -1.0
+    assert mode == KEYBOARD_DISARMED_MODE
 
     command, mode = keyboard_cycle(
         node,
-        keyboard_state(mode=KeyboardState.MODE_DRIVE, sequence=3),
+        keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=3),
     )
-    assert mode == BRAKE_MODE
     assert command.linear.x == -1.0
+    assert mode == KEYBOARD_DISARMED_MODE
 
-    command, mode, _ = cycle(node, joy(l1=True))
+    keyboard_cycle(
+        node,
+        keyboard_state(mode=KeyboardState.MODE_BRAKE, sequence=4),
+    )
+    command, mode = keyboard_cycle(
+        node,
+        keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=5),
+    )
     assert command is None
     assert mode == TELEOP_SUPPRESS_MODE
 
 
-def test_keyboard_timeout_disarms_held_w_and_space(monkeypatch):
+def test_sender_timeout_preserves_armed_autonomy_suppression(monkeypatch):
     now = [10.0]
     monkeypatch.setattr(
         'runner_teleop.teleop_node.time.monotonic',
@@ -683,28 +697,54 @@ def test_keyboard_timeout_disarms_held_w_and_space(monkeypatch):
         ),
     )
 
-    now[0] += 0.151
-    node.publish_cmd()
-    assert node.pub.messages[-1].linear.x == -1.0
-
-    keyboard_cycle(
+    command, mode = keyboard_cycle(
         node,
         keyboard_state(
+            valid=False,
             mode=KeyboardState.MODE_SUPPRESS,
             throttle=0.30,
             sequence=3,
         ),
     )
-    assert node._active_mode_pub.messages[-1].data == KEYBOARD_DISARMED_MODE
-    assert node.pub.messages[-1].linear.x == -1.0
+    assert command is None
+    assert mode == TELEOP_SUPPRESS_MODE
+    now[0] += 0.151
+    node.publish_cmd()
+    assert node._active_mode_pub.messages[-1].data == TELEOP_SUPPRESS_MODE
 
-    keyboard_cycle(node, keyboard_state(sequence=4))
-    resumed, mode = keyboard_cycle(
+    brake, brake_mode = keyboard_cycle(
         node,
-        keyboard_state(throttle=0.30, sequence=5),
+        keyboard_state(
+            valid=False,
+            mode=KeyboardState.MODE_BRAKE,
+            sequence=4,
+        ),
     )
-    assert mode == KEYBOARD_MOTION_MODE
-    assert resumed.linear.x == pytest.approx(0.30)
+    assert brake_mode == BRAKE_MODE
+    assert brake.linear.x == -1.0
+
+
+def test_first_and_repeated_disarm_messages_publish_brake_immediately():
+    node = make_node()
+    keyboard_cycle(
+        node,
+        keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=1),
+    )
+    before = len(node.pub.messages)
+
+    node.on_keyboard(
+        keyboard_state(mode=KeyboardState.MODE_BRAKE, sequence=2)
+    )
+    assert len(node.pub.messages) == before + 1
+    assert node.pub.messages[-1].linear.x == -1.0
+    assert not node._keyboard_suppress_armed
+
+    for sequence in (2, 2, 3):
+        node.on_keyboard(
+            keyboard_state(mode=KeyboardState.MODE_BRAKE, sequence=sequence)
+        )
+        assert node.pub.messages[-1].linear.x == -1.0
+        assert not node._keyboard_suppress_armed
 
 
 @pytest.mark.parametrize(
