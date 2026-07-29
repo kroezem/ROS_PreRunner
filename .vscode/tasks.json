@@ -74,10 +74,11 @@
       "description": "Select the slam_toolbox map",
       "options": [
         "collingwood",
-        "house_good_v1",
-        "bedroom_phase_b_503"
+        // "house_good_v1",
+        // "bedroom_phase_b_503",
+        // "jai_test"
       ],
-      "default": "house_good_v1"
+      // "default": "house_good_v1"
     },
     {
       "id": "mapSaveName",
