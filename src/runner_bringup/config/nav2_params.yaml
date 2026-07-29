@@ -138,6 +138,7 @@ global_costmap:
       footprint_padding: 0.0
       plugins:
         - static_layer
+        - obstacle_layer
         - inflation_layer
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -146,17 +147,23 @@ global_costmap:
         subscribe_to_updates: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: true
+        enabled: false
+        combination_method: 0
         observation_sources: scan
         scan:
           topic: /scan
           data_type: LaserScan
           clearing: true
           marking: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
           obstacle_min_range: 0.05
           obstacle_max_range: 5.0
           raytrace_min_range: 0.0
           raytrace_max_range: 6.0
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          inf_is_valid: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         inflation_radius: 0.30

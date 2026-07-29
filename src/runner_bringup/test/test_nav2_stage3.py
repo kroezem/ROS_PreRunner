@@ -160,13 +160,44 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     )
 
 
-def test_global_costmap_preserves_inflation_radius_with_faster_cost_decay():
-    """Global cost shaping widens planning space without reducing clearance."""
+def test_global_costmap_obstacle_layer_is_runtime_opt_in_and_overwrites():
+    """Dynamic global obstacles start off and can clear transient marks."""
     global_params = _params()['global_costmap']['global_costmap'][
         'ros__parameters'
     ]
+    obstacle = global_params['obstacle_layer']
     inflation = global_params['inflation_layer']
 
+    assert global_params['plugins'] == [
+        'static_layer',
+        'obstacle_layer',
+        'inflation_layer',
+    ]
+    assert global_params['update_frequency'] == 5.0
+    assert global_params['footprint'] == (
+        '[[0.230, 0.0825], [0.230, -0.0825], '
+        '[-0.060, -0.0825], [-0.060, 0.0825]]'
+    )
+    assert global_params['footprint_padding'] == 0.0
+    assert obstacle['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
+    assert obstacle['enabled'] is False
+    assert obstacle['combination_method'] == 0
+    assert obstacle['observation_sources'] == 'scan'
+    assert obstacle['scan'] == {
+        'topic': '/scan',
+        'data_type': 'LaserScan',
+        'clearing': True,
+        'marking': True,
+        'min_obstacle_height': 0.0,
+        'max_obstacle_height': 2.0,
+        'obstacle_min_range': 0.05,
+        'obstacle_max_range': 5.0,
+        'raytrace_min_range': 0.0,
+        'raytrace_max_range': 6.0,
+        'expected_update_rate': 0.0,
+        'observation_persistence': 0.0,
+        'inf_is_valid': True,
+    }
     assert inflation['inflation_radius'] == 0.30
     assert inflation['cost_scaling_factor'] == 10.0
 
