@@ -1,10 +1,16 @@
 import math
 import struct
+from types import SimpleNamespace
 
+from nav2_msgs.srv import ClearEntireCostmap
 import pytest
-
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.msg import ParameterValue
 from runner_interfaces.msg import KeyboardState
 from runner_teleop.keyboard_bridge import _validate_configuration
+from runner_teleop.keyboard_bridge import COSTMAP_CLEAR_SERVICE
+from runner_teleop.keyboard_bridge import COSTMAP_GET_PARAMETERS_SERVICE
+from runner_teleop.keyboard_bridge import COSTMAP_SET_PARAMETERS_SERVICE
 from runner_teleop.keyboard_bridge import KeyboardAutonomyLatch
 from runner_teleop.keyboard_bridge import KeyboardBridge
 from runner_teleop.keyboard_bridge import KeyboardReceiver
@@ -15,8 +21,10 @@ from runner_teleop.keyboard_protocol import MODE_BRAKE_SUPPRESS
 from runner_teleop.keyboard_protocol import PACKET_FORMAT
 from runner_teleop.keyboard_protocol import PACKET_SIZE
 from runner_teleop.keyboard_protocol import PacketError
+from runner_teleop.keyboard_protocol import ROUTE_CLEAR_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import ROUTE_LOOP_TOGGLE
 from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
+from runner_teleop.keyboard_protocol import ROUTE_TOGGLE_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import VERSION
 from sensor_msgs.msg import Joy
 
@@ -63,11 +71,22 @@ def test_packet_contract_is_exact_and_mode_combinations_are_supported():
     assert decoded.throttle == 1.0
     assert decoded.steering == -1.0
     assert decoded.route_command == ROUTE_LOOP_TOGGLE
+    assert VERSION == 2
 
 
 def test_route_command_codes_map_to_bridge_commands():
     assert ROUTE_COMMAND_NAMES[ROUTE_LOOP_TOGGLE] == 'loop_toggle'
     assert ROUTE_COMMAND_NAMES[ROUTE_REMOVE_LAST] == 'remove_last'
+    assert ROUTE_CLEAR_GLOBAL_OBSTACLES == 6
+    assert ROUTE_TOGGLE_GLOBAL_OBSTACLES == 7
+    assert (
+        ROUTE_COMMAND_NAMES[ROUTE_CLEAR_GLOBAL_OBSTACLES]
+        == 'clear_global_obstacles'
+    )
+    assert (
+        ROUTE_COMMAND_NAMES[ROUTE_TOGGLE_GLOBAL_OBSTACLES]
+        == 'toggle_global_obstacles'
+    )
 
 
 @pytest.mark.parametrize(
@@ -86,7 +105,7 @@ def test_route_command_codes_map_to_bridge_commands():
         packet(steering=math.nan),
         packet(steering=-1.01),
         packet(steering=1.01),
-        packet(route_command=6),
+        packet(route_command=8),
     ],
 )
 def test_malformed_and_invalid_packets_are_rejected(data):
@@ -413,3 +432,370 @@ def test_invalid_bridge_configuration_is_rejected(changes):
 
     with pytest.raises(ValueError):
         _validate_configuration(**values)
+
+
+class FakeFuture:
+    """Controllable service future."""
+
+    def __init__(self):
+        self._done = False
+        self._result = None
+        self._error = None
+
+    def done(self):
+        return self._done
+
+    def result(self):
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+    def resolve(self, result):
+        self._result = result
+        self._done = True
+
+    def fail(self, error):
+        self._error = error
+        self._done = True
+
+
+class FakeClient:
+    """Record asynchronous service calls."""
+
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.requests = []
+        self.futures = []
+        self.call_error = None
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        if self.call_error is not None:
+            raise self.call_error
+        self.requests.append(request)
+        future = FakeFuture()
+        self.futures.append(future)
+        return future
+
+
+class FakeLogger:
+    """Collect bridge log messages."""
+
+    def __init__(self):
+        self.messages = []
+
+    def info(self, message):
+        self.messages.append(('info', message))
+
+    def warning(self, message):
+        self.messages.append(('warning', message))
+
+
+def make_costmap_bridge(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(
+        'runner_teleop.keyboard_bridge.time.monotonic',
+        lambda: now[0],
+    )
+    bridge = KeyboardBridge.__new__(KeyboardBridge)
+    bridge._global_obstacles_state = (
+        KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+    )
+    bridge._costmap_action = None
+    bridge._costmap_phase = None
+    bridge._costmap_future = None
+    bridge._costmap_deadline = None
+    bridge._costmap_previous = None
+    bridge._costmap_requested = None
+    bridge._pending_costmap_action = None
+    bridge._next_obstacle_refresh = 100.0
+    bridge._clear_costmap_client = FakeClient()
+    bridge._get_parameters_client = FakeClient()
+    bridge._set_parameters_client = FakeClient()
+    bridge._route_control_pub = type(
+        'Publisher',
+        (),
+        {'messages': [], 'publish': lambda self, msg: self.messages.append(msg)},
+    )()
+    logger = FakeLogger()
+    bridge.get_logger = lambda: logger
+    return bridge, now, logger
+
+
+def boolean_parameter_response(value):
+    return SimpleNamespace(values=[ParameterValue(
+        type=ParameterType.PARAMETER_BOOL,
+        bool_value=value,
+    )])
+
+
+def publish_costmap_diagnostic(bridge):
+    bridge._receiver = KeyboardReceiver(speed_cap=0.5, timeout=0.15)
+    bridge._latch = KeyboardAutonomyLatch(timeout=600.0)
+    bridge._publisher = type(
+        'Publisher',
+        (),
+        {'messages': [], 'publish': lambda self, msg: self.messages.append(msg)},
+    )()
+    bridge._last_published_valid = False
+    bridge._publish()
+    return bridge._publisher.messages[-1].global_obstacles_state
+
+
+def complete_toggle_read(bridge, enabled):
+    bridge._pump_costmap_controls()
+    request = bridge._get_parameters_client.requests[-1]
+    assert request.names == ['obstacle_layer.enabled']
+    bridge._get_parameters_client.futures[-1].resolve(
+        boolean_parameter_response(enabled)
+    )
+    bridge._pump_costmap_controls()
+
+
+def complete_toggle_set(bridge, success=True, reason=''):
+    bridge._pump_costmap_controls()
+    request = bridge._set_parameters_client.requests[-1]
+    bridge._set_parameters_client.futures[-1].resolve(
+        SimpleNamespace(results=[
+            SimpleNamespace(successful=success, reason=reason),
+        ])
+    )
+    bridge._pump_costmap_controls()
+    return request
+
+
+def test_clear_command_calls_correct_service_once_and_repeats_safely(
+    monkeypatch,
+):
+    bridge, _, logger = make_costmap_bridge(monkeypatch)
+    assert COSTMAP_CLEAR_SERVICE == (
+        '/global_costmap/clear_entirely_global_costmap'
+    )
+    assert COSTMAP_GET_PARAMETERS_SERVICE == (
+        '/global_costmap/global_costmap/get_parameters'
+    )
+    assert COSTMAP_SET_PARAMETERS_SERVICE == (
+        '/global_costmap/global_costmap/set_parameters'
+    )
+    bridge._dispatch_route_command(ROUTE_CLEAR_GLOBAL_OBSTACLES)
+    bridge._pump_costmap_controls()
+
+    assert len(bridge._clear_costmap_client.requests) == 1
+    assert isinstance(
+        bridge._clear_costmap_client.requests[0],
+        ClearEntireCostmap.Request,
+    )
+    bridge._clear_costmap_client.futures[0].resolve(
+        ClearEntireCostmap.Response()
+    )
+    bridge._pump_costmap_controls()
+    assert bridge._costmap_action is None
+
+    bridge._dispatch_route_command(ROUTE_CLEAR_GLOBAL_OBSTACLES)
+    bridge._pump_costmap_controls()
+    bridge._clear_costmap_client.futures[1].resolve(
+        ClearEntireCostmap.Response()
+    )
+    bridge._pump_costmap_controls()
+    assert len(bridge._clear_costmap_client.requests) == 2
+    assert any('cleared successfully' in item[1] for item in logger.messages)
+
+
+@pytest.mark.parametrize(
+    ('previous', 'requested', 'confirmed'),
+    [
+        (True, False, KeyboardState.GLOBAL_OBSTACLES_DISABLED),
+        (False, True, KeyboardState.GLOBAL_OBSTACLES_ENABLED),
+    ],
+)
+def test_toggle_freshly_reads_then_inverts_and_confirms(
+    monkeypatch,
+    previous,
+    requested,
+    confirmed,
+):
+    bridge, _, logger = make_costmap_bridge(monkeypatch)
+    bridge._dispatch_route_command(ROUTE_TOGGLE_GLOBAL_OBSTACLES)
+    complete_toggle_read(bridge, previous)
+
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+        if previous
+        else KeyboardState.GLOBAL_OBSTACLES_DISABLED
+    )
+    request = complete_toggle_set(bridge)
+    parameter = request.parameters[0]
+    assert parameter.name == 'obstacle_layer.enabled'
+    assert parameter.value.type == ParameterType.PARAMETER_BOOL
+    assert parameter.value.bool_value is requested
+    assert bridge._global_obstacles_state == confirmed
+    assert publish_costmap_diagnostic(bridge) == confirmed
+    assert any(
+        f'previous={previous}' in item[1]
+        and f'requested={requested}' in item[1]
+        and f'resulting={requested}' in item[1]
+        for item in logger.messages
+    )
+
+
+@pytest.mark.parametrize(
+    'response',
+    [
+        SimpleNamespace(values=[]),
+        SimpleNamespace(values=[ParameterValue(
+            type=ParameterType.PARAMETER_STRING,
+            string_value='true',
+        )]),
+    ],
+)
+def test_missing_or_nonboolean_read_does_not_set(monkeypatch, response):
+    bridge, _, _ = make_costmap_bridge(monkeypatch)
+    bridge._request_costmap_action('toggle')
+    bridge._pump_costmap_controls()
+    bridge._get_parameters_client.futures[0].resolve(response)
+    bridge._pump_costmap_controls()
+
+    assert bridge._set_parameters_client.requests == []
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+    )
+
+
+def test_failed_read_does_not_set_or_crash(monkeypatch):
+    bridge, _, logger = make_costmap_bridge(monkeypatch)
+    bridge._request_costmap_action('toggle')
+    bridge._pump_costmap_controls()
+    bridge._get_parameters_client.futures[0].fail(
+        RuntimeError('get failed')
+    )
+    bridge._pump_costmap_controls()
+
+    assert bridge._set_parameters_client.requests == []
+    assert bridge._costmap_action is None
+    assert any('get failed' in item[1] for item in logger.messages)
+
+
+def test_failed_set_preserves_confirmed_read_state(monkeypatch):
+    bridge, _, logger = make_costmap_bridge(monkeypatch)
+    bridge._request_costmap_action('toggle')
+    complete_toggle_read(bridge, True)
+    request = complete_toggle_set(bridge, success=False, reason='rejected')
+
+    assert request.parameters[0].value.bool_value is False
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+    )
+    assert publish_costmap_diagnostic(bridge) == (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+    )
+    assert any('rejected' in item[1] for item in logger.messages)
+
+
+def test_repeated_toggles_each_use_a_fresh_read_and_alternate(monkeypatch):
+    bridge, _, _ = make_costmap_bridge(monkeypatch)
+    bridge._request_costmap_action('toggle')
+    complete_toggle_read(bridge, True)
+    complete_toggle_set(bridge)
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_DISABLED
+    )
+
+    bridge._request_costmap_action('toggle')
+    complete_toggle_read(bridge, False)
+    complete_toggle_set(bridge)
+
+    assert len(bridge._get_parameters_client.requests) == 2
+    assert len(bridge._set_parameters_client.requests) == 2
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+    )
+
+
+def test_refresh_initializes_and_later_failure_preserves_confirmed_state(
+    monkeypatch,
+):
+    bridge, now, _ = make_costmap_bridge(monkeypatch)
+    bridge._next_obstacle_refresh = now[0]
+    bridge._pump_costmap_controls()
+    bridge._pump_costmap_controls()
+    bridge._get_parameters_client.futures[0].resolve(
+        boolean_parameter_response(False)
+    )
+    bridge._pump_costmap_controls()
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_DISABLED
+    )
+
+    now[0] = bridge._next_obstacle_refresh
+    bridge._pump_costmap_controls()
+    bridge._pump_costmap_controls()
+    bridge._get_parameters_client.futures[1].fail(
+        RuntimeError('temporary failure')
+    )
+    bridge._pump_costmap_controls()
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_DISABLED
+    )
+
+
+def test_pending_costmap_service_does_not_block_escape_brake(monkeypatch):
+    bridge, _, _ = make_costmap_bridge(monkeypatch)
+    bridge._get_parameters_client.ready = False
+    bridge._request_costmap_action('toggle')
+    bridge._pump_costmap_controls()
+    assert bridge._costmap_action == 'toggle'
+
+    latch = KeyboardAutonomyLatch(600.0)
+    latch.process_mode(2, 0.0)
+    assert latch.process_mode(1, 0.1)
+    assert not latch.armed
+    assert bridge._get_parameters_client.requests == []
+
+
+def test_unavailable_service_times_out_and_preserves_state(monkeypatch):
+    bridge, now, logger = make_costmap_bridge(monkeypatch)
+    bridge._global_obstacles_state = (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+    )
+    bridge._get_parameters_client.ready = False
+    bridge._request_costmap_action('toggle')
+    deadline = bridge._costmap_deadline
+
+    now[0] = deadline
+    bridge._pump_costmap_controls()
+
+    assert bridge._costmap_action is None
+    assert bridge._global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_ENABLED
+    )
+    assert any('timed out' in item[1] for item in logger.messages)
+
+
+def test_keyboard_diagnostic_global_obstacle_state_starts_unknown(
+    monkeypatch,
+):
+    now = [10.0]
+    monkeypatch.setattr(
+        'runner_teleop.keyboard_bridge.time.monotonic',
+        lambda: now[0],
+    )
+    bridge = KeyboardBridge.__new__(KeyboardBridge)
+    bridge._receiver = KeyboardReceiver(speed_cap=0.5, timeout=0.15)
+    bridge._latch = KeyboardAutonomyLatch(timeout=600.0)
+    bridge._global_obstacles_state = (
+        KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+    )
+    bridge._publisher = type(
+        'Publisher',
+        (),
+        {'messages': [], 'publish': lambda self, msg: self.messages.append(msg)},
+    )()
+    bridge._last_published_valid = False
+
+    bridge._publish()
+
+    assert bridge._publisher.messages[-1].global_obstacles_state == (
+        KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+    )

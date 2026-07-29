@@ -15,6 +15,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from runner_interfaces.msg import KeyboardState
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -81,6 +82,12 @@ NAV2_ERROR_NAMES = {
     730: 'UNKNOWN',
     731: 'TIMEOUT',
     732: 'TF_ERROR',
+}
+
+GLOBAL_OBSTACLE_STATE_NAMES = {
+    KeyboardState.GLOBAL_OBSTACLES_UNKNOWN: 'unknown',
+    KeyboardState.GLOBAL_OBSTACLES_DISABLED: 'disabled',
+    KeyboardState.GLOBAL_OBSTACLES_ENABLED: 'enabled',
 }
 
 
@@ -156,6 +163,7 @@ class FoxgloveGoalBridge(Node):
         self._last_error_code = 0
         self._last_error_meaning = NAV2_ERROR_NAMES[0]
         self._current_waypoint_index = -1
+        self._global_obstacles = 'unknown'
         route_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -192,6 +200,12 @@ class FoxgloveGoalBridge(Node):
             String,
             '/runner/route_control',
             self._route_control_callback,
+            10,
+        )
+        self.create_subscription(
+            KeyboardState,
+            '/teleop/keyboard_state',
+            self._keyboard_state_callback,
             10,
         )
         self._load_route()
@@ -302,6 +316,18 @@ class FoxgloveGoalBridge(Node):
                 f'Rejecting unknown route command {command!r}'
             )
 
+    def _keyboard_state_callback(self, message):
+        state = GLOBAL_OBSTACLE_STATE_NAMES.get(
+            message.global_obstacles_state
+        )
+        if state is None:
+            self.get_logger().warning(
+                'Ignoring invalid global obstacle diagnostic value '
+                f'{message.global_obstacles_state}'
+            )
+            return
+        self._global_obstacles = state
+
     def _queue_request(self, request):
         self._cancel_requested = False
         self._pending_request = request
@@ -328,6 +354,7 @@ class FoxgloveGoalBridge(Node):
             'route_length': len(self._route),
             'current_waypoint_index': self._current_waypoint_index,
             'loop_mode': self._loop_enabled,
+            'global_obstacles': self._global_obstacles,
             'time_in_state_seconds': round(elapsed, 3),
         }
         self._autonomy_state_pub.publish(

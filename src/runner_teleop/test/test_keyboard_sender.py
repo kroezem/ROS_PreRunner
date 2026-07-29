@@ -218,11 +218,47 @@ def test_route_function_keys_queue_discrete_commands_without_repeat(state):
 @pytest.mark.parametrize(
     ('token', 'expected'),
     [
+        (
+            'clear_global_obstacles',
+            sender.ROUTE_CLEAR_GLOBAL_OBSTACLES,
+        ),
+        (
+            'toggle_global_obstacles',
+            sender.ROUTE_TOGGLE_GLOBAL_OBSTACLES,
+        ),
+    ],
+)
+def test_costmap_function_keys_are_discrete_without_hold_repeat(
+    state,
+    token,
+    expected,
+):
+    state.press(token, now=0.0)
+    state.press(token, now=0.1)
+    assert state.state(now=0.1)[3] == expected
+    assert state.state(now=0.2)[3] == sender.ROUTE_NONE
+
+    state.release(token)
+    state.press(token, now=0.3)
+    assert state.state(now=0.3)[3] == expected
+
+
+@pytest.mark.parametrize(
+    ('token', 'expected'),
+    [
         ('route_start', sender.ROUTE_START),
         ('route_stop', sender.ROUTE_STOP),
         ('route_clear', sender.ROUTE_CLEAR),
         ('route_loop_toggle', sender.ROUTE_LOOP_TOGGLE),
         ('route_remove_last', sender.ROUTE_REMOVE_LAST),
+        (
+            'clear_global_obstacles',
+            sender.ROUTE_CLEAR_GLOBAL_OBSTACLES,
+        ),
+        (
+            'toggle_global_obstacles',
+            sender.ROUTE_TOGGLE_GLOBAL_OBSTACLES,
+        ),
     ],
 )
 def test_each_route_key_has_the_expected_wire_command(

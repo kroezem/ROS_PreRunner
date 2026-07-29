@@ -14,6 +14,7 @@ from runner_bringup.foxglove_goal_bridge import (
     _Request,
     FoxgloveGoalBridge,
 )
+from runner_interfaces.msg import KeyboardState
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker
 
@@ -631,6 +632,7 @@ def test_autonomy_state_reports_route_progress_and_nav2_error(bridge):
     assert accepted['route_length'] == 2
     assert accepted['current_waypoint_index'] == 0
     assert accepted['loop_mode'] is False
+    assert accepted['global_obstacles'] == 'unknown'
     assert accepted['time_in_state_seconds'] >= 0.0
 
     route_client.send_feedback(0, poses_remaining=1)
@@ -649,6 +651,33 @@ def test_autonomy_state_reports_route_progress_and_nav2_error(bridge):
     assert aborted['goal_state'] == 'aborted'
     assert aborted['last_error_code'] == 208
     assert aborted['last_error_meaning'] == 'NO_VALID_PATH'
+
+
+@pytest.mark.parametrize(
+    ('diagnostic', 'expected'),
+    [
+        (KeyboardState.GLOBAL_OBSTACLES_UNKNOWN, 'unknown'),
+        (KeyboardState.GLOBAL_OBSTACLES_DISABLED, 'disabled'),
+        (KeyboardState.GLOBAL_OBSTACLES_ENABLED, 'enabled'),
+    ],
+)
+def test_autonomy_state_reports_global_obstacle_diagnostic(
+    bridge,
+    diagnostic,
+    expected,
+):
+    node, _ = bridge
+    state_pub = FakePublisher()
+    node._autonomy_state_pub = state_pub
+
+    node._keyboard_state_callback(KeyboardState(
+        global_obstacles_state=diagnostic
+    ))
+    node._publish_autonomy_state()
+
+    document = json.loads(state_pub.messages[-1].data)
+    assert document['global_obstacles'] == expected
+    assert document['goal_state'] == 'none'
 
 
 def test_stop_prevents_loop_redispatch(bridge):

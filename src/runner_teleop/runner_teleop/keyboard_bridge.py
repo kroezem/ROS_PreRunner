@@ -18,6 +18,12 @@ import math
 import socket
 import time
 
+from nav2_msgs.srv import ClearEntireCostmap
+from rcl_interfaces.msg import Parameter
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.msg import ParameterValue
+from rcl_interfaces.srv import GetParameters
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -29,11 +35,13 @@ from runner_teleop.keyboard_protocol import KeyboardPacket
 from runner_teleop.keyboard_protocol import PACKET_SIZE
 from runner_teleop.keyboard_protocol import PacketError
 from runner_teleop.keyboard_protocol import ROUTE_CLEAR
+from runner_teleop.keyboard_protocol import ROUTE_CLEAR_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import ROUTE_LOOP_TOGGLE
 from runner_teleop.keyboard_protocol import ROUTE_NONE
 from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
 from runner_teleop.keyboard_protocol import ROUTE_START
 from runner_teleop.keyboard_protocol import ROUTE_STOP
+from runner_teleop.keyboard_protocol import ROUTE_TOGGLE_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import sequence_delta
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
@@ -45,6 +53,19 @@ DEFAULT_SPEED_CAP = 0.50
 DEFAULT_PUBLICATION_RATE = 20.0
 DEFAULT_AUTONOMY_LATCH_TIMEOUT = 600.0
 WARNING_PERIOD = 2.0
+COSTMAP_SERVICE_TIMEOUT = 1.0
+COSTMAP_REFRESH_INTERVAL = 30.0
+COSTMAP_REFRESH_RETRY_INTERVAL = 2.0
+COSTMAP_CLEAR_SERVICE = (
+    '/global_costmap/clear_entirely_global_costmap'
+)
+COSTMAP_GET_PARAMETERS_SERVICE = (
+    '/global_costmap/global_costmap/get_parameters'
+)
+COSTMAP_SET_PARAMETERS_SERVICE = (
+    '/global_costmap/global_costmap/set_parameters'
+)
+GLOBAL_OBSTACLE_PARAMETER = 'obstacle_layer.enabled'
 X_BUTTON_INDEX = 0
 L1_BUTTON_INDEX = 4
 R1_BUTTON_INDEX = 5
@@ -54,6 +75,8 @@ ROUTE_COMMAND_NAMES = {
     ROUTE_CLEAR: 'clear',
     ROUTE_LOOP_TOGGLE: 'loop_toggle',
     ROUTE_REMOVE_LAST: 'remove_last',
+    ROUTE_CLEAR_GLOBAL_OBSTACLES: 'clear_global_obstacles',
+    ROUTE_TOGGLE_GLOBAL_OBSTACLES: 'toggle_global_obstacles',
 }
 
 
@@ -300,6 +323,17 @@ class KeyboardBridge(Node):
         )
         self._warnings = {}
         self._latch = KeyboardAutonomyLatch(autonomy_latch_timeout)
+        self._global_obstacles_state = (
+            KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+        )
+        self._costmap_action = None
+        self._costmap_phase = None
+        self._costmap_future = None
+        self._costmap_deadline = None
+        self._costmap_previous = None
+        self._costmap_requested = None
+        self._pending_costmap_action = None
+        self._next_obstacle_refresh = time.monotonic()
         self._last_published_valid = False
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setblocking(False)
@@ -314,8 +348,21 @@ class KeyboardBridge(Node):
             '/runner/route_control',
             10,
         )
+        self._clear_costmap_client = self.create_client(
+            ClearEntireCostmap,
+            COSTMAP_CLEAR_SERVICE,
+        )
+        self._get_parameters_client = self.create_client(
+            GetParameters,
+            COSTMAP_GET_PARAMETERS_SERVICE,
+        )
+        self._set_parameters_client = self.create_client(
+            SetParameters,
+            COSTMAP_SET_PARAMETERS_SERVICE,
+        )
         self.create_subscription(Joy, '/joy', self._on_joy, 10)
         self.create_timer(0.005, self._receive)
+        self.create_timer(0.02, self._pump_costmap_controls)
         self.create_timer(0.005, self._publish_timeout_transition)
         self.create_timer(1.0 / publication_rate, self._publish)
         if not allowed_source_ip:
@@ -395,11 +442,234 @@ class KeyboardBridge(Node):
                 accepted is not None
                 and accepted.packet.route_command != ROUTE_NONE
             ):
-                self._route_control_pub.publish(String(
-                    data=ROUTE_COMMAND_NAMES[
-                        accepted.packet.route_command
-                    ]
-                ))
+                self._dispatch_route_command(
+                    accepted.packet.route_command
+                )
+
+    def _dispatch_route_command(self, command: int) -> None:
+        if command == ROUTE_CLEAR_GLOBAL_OBSTACLES:
+            self._request_costmap_action('clear')
+            return
+        if command == ROUTE_TOGGLE_GLOBAL_OBSTACLES:
+            self._request_costmap_action('toggle')
+            return
+        self._route_control_pub.publish(String(
+            data=ROUTE_COMMAND_NAMES[command]
+        ))
+
+    def _request_costmap_action(self, action: str) -> None:
+        """Start or boundedly queue one operator costmap action."""
+        now = time.monotonic()
+        if self._costmap_action is None:
+            self._begin_costmap_action(action, now)
+            return
+        if self._pending_costmap_action is None:
+            self._pending_costmap_action = action
+            return
+        if action == 'clear' and self._pending_costmap_action == 'clear':
+            self.get_logger().info(
+                'Global costmap clear already pending; coalescing request'
+            )
+            return
+        self.get_logger().warning(
+            f'Costmap command {action!r} dropped: bounded pending slot is full'
+        )
+
+    def _begin_costmap_action(self, action: str, now: float) -> None:
+        self._costmap_action = action
+        self._costmap_phase = 'waiting'
+        self._costmap_future = None
+        self._costmap_deadline = now + COSTMAP_SERVICE_TIMEOUT
+        self._costmap_previous = None
+        self._costmap_requested = None
+
+    def _finish_costmap_action(self, success: bool, now: float) -> None:
+        action = self._costmap_action
+        self._costmap_action = None
+        self._costmap_phase = None
+        self._costmap_future = None
+        self._costmap_deadline = None
+        self._costmap_previous = None
+        self._costmap_requested = None
+        if action == 'refresh':
+            interval = (
+                COSTMAP_REFRESH_INTERVAL
+                if success else COSTMAP_REFRESH_RETRY_INTERVAL
+            )
+            self._next_obstacle_refresh = now + interval
+        elif self._global_obstacles_state == (
+            KeyboardState.GLOBAL_OBSTACLES_UNKNOWN
+        ):
+            self._next_obstacle_refresh = (
+                now + COSTMAP_REFRESH_RETRY_INTERVAL
+            )
+        else:
+            self._next_obstacle_refresh = now + COSTMAP_REFRESH_INTERVAL
+        pending = self._pending_costmap_action
+        self._pending_costmap_action = None
+        if pending is not None:
+            self._begin_costmap_action(pending, now)
+
+    def _set_global_obstacles_state(self, enabled: bool) -> None:
+        self._global_obstacles_state = (
+            KeyboardState.GLOBAL_OBSTACLES_ENABLED
+            if enabled
+            else KeyboardState.GLOBAL_OBSTACLES_DISABLED
+        )
+
+    @staticmethod
+    def _read_boolean_parameter(response):
+        values = getattr(response, 'values', [])
+        if len(values) != 1:
+            return None, 'parameter response did not contain exactly one value'
+        value = values[0]
+        if value.type != ParameterType.PARAMETER_BOOL:
+            return None, (
+                f'{GLOBAL_OBSTACLE_PARAMETER} is missing or not boolean '
+                f'(type={value.type})'
+            )
+        return value.bool_value, None
+
+    def _start_get_parameters(self) -> None:
+        request = GetParameters.Request()
+        request.names = [GLOBAL_OBSTACLE_PARAMETER]
+        self._costmap_future = self._get_parameters_client.call_async(request)
+        self._costmap_phase = 'get'
+
+    def _start_set_parameters(self) -> None:
+        request = SetParameters.Request()
+        request.parameters = [Parameter(
+            name=GLOBAL_OBSTACLE_PARAMETER,
+            value=ParameterValue(
+                type=ParameterType.PARAMETER_BOOL,
+                bool_value=self._costmap_requested,
+            ),
+        )]
+        self._costmap_future = self._set_parameters_client.call_async(request)
+        self._costmap_phase = 'set'
+
+    def _pump_costmap_controls(self) -> None:
+        """Advance costmap services without blocking keyboard reception."""
+        now = time.monotonic()
+        if self._costmap_action is None:
+            if now < self._next_obstacle_refresh:
+                return
+            self._begin_costmap_action('refresh', now)
+        if now >= self._costmap_deadline:
+            self.get_logger().warning(
+                f'Costmap {self._costmap_action} operation timed out after '
+                f'{COSTMAP_SERVICE_TIMEOUT:.1f}s; last confirmed obstacle '
+                'state retained'
+            )
+            self._finish_costmap_action(False, now)
+            return
+        if self._costmap_phase == 'waiting':
+            client = (
+                self._clear_costmap_client
+                if self._costmap_action == 'clear'
+                else self._get_parameters_client
+            )
+            if not client.service_is_ready():
+                return
+            try:
+                if self._costmap_action == 'clear':
+                    self._costmap_future = client.call_async(
+                        ClearEntireCostmap.Request()
+                    )
+                    self._costmap_phase = 'clear'
+                else:
+                    self._start_get_parameters()
+            except Exception as error:  # noqa: B902
+                self.get_logger().warning(
+                    f'Failed to start costmap {self._costmap_action}: {error}'
+                )
+                self._finish_costmap_action(False, now)
+            return
+        if self._costmap_phase == 'waiting_set':
+            if not self._set_parameters_client.service_is_ready():
+                return
+            try:
+                self._start_set_parameters()
+            except Exception as error:  # noqa: B902
+                self.get_logger().warning(
+                    f'Failed to request obstacle-layer state '
+                    f'{self._costmap_requested}: {error}'
+                )
+                self._finish_costmap_action(False, now)
+            return
+        if not self._costmap_future.done():
+            return
+        try:
+            response = self._costmap_future.result()
+        except Exception as error:  # noqa: B902
+            self.get_logger().warning(
+                f'Costmap {self._costmap_action} service failed: {error}; '
+                'last confirmed obstacle state retained'
+            )
+            self._finish_costmap_action(False, now)
+            return
+        if self._costmap_phase == 'clear':
+            if response is None:
+                self.get_logger().warning(
+                    'Global obstacle clear returned no response'
+                )
+                self._finish_costmap_action(False, now)
+                return
+            self.get_logger().info(
+                'Global obstacle marks cleared successfully via '
+                f'{COSTMAP_CLEAR_SERVICE}'
+            )
+            self._finish_costmap_action(True, now)
+            return
+        if self._costmap_phase == 'get':
+            enabled, error = self._read_boolean_parameter(response)
+            if error is not None:
+                self.get_logger().warning(
+                    f'Global obstacle-layer read failed: {error}; '
+                    'last confirmed state retained'
+                )
+                self._finish_costmap_action(False, now)
+                return
+            self._set_global_obstacles_state(enabled)
+            if self._costmap_action == 'refresh':
+                self.get_logger().info(
+                    'Global obstacle-layer state refreshed: '
+                    f'enabled={enabled}'
+                )
+                self._finish_costmap_action(True, now)
+                return
+            self._costmap_previous = enabled
+            self._costmap_requested = not enabled
+            self.get_logger().info(
+                'Global obstacle-layer toggle read: '
+                f'previous={enabled} requested={self._costmap_requested}'
+            )
+            self._costmap_phase = 'waiting_set'
+            self._costmap_future = None
+            return
+        results = getattr(response, 'results', [])
+        if len(results) != 1 or not results[0].successful:
+            reason = (
+                results[0].reason
+                if len(results) == 1 and results[0].reason
+                else 'set service did not confirm success'
+            )
+            self.get_logger().warning(
+                'Global obstacle-layer toggle failed: '
+                f'previous={self._costmap_previous} '
+                f'requested={self._costmap_requested} reason={reason}; '
+                'last confirmed state retained'
+            )
+            self._finish_costmap_action(False, now)
+            return
+        self._set_global_obstacles_state(self._costmap_requested)
+        self.get_logger().info(
+            'Global obstacle-layer toggle succeeded: '
+            f'previous={self._costmap_previous} '
+            f'requested={self._costmap_requested} '
+            f'resulting={self._costmap_requested}'
+        )
+        self._finish_costmap_action(True, now)
 
     def _on_joy(self, message: Joy) -> None:
         buttons = message.buttons
@@ -434,6 +704,11 @@ class KeyboardBridge(Node):
             message.steering = state.packet.steering
         else:
             message.mode = KeyboardState.MODE_BRAKE
+        message.global_obstacles_state = getattr(
+            self,
+            '_global_obstacles_state',
+            KeyboardState.GLOBAL_OBSTACLES_UNKNOWN,
+        )
         self._publisher.publish(message)
         self._last_published_valid = message.valid
 

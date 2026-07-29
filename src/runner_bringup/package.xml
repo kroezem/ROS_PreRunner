@@ -27,6 +27,7 @@
   <depend>rf2o_laser_odometry</depend>
   <depend>rclpy</depend>
   <depend>robot_localization</depend>
+  <depend>runner_interfaces</depend>
   <depend>runner_imu</depend>
   <depend>runner_drive_adapter</depend>
   <depend>runner_teleop</depend>

@@ -35,6 +35,11 @@ Route controls are F5 start, F6 stop, F7 clear, F8 loop toggle, and F9 undo
 last waypoint. These publish the corresponding command through the Pi bridge
 to `/runner/route_control`.
 
+Global costmap controls are F10 to clear currently accumulated global obstacle
+marks and F11 to enable or disable the global costmap obstacle layer. F11
+always reads the current `obstacle_layer.enabled` parameter before requesting
+its inverse. These operator commands do not change the saved static map.
+
 On macOS, grant the terminal or Python launcher Input Monitoring or
 Accessibility permission. `pynput` capture is global regardless of window
 focus and does not provide a portable application-focus-loss event. Sender
@@ -51,6 +56,9 @@ liveness, while `mode=MODE_SUPPRESS` reports an armed Pi latch even when
 `valid=false`. Armed keyboard autonomy publishes `teleop_suppress` continuously
 on `/teleop/active_mode`; the keyboard-state mode distinguishes its ownership
 without changing the active-mode compatibility contract.
+`global_obstacles_state` reports the last parameter-service-confirmed global
+obstacle-layer state as unknown, disabled, or enabled; transient refresh
+failures preserve the last confirmed value.
 
 `allowed_source_ip` may be set to one IPv4 address. When empty, any source is
 eligible while no source/session is active. Active source/session locking

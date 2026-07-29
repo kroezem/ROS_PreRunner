@@ -23,6 +23,8 @@ ROUTE_STOP = 2
 ROUTE_CLEAR = 3
 ROUTE_LOOP_TOGGLE = 4
 ROUTE_REMOVE_LAST = 5
+ROUTE_CLEAR_GLOBAL_OBSTACLES = 6
+ROUTE_TOGGLE_GLOBAL_OBSTACLES = 7
 PACKET_FORMAT = '!4sBBQIffB'
 DEFAULT_PORT = 49321
 SEND_PERIOD = 0.05
@@ -37,6 +39,8 @@ ROUTE_KEYS = {
     'route_clear': ROUTE_CLEAR,
     'route_loop_toggle': ROUTE_LOOP_TOGGLE,
     'route_remove_last': ROUTE_REMOVE_LAST,
+    'clear_global_obstacles': ROUTE_CLEAR_GLOBAL_OBSTACLES,
+    'toggle_global_obstacles': ROUTE_TOGGLE_GLOBAL_OBSTACLES,
 }
 
 
@@ -289,6 +293,8 @@ def main(argv=None):
         keyboard.Key.f7: 'route_clear',
         keyboard.Key.f8: 'route_loop_toggle',
         keyboard.Key.f9: 'route_remove_last',
+        keyboard.Key.f10: 'clear_global_obstacles',
+        keyboard.Key.f11: 'toggle_global_obstacles',
     }
 
     def token(key):
@@ -350,6 +356,10 @@ def main(argv=None):
     print(
         'Routes: F5=start F6=stop F7=clear F8=loop toggle '
         'F9=undo last waypoint'
+    )
+    print(
+        'Costmap: F10=clear accumulated global obstacle marks; '
+        'F11=enable or disable the global costmap obstacle layer'
     )
     exit_code = 0
     try:
