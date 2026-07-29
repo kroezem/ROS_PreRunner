@@ -63,8 +63,11 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert rpp['allow_reversing'] is False
     assert rpp['use_rotate_to_heading'] is False
     assert rpp['lookahead_dist'] == 0.40
-    assert rpp['use_velocity_scaled_lookahead_dist'] is False
-    assert rpp['regulated_linear_scaling_min_radius'] == 0.80
+    assert rpp['use_velocity_scaled_lookahead_dist'] is True
+    assert rpp['min_lookahead_dist'] == 0.30
+    assert rpp['max_lookahead_dist'] == 0.80
+    assert rpp['lookahead_time'] == 1.0
+    assert rpp['regulated_linear_scaling_min_radius'] == 0.75
     assert rpp['regulated_linear_scaling_min_speed'] == 0.126
     assert rpp['use_collision_detection'] is True
     assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.5

@@ -60,10 +60,13 @@ controller_server:
       desired_linear_vel: 0.290
       min_approach_linear_velocity: 0.126
       approach_velocity_scaling_dist: 0.40
-      use_velocity_scaled_lookahead_dist: false
+      use_velocity_scaled_lookahead_dist: true
       lookahead_dist: 0.40
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.80
+      lookahead_time: 1.0
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.80
+      regulated_linear_scaling_min_radius: 0.75
       regulated_linear_scaling_min_speed: 0.126
       use_cost_regulated_linear_velocity_scaling: false
       inflation_cost_scaling_factor: 5.0
