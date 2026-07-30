@@ -13,6 +13,8 @@ import rclpy
 from runner_bringup.foxglove_goal_bridge import (
     _Request,
     FoxgloveGoalBridge,
+    NavigationMode,
+    QueueState,
 )
 from runner_interfaces.msg import KeyboardState
 from std_msgs.msg import String
@@ -121,13 +123,14 @@ class FakeActionClient:
     """Record goals sent by the bridge."""
 
     def __init__(self):
+        self.ready = True
         self.goals = []
         self.send_futures = []
         self.send_errors = []
         self.feedback_callbacks = []
 
     def server_is_ready(self):
-        return True
+        return self.ready
 
     def send_goal_async(self, goal, feedback_callback=None):
         if self.send_errors:
@@ -209,6 +212,12 @@ def route_goal_xs(route_action_client):
         [pose.pose.position.x for pose in goal.poses]
         for goal in route_action_client.goals
     ]
+
+
+def enter_route(node):
+    """Select persistent route mode through the public control callback."""
+    node._route_control_callback(String(data='set_route_mode'))
+    assert node.navigation_mode == NavigationMode.ROUTE
 
 
 def test_single_pose_forwarding(bridge):
@@ -385,10 +394,10 @@ def test_stale_send_callback_cannot_clear_newer_send_state(bridge):
     stale_future = action_client.send_futures[0]
     stale_generation = node._send_generation
     node._clear_send_state()
-    node._pending_request = _Request(
-        'NavigateToPose', (make_pose(2.0),)
+    node._replace_request(
+        _Request('NavigateToPose', (make_pose(2.0),)),
+        'test replacement',
     )
-    node._pump()
     current_future = node._send_future
     current_generation = node._send_generation
 
@@ -408,10 +417,10 @@ def test_stale_result_callback_cannot_clear_newer_active_goal(bridge):
     old_handle = accept_first_after_pose(node, action_client, 1.0)
     old_generation = node._active_generation
     node._clear_active_state()
-    node._pending_request = _Request(
-        'NavigateToPose', (make_pose(2.0),)
+    node._replace_request(
+        _Request('NavigateToPose', (make_pose(2.0),)),
+        'test replacement',
     )
-    node._pump()
     new_handle = FakeGoalHandle()
     action_client.send_futures[1].resolve(new_handle)
     new_generation = node._active_generation
@@ -433,6 +442,7 @@ def test_shutdown_requests_cancel_and_exits_within_bound(bridge):
     node._pending_request = _Request(
         'NavigateToPose', (make_pose(2.0),)
     )
+    node._pending_generation = node.generation
 
     started = time.monotonic()
     node.shutdown(timeout_sec=0.05)
@@ -469,6 +479,7 @@ def test_shutdown_after_context_is_invalid_does_not_create_executor(bridge):
 def test_route_accumulation_and_start_dispatch(bridge):
     node, _ = bridge
     route_client = node._route_action_client
+    enter_route(node)
 
     node._waypoint_callback(make_pose(1.0))
     node._waypoint_callback(make_pose(2.0))
@@ -480,6 +491,7 @@ def test_route_accumulation_and_start_dispatch(bridge):
 
 def test_route_control_clear_and_loop_commands_persist(bridge):
     node, _ = bridge
+    enter_route(node)
     node._waypoint_callback(make_pose(1.0))
 
     node._route_control_callback(String(data='loop_on'))
@@ -501,6 +513,7 @@ def test_route_control_clear_and_loop_commands_persist(bridge):
 
 def test_route_markers_have_stable_ids_labels_and_vehicle_scale(bridge):
     node, _ = bridge
+    enter_route(node)
     publisher = FakePublisher()
     node._marker_pub = publisher
 
@@ -515,7 +528,7 @@ def test_route_markers_have_stable_ids_labels_and_vehicle_scale(bridge):
     assert [marker.id for marker in spheres] == [0, 2]
     assert [marker.id for marker in labels] == [1, 3]
     assert all(
-        marker.ns == FoxgloveGoalBridge.MARKER_NAMESPACE
+        marker.ns == FoxgloveGoalBridge.ROUTE_MARKER_NAMESPACE
         for marker in markers[1:]
     )
     assert all(
@@ -541,6 +554,7 @@ def test_route_markers_have_stable_ids_labels_and_vehicle_scale(bridge):
 
 def test_route_marker_deletion_prevents_stale_waypoints(bridge):
     node, _ = bridge
+    enter_route(node)
     publisher = FakePublisher()
     node._marker_pub = publisher
     node._waypoint_callback(make_pose(1.0))
@@ -559,6 +573,7 @@ def test_route_marker_deletion_prevents_stale_waypoints(bridge):
 
 def test_remove_last_rejects_empty_route_cleanly(bridge):
     node, _ = bridge
+    enter_route(node)
     warnings = []
     node.get_logger().warning = warnings.append
 
@@ -576,6 +591,7 @@ def test_persistence_round_trip(tmp_path):
         route_action_client=FakeActionClient(),
         route_file=route_file,
     )
+    enter_route(first)
     first._waypoint_callback(make_pose(1.0, 2.0))
     first._waypoint_callback(make_pose(3.0, 4.0))
     first._route_control_callback(String(data='loop_on'))
@@ -600,6 +616,7 @@ def test_persistence_round_trip(tmp_path):
 def test_successful_loop_route_redispatches(bridge):
     node, _ = bridge
     route_client = node._route_action_client
+    enter_route(node)
     node._waypoint_callback(make_pose(1.0))
     node._waypoint_callback(make_pose(2.0))
     node._route_control_callback(String(data='loop_on'))
@@ -618,6 +635,7 @@ def test_successful_loop_route_redispatches(bridge):
 def test_autonomy_state_reports_route_progress_and_nav2_error(bridge):
     node, _ = bridge
     route_client = node._route_action_client
+    enter_route(node)
     state_pub = FakePublisher()
     node._autonomy_state_pub = state_pub
     node._waypoint_callback(make_pose(1.0))
@@ -683,6 +701,7 @@ def test_autonomy_state_reports_global_obstacle_diagnostic(
 def test_stop_prevents_loop_redispatch(bridge):
     node, _ = bridge
     route_client = node._route_action_client
+    enter_route(node)
     node._waypoint_callback(make_pose(1.0))
     node._route_control_callback(String(data='loop_on'))
     node._route_control_callback(String(data='start'))
@@ -699,6 +718,7 @@ def test_stop_prevents_loop_redispatch(bridge):
 
 def test_malformed_waypoints_and_commands_are_rejected(bridge):
     node, _ = bridge
+    enter_route(node)
     warnings = []
     node.get_logger().warning = warnings.append
     invalid = make_pose(1.0)
@@ -731,6 +751,309 @@ def test_malformed_persisted_route_is_ignored(tmp_path):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+def test_bridge_defaults_to_empty_waypoint_mode(bridge):
+    node, _ = bridge
+
+    assert node.navigation_mode == NavigationMode.WAYPOINT
+    assert node.waypoint_queue == ()
+    assert node.queue_state == QueueState.IDLE
+    assert node._queue_retry_count == 0
+
+
+def test_waypoint_fifo_auto_starts_preserves_pose_and_runs_sequentially(
+    bridge,
+):
+    node, action_client = bridge
+    first = make_pose(1.0)
+    first.pose.orientation.x = 0.1
+    first.pose.orientation.y = -0.2
+    first.pose.orientation.z = 0.3
+    first.pose.orientation.w = 0.9
+    second = make_pose(2.0)
+
+    node._waypoint_callback(first)
+    node._waypoint_callback(second)
+
+    assert node.waypoint_queue == (first, second)
+    assert node.queue_state == QueueState.RUNNING
+    assert len(action_client.goals) == 1
+    assert action_client.goals[0].pose == first
+    assert action_client.goals[0].pose.pose.orientation == (
+        first.pose.orientation
+    )
+
+    first_handle = accept_first(action_client)
+    finish(first_handle, GoalStatus.STATUS_SUCCEEDED)
+
+    assert node.waypoint_queue == (second,)
+    assert sent_x(action_client) == [1.0, 2.0]
+    second_handle = FakeGoalHandle()
+    action_client.send_futures[1].resolve(second_handle)
+    finish(second_handle, GoalStatus.STATUS_SUCCEEDED)
+
+    assert node.waypoint_queue == ()
+    assert node.queue_state == QueueState.IDLE
+
+
+def test_waypoint_failure_retries_once_then_pauses_with_front(bridge):
+    node, action_client = bridge
+    pose = make_pose(4.0)
+    node._waypoint_callback(pose)
+    first_generation = node.generation
+    first_handle = accept_first(action_client)
+
+    first_handle.result_future.resolve(FakeResultResponse(
+        GoalStatus.STATUS_ABORTED,
+        error_code=208,
+        error_msg='no path',
+    ))
+
+    assert sent_x(action_client) == [4.0, 4.0]
+    assert node.generation > first_generation
+    assert node.waypoint_queue == (pose,)
+    assert node._queue_retry_count == 1
+    retry_handle = FakeGoalHandle()
+    action_client.send_futures[1].resolve(retry_handle)
+    retry_handle.result_future.resolve(FakeResultResponse(
+        GoalStatus.STATUS_ABORTED,
+        error_code=208,
+        error_msg='still no path',
+    ))
+
+    assert sent_x(action_client) == [4.0, 4.0]
+    assert node.waypoint_queue == (pose,)
+    assert node.queue_state == QueueState.PAUSED
+    assert node._queue_retry_count == 1
+
+
+def test_waypoint_stop_retains_front_and_resume_resets_retry(bridge):
+    node, action_client = bridge
+    pose = make_pose(5.0)
+    node._waypoint_callback(pose)
+    handle = accept_first(action_client)
+
+    node._route_control_callback(String(data='stop'))
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+
+    assert node.waypoint_queue == (pose,)
+    assert node.queue_state == QueueState.PAUSED
+    assert node._queue_retry_count == 0
+    assert sent_x(action_client) == [5.0]
+
+    node._queue_retry_count = 1
+    node._route_control_callback(String(data='start'))
+
+    assert sent_x(action_client) == [5.0, 5.0]
+    assert node.queue_state == QueueState.RUNNING
+    assert node._queue_retry_count == 0
+    generation = node.generation
+    node._route_control_callback(String(data='start'))
+    assert node.generation == generation
+    assert sent_x(action_client) == [5.0, 5.0]
+
+
+def test_waypoint_clear_cancels_and_stale_result_cannot_restart(bridge):
+    node, action_client = bridge
+    node._waypoint_callback(make_pose(6.0))
+    node._waypoint_callback(make_pose(7.0))
+    handle = accept_first(action_client)
+
+    node._route_control_callback(String(data='clear'))
+    generation = node.generation
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+
+    assert node.generation == generation
+    assert node.waypoint_queue == ()
+    assert node.queue_state == QueueState.IDLE
+    assert sent_x(action_client) == [6.0]
+    node._route_control_callback(String(data='clear'))
+    assert node.generation == generation
+
+
+def test_action_server_unavailability_retains_queue_until_pump(bridge):
+    node, action_client = bridge
+    action_client.ready = False
+
+    node._waypoint_callback(make_pose(8.0))
+    node._waypoint_callback(make_pose(9.0))
+
+    assert sent_x(action_client) == []
+    assert len(node.waypoint_queue) == 2
+    assert node._pending_request.purpose == 'queue'
+
+    action_client.ready = True
+    node._pump()
+    assert sent_x(action_client) == [8.0]
+    assert len(node.waypoint_queue) == 2
+
+
+def test_waypoint_queue_limit_rejects_only_excess(bridge):
+    node, action_client = bridge
+    action_client.ready = False
+    warnings = []
+    node.get_logger().warning = warnings.append
+
+    for index in range(node.MAX_WAYPOINT_QUEUE + 1):
+        node._waypoint_callback(make_pose(float(index)))
+
+    assert len(node.waypoint_queue) == node.MAX_WAYPOINT_QUEUE
+    assert [pose.pose.position.x for pose in node.waypoint_queue] == list(
+        map(float, range(node.MAX_WAYPOINT_QUEUE))
+    )
+    assert sum('queue is full' in warning for warning in warnings) == 1
+
+
+def test_waypoint_queue_is_never_written_to_route_file(bridge):
+    node, _ = bridge
+    node._waypoint_callback(make_pose(10.0))
+
+    assert not node._route_file.exists()
+
+
+def test_waypoint_queue_markers_show_orientation_state_and_delete_all(
+    bridge,
+):
+    node, _ = bridge
+    marker_pub = FakePublisher()
+    node._queue_marker_pub = marker_pub
+    pose = make_pose(11.0)
+    pose.pose.orientation.z = 0.6
+    pose.pose.orientation.w = 0.8
+
+    node._waypoint_callback(pose)
+
+    markers = marker_pub.messages[-1].markers
+    assert markers[0].action == Marker.DELETEALL
+    assert markers[1].type == Marker.ARROW
+    assert markers[1].id == 0
+    assert markers[1].pose.orientation == pose.pose.orientation
+    assert markers[2].text == 'ACTIVE'
+    node._route_control_callback(String(data='clear'))
+    assert len(marker_pub.messages[-1].markers) == 1
+    assert marker_pub.messages[-1].markers[0].action == Marker.DELETEALL
+
+
+def test_same_mode_commands_are_generation_preserving_noops(bridge):
+    node, action_client = bridge
+    node._waypoint_callback(make_pose(12.0))
+    handle = accept_first(action_client)
+    node._queue_retry_count = 1
+    generation = node.generation
+
+    for _ in range(5):
+        node._route_control_callback(String(data='set_waypoint_mode'))
+
+    assert node.generation == generation
+    assert node.waypoint_queue[0].pose.position.x == 12.0
+    assert node._goal_handle is handle
+    assert handle.cancel_calls == 0
+    assert node._queue_retry_count == 1
+
+
+def test_route_to_waypoint_transition_cancels_and_clears_once(bridge):
+    node, _ = bridge
+    route_client = node._route_action_client
+    enter_route(node)
+    node._waypoint_callback(make_pose(13.0))
+    node._route_control_callback(String(data='loop_on'))
+    node._route_control_callback(String(data='start'))
+    handle = FakeGoalHandle()
+    route_client.send_futures[0].resolve(handle)
+
+    node._route_control_callback(String(data='set_waypoint_mode'))
+    generation = node.generation
+    assert node.navigation_mode == NavigationMode.WAYPOINT
+    assert node.route == ()
+    assert not node.loop_enabled
+    assert handle.cancel_calls == 1
+    node._route_control_callback(String(data='set_waypoint_mode'))
+    assert node.generation == generation
+    assert handle.cancel_calls == 1
+
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+    assert node._goal_handle is None
+    assert route_goal_xs(route_client) == [[13.0]]
+
+
+def test_waypoint_to_route_transition_cancels_queue_and_drops_stale(
+    bridge,
+):
+    node, action_client = bridge
+    node._waypoint_callback(make_pose(14.0))
+    node._waypoint_callback(make_pose(15.0))
+    handle = accept_first(action_client)
+
+    node._route_control_callback(String(data='set_route_mode'))
+    generation = node.generation
+    assert node.navigation_mode == NavigationMode.ROUTE
+    assert node.waypoint_queue == ()
+    assert node.queue_state == QueueState.IDLE
+    assert handle.cancel_calls == 1
+    node._route_control_callback(String(data='set_route_mode'))
+    assert node.generation == generation
+    assert handle.cancel_calls == 1
+
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+    assert node._goal_handle is None
+    assert sent_x(action_client) == [14.0]
+
+
+def test_delayed_acceptance_after_clear_is_canceled_without_restart(bridge):
+    node, action_client = bridge
+    node._waypoint_callback(make_pose(16.0))
+    node._route_control_callback(String(data='clear'))
+    handle = FakeGoalHandle()
+
+    action_client.send_futures[0].resolve(handle)
+
+    assert handle.cancel_calls == 1
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+    assert node.waypoint_queue == ()
+    assert len(action_client.goals) == 1
+
+
+def test_delayed_cancel_completion_after_replacement_uses_latest_generation(
+    bridge,
+):
+    node, action_client = bridge
+    handle = accept_first_after_pose(node, action_client, 17.0)
+    node._goal_callback(make_pose(18.0))
+    old_cancel_generation = node.generation
+    node._goal_callback(make_pose(19.0))
+
+    handle.cancel_futures[0].resolve(FakeCancelResponse())
+    finish(handle, GoalStatus.STATUS_CANCELED)
+
+    assert node.generation > old_cancel_generation
+    assert sent_x(action_client) == [17.0, 19.0]
+
+
+def test_route_mode_preserves_exact_waypoint_quaternion(bridge):
+    node, _ = bridge
+    enter_route(node)
+    pose = make_pose(20.0)
+    pose.pose.orientation.x = -0.3
+    pose.pose.orientation.y = 0.1
+    pose.pose.orientation.z = 0.4
+    pose.pose.orientation.w = 0.85
+
+    node._waypoint_callback(pose)
+
+    assert node.route[0].pose.orientation == pose.pose.orientation
+    persisted = json.loads(node._route_file.read_text())
+    assert persisted['poses'][0]['orientation'] == {
+        'x': -0.3,
+        'y': 0.1,
+        'z': 0.4,
+        'w': 0.85,
+    }
 
 
 def accept_first_after_pose(

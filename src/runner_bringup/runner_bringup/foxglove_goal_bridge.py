@@ -1,10 +1,12 @@
 """Bridge Foxglove simple goals and persistent routes to Nav2 actions."""
 
-from dataclasses import dataclass
-import json
+from dataclasses import dataclass  # noqa: I100
+import json  # noqa: I100
 import math
-from pathlib import Path
-import time
+from pathlib import Path  # noqa: I100
+import time  # noqa: I100
+from collections import deque  # noqa: I100
+from enum import Enum  # noqa: I100
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
@@ -95,10 +97,26 @@ GLOBAL_OBSTACLE_STATE_NAMES = {
 class _Request:
     kind: str
     poses: tuple[PoseStamped, ...]
+    purpose: str = 'single'
+
+
+class NavigationMode(Enum):
+    """Authoritative interpretation of /runner/waypoint."""
+
+    WAYPOINT = 'WAYPOINT'
+    ROUTE = 'ROUTE'
+
+
+class QueueState(Enum):
+    """Consumable waypoint queue lifecycle."""
+
+    IDLE = 'IDLE'
+    RUNNING = 'RUNNING'
+    PAUSED = 'PAUSED'
 
 
 class FoxgloveGoalBridge(Node):
-    """Forward only the latest simple goal or route, serially, to Nav2."""
+    """Own simple goals, persistent routes, and a consumable waypoint queue."""
 
     CANCEL_RETRY_INTERVAL = 0.5
     MAX_CANCEL_ATTEMPTS = 3
@@ -106,10 +124,15 @@ class FoxgloveGoalBridge(Node):
     SHUTDOWN_TIMEOUT = 1.0
     DEFAULT_ROUTE_FILE = '~/.ros/runner_route.json'
     ROUTE_FRAME = 'map'
-    MARKER_NAMESPACE = 'runner_route'
+    ROUTE_MARKER_NAMESPACE = 'runner_route'
+    QUEUE_MARKER_NAMESPACE = 'runner_waypoint_queue'
+    MAX_WAYPOINT_QUEUE = 20
     WAYPOINT_DIAMETER = 0.06
     LABEL_HEIGHT = 0.055
     LABEL_Z_OFFSET = 0.08
+    ARROW_SHAFT_DIAMETER = 0.025
+    ARROW_HEAD_DIAMETER = 0.05
+    ARROW_LENGTH = 0.16
 
     def __init__(
         self,
@@ -141,13 +164,19 @@ class FoxgloveGoalBridge(Node):
         self._route = []
         self._loop_enabled = False
         self._route_run_enabled = False
+        self._navigation_mode = NavigationMode.WAYPOINT
+        self._waypoint_queue = deque()
+        self._queue_state = QueueState.IDLE
+        self._queue_retry_count = 0
         self._pending_request = None
-        self._next_generation = 1
+        self._pending_generation = None
+        self._generation = 0
         self._send_generation = None
         self._send_request = None
         self._send_future = None
         self._active_generation = None
         self._active_kind = None
+        self._active_request = None
         self._goal_handle = None
         self._result_future = None
         self._next_result_attempt = 0.0
@@ -177,6 +206,16 @@ class FoxgloveGoalBridge(Node):
         self._marker_pub = self.create_publisher(
             MarkerArray,
             '/runner/route_markers',
+            route_qos,
+        )
+        self._queue_pub = self.create_publisher(
+            PathMessage,
+            '/runner/waypoint_queue',
+            route_qos,
+        )
+        self._queue_marker_pub = self.create_publisher(
+            MarkerArray,
+            '/runner/waypoint_queue_markers',
             route_qos,
         )
         self._autonomy_state_pub = self.create_publisher(
@@ -210,6 +249,7 @@ class FoxgloveGoalBridge(Node):
         )
         self._load_route()
         self._publish_route()
+        self._publish_queue()
         self.create_timer(0.5, self._timer_callback)
 
     @property
@@ -221,6 +261,26 @@ class FoxgloveGoalBridge(Node):
     def loop_enabled(self):
         """Return whether successful route completion repeats."""
         return self._loop_enabled
+
+    @property
+    def navigation_mode(self):
+        """Return the authoritative bridge navigation mode."""
+        return self._navigation_mode
+
+    @property
+    def waypoint_queue(self):
+        """Return an immutable snapshot of the consumable queue."""
+        return tuple(self._waypoint_queue)
+
+    @property
+    def queue_state(self):
+        """Return the consumable queue state."""
+        return self._queue_state
+
+    @property
+    def generation(self):
+        """Return the current navigation request generation."""
+        return self._generation
 
     def _goal_callback(self, pose):
         if self._shutting_down or not self._valid_pose(pose):
@@ -240,8 +300,15 @@ class FoxgloveGoalBridge(Node):
             f'{orientation.y:.6f}, {orientation.z:.6f}, '
             f'{orientation.w:.6f})'
         )
+        if self._queue_state == QueueState.RUNNING:
+            self._queue_state = QueueState.PAUSED
+            self._publish_queue()
         self._route_run_enabled = False
-        self._queue_request(_Request('NavigateToPose', (pose,)))
+        self._replace_request(_Request(
+            'NavigateToPose',
+            (pose,),
+            'single',
+        ), 'new single goal')
 
     def _waypoint_callback(self, pose):
         if self._shutting_down:
@@ -256,6 +323,25 @@ class FoxgloveGoalBridge(Node):
                 'Rejecting /runner/waypoint outside the map frame'
             )
             return
+        if self._navigation_mode == NavigationMode.WAYPOINT:
+            if len(self._waypoint_queue) >= self.MAX_WAYPOINT_QUEUE:
+                self.get_logger().warning(
+                    'Rejecting /runner/waypoint: consumable queue is full '
+                    f'({self.MAX_WAYPOINT_QUEUE})'
+                )
+                return
+            self._advance_generation('waypoint queue append')
+            self._waypoint_queue.append(pose)
+            self._publish_queue()
+            self.get_logger().info(
+                'Consumable waypoint appended; '
+                f'count={len(self._waypoint_queue)}'
+            )
+            if self._queue_state == QueueState.IDLE:
+                self._dispatch_queue_front()
+            return
+
+        self._advance_generation('route waypoint append')
         self._route.append(pose)
         self._persist_route()
         self._publish_route()
@@ -267,36 +353,130 @@ class FoxgloveGoalBridge(Node):
         if self._shutting_down:
             return
         command = message.data
+        if command == 'set_waypoint_mode':
+            self._set_navigation_mode(NavigationMode.WAYPOINT)
+            return
+        if command == 'set_route_mode':
+            self._set_navigation_mode(NavigationMode.ROUTE)
+            return
+        if self._navigation_mode == NavigationMode.WAYPOINT:
+            self._waypoint_control(command)
+            return
+
+        self._route_control(command)
+
+    def _waypoint_control(self, command):
+        if command == 'start':
+            if not self._waypoint_queue:
+                self.get_logger().warning(
+                    'Cannot resume waypoint queue: queue is empty'
+                )
+                return
+            if self._queue_state == QueueState.RUNNING:
+                return
+            self._advance_generation('waypoint queue resume')
+            self._queue_retry_count = 0
+            self._queue_state = QueueState.IDLE
+            self._cancel_requested = False
+            self._dispatch_queue_front()
+        elif command == 'stop':
+            if (
+                self._queue_state == QueueState.PAUSED
+                and self._pending_request is None
+                and self._send_generation is None
+                and self._goal_handle is None
+            ):
+                return
+            self._advance_generation('waypoint queue stop')
+            self._pending_request = None
+            self._pending_generation = None
+            self._queue_state = (
+                QueueState.PAUSED
+                if self._waypoint_queue else QueueState.IDLE
+            )
+            self._cancel_requested = self._has_inflight_navigation()
+            self._publish_queue()
+            self._request_cancel()
+        elif command == 'clear':
+            if (
+                not self._waypoint_queue
+                and self._queue_state == QueueState.IDLE
+                and not self._has_inflight_navigation()
+            ):
+                return
+            self._advance_generation('waypoint queue clear')
+            self._pending_request = None
+            self._pending_generation = None
+            self._waypoint_queue.clear()
+            self._queue_retry_count = 0
+            self._queue_state = QueueState.IDLE
+            self._cancel_requested = self._has_inflight_navigation()
+            self._publish_queue()
+            self._request_cancel()
+        elif command in {
+            'loop_on', 'loop_off', 'loop_toggle', 'remove_last',
+        }:
+            self.get_logger().warning(
+                f'Ignoring route-only command {command!r} in WAYPOINT mode'
+            )
+        else:
+            self.get_logger().warning(
+                f'Rejecting unknown waypoint command {command!r}'
+            )
+
+    def _route_control(self, command):
         if command == 'start':
             if not self._route:
                 self.get_logger().warning(
                     'Cannot start route: no waypoints are stored'
                 )
                 return
+            if self._route_run_enabled and (
+                self._active_kind == 'NavigateThroughPoses'
+                or (
+                    self._pending_request is not None
+                    and self._pending_request.purpose == 'route'
+                )
+            ):
+                return
             self._route_run_enabled = True
-            self._queue_request(
-                _Request('NavigateThroughPoses', tuple(self._route))
+            self._replace_request(
+                _Request(
+                    'NavigateThroughPoses',
+                    tuple(self._route),
+                    'route',
+                ),
+                'route start',
             )
         elif command == 'stop':
+            if (
+                not self._route_run_enabled
+                and self._pending_request is None
+                and not self._has_inflight_navigation()
+            ):
+                return
+            self._advance_generation('route stop')
             self._route_run_enabled = False
             self._pending_request = None
-            self._cancel_requested = True
+            self._pending_generation = None
+            self._cancel_requested = self._has_inflight_navigation()
             self._request_cancel()
         elif command == 'clear':
-            self._route_run_enabled = False
-            self._pending_request = None
-            self._route = []
-            self._persist_route()
-            self._publish_route()
-            self._cancel_requested = True
-            self._request_cancel()
+            self._clear_route('route clear')
         elif command == 'loop_on':
+            if self._loop_enabled:
+                return
+            self._advance_generation('route loop on')
             self._loop_enabled = True
             self._persist_route()
         elif command == 'loop_off':
+            if not self._loop_enabled:
+                return
+            self._advance_generation('route loop off')
             self._loop_enabled = False
             self._persist_route()
         elif command == 'loop_toggle':
+            self._advance_generation('route loop toggle')
             self._loop_enabled = not self._loop_enabled
             self._persist_route()
         elif command == 'remove_last':
@@ -305,6 +485,7 @@ class FoxgloveGoalBridge(Node):
                     'Cannot remove last waypoint: route is empty'
                 )
                 return
+            self._advance_generation('route remove last')
             self._route.pop()
             self._persist_route()
             self._publish_route()
@@ -315,6 +496,61 @@ class FoxgloveGoalBridge(Node):
             self.get_logger().warning(
                 f'Rejecting unknown route command {command!r}'
             )
+
+    def _clear_route(self, reason):
+        unchanged = (
+            not self._route
+            and not self._loop_enabled
+            and not self._route_run_enabled
+            and self._pending_request is None
+            and not self._has_inflight_navigation()
+        )
+        if unchanged:
+            return
+        self._advance_generation(reason)
+        self._route_run_enabled = False
+        self._pending_request = None
+        self._pending_generation = None
+        self._route = []
+        self._loop_enabled = False
+        self._persist_route()
+        self._publish_route()
+        self._cancel_requested = self._has_inflight_navigation()
+        self._request_cancel()
+
+    def _set_navigation_mode(self, requested):
+        if requested == self._navigation_mode:
+            return
+        self._advance_generation(
+            f'navigation mode transition to {requested.value}'
+        )
+        self._pending_request = None
+        self._pending_generation = None
+        self._cancel_requested = self._has_inflight_navigation()
+        if requested == NavigationMode.WAYPOINT:
+            self._route_run_enabled = False
+            self._route = []
+            self._loop_enabled = False
+            self._persist_route()
+            self._waypoint_queue.clear()
+            self._queue_retry_count = 0
+            self._queue_state = QueueState.IDLE
+        else:
+            self._waypoint_queue.clear()
+            self._queue_retry_count = 0
+            self._queue_state = QueueState.IDLE
+            self._route_run_enabled = False
+            self._route = []
+            self._loop_enabled = False
+            self._persist_route()
+        self._navigation_mode = requested
+        self._publish_route()
+        self._publish_queue()
+        self.get_logger().info(
+            f'Navigation mode changed to {requested.value}; '
+            'opposite-mode collection cleared'
+        )
+        self._request_cancel()
 
     def _keyboard_state_callback(self, message):
         state = GLOBAL_OBSTACLE_STATE_NAMES.get(
@@ -328,11 +564,96 @@ class FoxgloveGoalBridge(Node):
             return
         self._global_obstacles = state
 
-    def _queue_request(self, request):
+    def _has_inflight_navigation(self):
+        return (
+            self._send_generation is not None
+            or self._goal_handle is not None
+        )
+
+    def _advance_generation(self, reason):
+        self._generation += 1
+        generation = self._generation
+        self.get_logger().debug(
+            f'Navigation generation {generation}: {reason}'
+        )
+
+        # State-changing commands retain transport ownership while rebinding
+        # cleanup callbacks to the new authoritative generation. Callbacks
+        # registered for older generations will observe the mismatch and drop.
+        if self._pending_request is not None:
+            self._pending_generation = generation
+        if self._send_future is not None:
+            self._send_generation = generation
+            future = self._send_future
+            request = self._send_request
+            future.add_done_callback(
+                lambda completed, sent_generation=generation,
+                sent_future=future, sent_request=request:
+                self._goal_response_callback(
+                    completed,
+                    sent_generation,
+                    sent_future,
+                    sent_request,
+                )
+            )
+        if self._goal_handle is not None:
+            self._active_generation = generation
+            handle = self._goal_handle
+            if self._result_future is not None:
+                future = self._result_future
+                future.add_done_callback(
+                    lambda completed, active_generation=generation,
+                    active_handle=handle, expected_future=future:
+                    self._result_callback(
+                        completed,
+                        active_generation,
+                        active_handle,
+                        expected_future,
+                    )
+                )
+            if self._cancel_future is not None:
+                future = self._cancel_future
+                future.add_done_callback(
+                    lambda completed, active_generation=generation,
+                    active_handle=handle, cancel_future=future:
+                    self._cancel_callback(
+                        completed,
+                        active_generation,
+                        active_handle,
+                        cancel_future,
+                    )
+                )
+        return generation
+
+    def _replace_request(self, request, reason):
+        generation = self._advance_generation(reason)
         self._cancel_requested = False
         self._pending_request = request
-        if self._goal_handle is not None:
+        self._pending_generation = generation
+        if self._has_inflight_navigation():
+            self._cancel_requested = True
             self._request_cancel()
+        self._pump()
+
+    def _dispatch_queue_front(self):
+        if (
+            self._navigation_mode != NavigationMode.WAYPOINT
+            or not self._waypoint_queue
+            or self._queue_state == QueueState.PAUSED
+            or self._has_inflight_navigation()
+            or self._pending_request is not None
+        ):
+            return
+        generation = self._advance_generation('waypoint queue dispatch')
+        self._queue_state = QueueState.RUNNING
+        self._cancel_requested = False
+        self._pending_request = _Request(
+            'NavigateToPose',
+            (self._waypoint_queue[0],),
+            'queue',
+        )
+        self._pending_generation = generation
+        self._publish_queue()
         self._pump()
 
     def _timer_callback(self):
@@ -354,6 +675,10 @@ class FoxgloveGoalBridge(Node):
             'route_length': len(self._route),
             'current_waypoint_index': self._current_waypoint_index,
             'loop_mode': self._loop_enabled,
+            'navigation_mode': self._navigation_mode.value,
+            'waypoint_queue_length': len(self._waypoint_queue),
+            'waypoint_queue_state': self._queue_state.value,
+            'waypoint_retry_count': self._queue_retry_count,
             'global_obstacles': self._global_obstacles,
             'time_in_state_seconds': round(elapsed, 3),
         }
@@ -384,6 +709,15 @@ class FoxgloveGoalBridge(Node):
             return
 
         request = self._pending_request
+        generation = self._pending_generation
+        if generation != self._generation:
+            self.get_logger().debug(
+                'Dropping stale pending navigation request for generation '
+                f'{generation}'
+            )
+            self._pending_request = None
+            self._pending_generation = None
+            return
         client = self._client_for(request.kind)
         if not client.server_is_ready():
             self.get_logger().warning(
@@ -393,8 +727,7 @@ class FoxgloveGoalBridge(Node):
             return
 
         self._pending_request = None
-        generation = self._next_generation
-        self._next_generation += 1
+        self._pending_generation = None
         self._send_generation = generation
         self._send_request = request
         if request.kind == 'NavigateThroughPoses':
@@ -413,7 +746,7 @@ class FoxgloveGoalBridge(Node):
         except Exception as error:
             if self._send_generation == generation:
                 self._clear_send_state()
-                self._restore_request_if_latest(request)
+                self._restore_request_if_latest(request, generation)
             self.get_logger().error(
                 f'{request.kind} goal request raised synchronously: {error}'
             )
@@ -453,7 +786,7 @@ class FoxgloveGoalBridge(Node):
         try:
             goal_handle = future.result()
         except Exception as error:
-            self._restore_request_if_latest(request)
+            self._restore_request_if_latest(request, generation)
             self.get_logger().error(
                 f'{request.kind} goal request failed: {error}'
             )
@@ -461,14 +794,21 @@ class FoxgloveGoalBridge(Node):
             return
 
         if not goal_handle.accepted:
-            self._restore_request_if_latest(request)
             self.get_logger().warning(f'{request.kind} goal rejected')
             self._set_goal_state('aborted')
+            if request.purpose == 'queue':
+                self._handle_queue_failure(
+                    request,
+                    'goal rejected by action server',
+                )
+            else:
+                self._restore_request_if_latest(request, generation)
             self._pump()
             return
 
         self._active_generation = generation
         self._active_kind = request.kind
+        self._active_request = request
         self._goal_handle = goal_handle
         self._current_waypoint_index = (
             0 if request.kind == 'NavigateThroughPoses' else -1
@@ -645,6 +985,7 @@ class FoxgloveGoalBridge(Node):
             )
             return
         kind = self._active_kind
+        request = self._active_request
         try:
             response = future.result()
             result = response.result
@@ -684,8 +1025,29 @@ class FoxgloveGoalBridge(Node):
         }.get(response.status, 'aborted')
         self._set_goal_state(terminal_state)
         succeeded = response.status == GoalStatus.STATUS_SUCCEEDED
+        canceled_for_command = (
+            response.status == GoalStatus.STATUS_CANCELED
+            and self._cancel_requested
+        )
+        if request is not None and request.purpose == 'queue':
+            if canceled_for_command:
+                self._clear_active_state()
+                self._publish_queue()
+                self._pump()
+            elif succeeded:
+                self._handle_queue_success(request)
+            else:
+                self._handle_queue_failure(
+                    request,
+                    f'status={status_name} '
+                    f'error_code={result.error_code} '
+                    f'error_msg={result.error_msg!r}',
+                )
+            return
+
         should_loop = (
-            kind == 'NavigateThroughPoses'
+            request is not None
+            and request.purpose == 'route'
             and succeeded
             and self._route_run_enabled
             and self._loop_enabled
@@ -696,15 +1058,70 @@ class FoxgloveGoalBridge(Node):
             self._route_run_enabled = False
         self._clear_active_state()
         if should_loop:
+            generation = self._advance_generation('route loop replay')
             self._pending_request = _Request(
                 'NavigateThroughPoses',
                 tuple(self._route),
+                'route',
             )
+            self._pending_generation = generation
             self._current_waypoint_index = 0
             self.get_logger().info(
                 'Route completed successfully; dispatching loop'
             )
         self._pump()
+
+    def _handle_queue_success(self, request):
+        if (
+            not self._waypoint_queue
+            or self._waypoint_queue[0] is not request.poses[0]
+        ):
+            self.get_logger().warning(
+                'Ignoring queue success whose front item no longer matches'
+            )
+            self._clear_active_state()
+            self._pump()
+            return
+        self._clear_active_state()
+        self._advance_generation('waypoint queue success')
+        self._waypoint_queue.popleft()
+        self._queue_retry_count = 0
+        self._queue_state = QueueState.IDLE
+        self._publish_queue()
+        self._dispatch_queue_front()
+
+    def _handle_queue_failure(self, request, detail):
+        if (
+            not self._waypoint_queue
+            or self._waypoint_queue[0] is not request.poses[0]
+        ):
+            self.get_logger().warning(
+                'Ignoring queue failure whose front item no longer matches'
+            )
+            self._clear_active_state()
+            self._pump()
+            return
+        if self._goal_handle is not None:
+            self._clear_active_state()
+        if self._queue_retry_count == 0:
+            self._queue_retry_count = 1
+            self._queue_state = QueueState.IDLE
+            self.get_logger().warning(
+                'Waypoint navigation failed; retrying front once: '
+                f'{detail}'
+            )
+            self._publish_queue()
+            self._dispatch_queue_front()
+            return
+        self._advance_generation('waypoint queue failure pause')
+        self._queue_state = QueueState.PAUSED
+        self._publish_queue()
+        self.get_logger().warning(
+            'Waypoint navigation failed after one retry; retaining front '
+            f'and pausing queue: {detail}; '
+            f'queue_length={len(self._waypoint_queue)}; '
+            'manual resume or clear is required'
+        )
 
     def _active_matches(self, generation, goal_handle):
         return (
@@ -712,9 +1129,15 @@ class FoxgloveGoalBridge(Node):
             and self._goal_handle is goal_handle
         )
 
-    def _restore_request_if_latest(self, request):
-        if not self._shutting_down and self._pending_request is None:
+    def _restore_request_if_latest(self, request, generation):
+        if (
+            not self._shutting_down
+            and generation == self._generation
+            and self._pending_request is None
+            and not self._cancel_requested
+        ):
             self._pending_request = request
+            self._pending_generation = generation
 
     def _clear_send_state(self):
         self._send_generation = None
@@ -731,6 +1154,7 @@ class FoxgloveGoalBridge(Node):
     def _clear_active_state(self):
         self._active_generation = None
         self._active_kind = None
+        self._active_request = None
         self._goal_handle = None
         self._result_future = None
         self._next_result_attempt = 0.0
@@ -747,7 +1171,9 @@ class FoxgloveGoalBridge(Node):
             pose.pose.orientation.z,
             pose.pose.orientation.w,
         )
-        orientation_norm = math.sqrt(sum(value * value for value in values[3:]))
+        orientation_norm = math.sqrt(
+            sum(value * value for value in values[3:])
+        )
         return (
             bool(pose.header.frame_id)
             and all(math.isfinite(value) for value in values)
@@ -756,10 +1182,14 @@ class FoxgloveGoalBridge(Node):
 
     def _publish_route(self):
         stamp = self.get_clock().now().to_msg()
+        visible_route = (
+            self._route
+            if self._navigation_mode == NavigationMode.ROUTE else []
+        )
         message = PathMessage()
         message.header.stamp = stamp
         message.header.frame_id = self.ROUTE_FRAME
-        message.poses = list(self._route)
+        message.poses = list(visible_route)
         self._route_pub.publish(message)
 
         markers = MarkerArray()
@@ -768,11 +1198,11 @@ class FoxgloveGoalBridge(Node):
         delete_all.header.stamp = stamp
         delete_all.action = Marker.DELETEALL
         markers.markers.append(delete_all)
-        for index, pose in enumerate(self._route):
+        for index, pose in enumerate(visible_route):
             sphere = Marker()
             sphere.header.frame_id = self.ROUTE_FRAME
             sphere.header.stamp = stamp
-            sphere.ns = self.MARKER_NAMESPACE
+            sphere.ns = self.ROUTE_MARKER_NAMESPACE
             sphere.id = index * 2
             sphere.type = Marker.SPHERE
             sphere.action = Marker.ADD
@@ -789,7 +1219,7 @@ class FoxgloveGoalBridge(Node):
             label = Marker()
             label.header.frame_id = self.ROUTE_FRAME
             label.header.stamp = stamp
-            label.ns = self.MARKER_NAMESPACE
+            label.ns = self.ROUTE_MARKER_NAMESPACE
             label.id = index * 2 + 1
             label.type = Marker.TEXT_VIEW_FACING
             label.action = Marker.ADD
@@ -807,6 +1237,82 @@ class FoxgloveGoalBridge(Node):
             label.text = str(index + 1)
             markers.markers.append(label)
         self._marker_pub.publish(markers)
+
+    def _publish_queue(self):
+        stamp = self.get_clock().now().to_msg()
+        visible_queue = (
+            list(self._waypoint_queue)
+            if self._navigation_mode == NavigationMode.WAYPOINT else []
+        )
+        message = PathMessage()
+        message.header.stamp = stamp
+        message.header.frame_id = self.ROUTE_FRAME
+        message.poses = visible_queue
+        self._queue_pub.publish(message)
+
+        markers = MarkerArray()
+        delete_all = Marker()
+        delete_all.header.frame_id = self.ROUTE_FRAME
+        delete_all.header.stamp = stamp
+        delete_all.action = Marker.DELETEALL
+        markers.markers.append(delete_all)
+        for index, pose in enumerate(visible_queue):
+            arrow = Marker()
+            arrow.header.frame_id = self.ROUTE_FRAME
+            arrow.header.stamp = stamp
+            arrow.ns = self.QUEUE_MARKER_NAMESPACE
+            arrow.id = index * 2
+            arrow.type = Marker.ARROW
+            arrow.action = Marker.ADD
+            arrow.pose = pose.pose
+            arrow.scale.x = self.ARROW_LENGTH
+            arrow.scale.y = self.ARROW_SHAFT_DIAMETER
+            arrow.scale.z = self.ARROW_HEAD_DIAMETER
+            if index == 0 and self._queue_state == QueueState.RUNNING:
+                arrow.color.r = 1.0
+                arrow.color.g = 0.55
+                arrow.color.b = 0.05
+            elif index == 0 and self._queue_state == QueueState.PAUSED:
+                arrow.color.r = 1.0
+                arrow.color.g = 0.15
+                arrow.color.b = 0.1
+            else:
+                arrow.color.r = 0.2
+                arrow.color.g = 1.0
+                arrow.color.b = 0.3
+            arrow.color.a = 0.95
+            markers.markers.append(arrow)
+
+            label = Marker()
+            label.header.frame_id = self.ROUTE_FRAME
+            label.header.stamp = stamp
+            label.ns = self.QUEUE_MARKER_NAMESPACE
+            label.id = index * 2 + 1
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = pose.pose.position.x
+            label.pose.position.y = pose.pose.position.y
+            label.pose.position.z = (
+                pose.pose.position.z + self.LABEL_Z_OFFSET
+            )
+            label.pose.orientation.w = 1.0
+            label.scale.z = self.LABEL_HEIGHT
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 1.0
+            label.text = (
+                'ACTIVE'
+                if index == 0 and self._queue_state == QueueState.RUNNING
+                else (
+                    'PAUSED'
+                    if index == 0
+                    and self._queue_state == QueueState.PAUSED
+                    else str(index + 1)
+                )
+            )
+            markers.markers.append(label)
+        self._queue_marker_pub.publish(markers)
 
     def _persist_route(self):
         document = {
@@ -893,9 +1399,11 @@ class FoxgloveGoalBridge(Node):
 
     def shutdown(self, timeout_sec=None):
         """Cancel an active goal and destroy the node within a fixed bound."""
+        self._advance_generation('node shutdown')
         self._shutting_down = True
         self._route_run_enabled = False
         self._pending_request = None
+        self._pending_generation = None
         self._cancel_requested = True
         timeout = (
             self.SHUTDOWN_TIMEOUT if timeout_sec is None else timeout_sec
