@@ -48,8 +48,9 @@ and F9 commands are ignored in WAYPOINT mode.
 In ROUTE mode, F5 start, F6 stop, F7 clear, F8 loop toggle, and F9 undo the
 last waypoint retain their persistent-route behavior. Changing modes is
 destructive: the bridge cancels active opposite-mode navigation and clears
-that mode's complete collection. Repeated receipt of the already-active
-absolute mode command is a no-op.
+that mode's complete waypoint collection. Existing route-clear semantics
+retain the separately persisted loop preference. Repeated receipt of the
+already-active absolute mode command is a no-op.
 
 Global costmap controls are F10 to clear currently accumulated global obstacle
 marks and F11 to enable or disable the global costmap obstacle layer. F11

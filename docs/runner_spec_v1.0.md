@@ -288,12 +288,14 @@ at every waypoint; repeated breakaway is the accepted cost of this workflow.
 undo, looping, visualization, and storage keep their existing semantics.
 
 Mode commands are absolute and idempotent. Entering WAYPOINT cancels route
-execution, clears the persistent route with its loop state, and starts an
-empty queue. Entering ROUTE cancels queue navigation, clears the entire queue
-and retry/pause state, and starts an empty route. Repeating the already-active
-mode command changes nothing. One bridge-owned monotonic generation guards
-send, acceptance, result, cancellation, restoration, retry, replacement,
-stop, clear, and mode-transition callbacks.
+execution, clears the persistent route using the existing semantics (the
+separately persisted loop preference is retained), and starts an empty queue.
+Entering ROUTE cancels queue navigation, clears the entire queue and
+retry/pause state, and starts an empty route while retaining that same route
+metadata. Repeating the already-active mode command changes nothing. One
+bridge-owned monotonic generation guards send, acceptance, result,
+cancellation, restoration, retry, replacement, stop, clear, and
+mode-transition callbacks.
 
 **Fresh identical execution:** Nav2 reuses the parsed tree when the XML
 filename is unchanged; halt-to-IDLE does not clear `GoalUpdatedCondition`'s

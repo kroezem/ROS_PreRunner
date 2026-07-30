@@ -500,7 +500,6 @@ class FoxgloveGoalBridge(Node):
     def _clear_route(self, reason):
         unchanged = (
             not self._route
-            and not self._loop_enabled
             and not self._route_run_enabled
             and self._pending_request is None
             and not self._has_inflight_navigation()
@@ -512,7 +511,6 @@ class FoxgloveGoalBridge(Node):
         self._pending_request = None
         self._pending_generation = None
         self._route = []
-        self._loop_enabled = False
         self._persist_route()
         self._publish_route()
         self._cancel_requested = self._has_inflight_navigation()
@@ -530,7 +528,6 @@ class FoxgloveGoalBridge(Node):
         if requested == NavigationMode.WAYPOINT:
             self._route_run_enabled = False
             self._route = []
-            self._loop_enabled = False
             self._persist_route()
             self._waypoint_queue.clear()
             self._queue_retry_count = 0
@@ -541,7 +538,6 @@ class FoxgloveGoalBridge(Node):
             self._queue_state = QueueState.IDLE
             self._route_run_enabled = False
             self._route = []
-            self._loop_enabled = False
             self._persist_route()
         self._navigation_mode = requested
         self._publish_route()

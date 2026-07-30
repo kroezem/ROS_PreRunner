@@ -508,6 +508,7 @@ def test_route_control_clear_and_loop_commands_persist(bridge):
     node._waypoint_callback(make_pose(1.0))
     node._route_control_callback(String(data='clear'))
     assert node.route == ()
+    assert node.loop_enabled
     assert '"poses": []' in node._route_file.read_text()
 
 
@@ -968,7 +969,7 @@ def test_route_to_waypoint_transition_cancels_and_clears_once(bridge):
     generation = node.generation
     assert node.navigation_mode == NavigationMode.WAYPOINT
     assert node.route == ()
-    assert not node.loop_enabled
+    assert node.loop_enabled
     assert handle.cancel_calls == 1
     node._route_control_callback(String(data='set_waypoint_mode'))
     assert node.generation == generation
