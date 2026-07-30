@@ -262,20 +262,46 @@ state preserves the previous behavior. The adapter continues publishing
 
 **Feedforward table is stale and truncated.** Measured on different flooring at a different battery state; commanded 0.290 has produced 0.354 m/s (ratio 1.24). Speeds above 0.290 m/s are extrapolation. Re-measurement is a Phase 1 closeout item.
 
-### 4.16 Route management
+### 4.16 Waypoint and route management (D-74)
 
 `foxglove_goal_bridge` provides:
 
 - `/move_base_simple/goal` — single-goal `NavigateToPose`, latest-goal-wins, generation-guarded, bounded cancellation retry
-- `/runner/waypoint` — appends an ordered waypoint
+- `/runner/waypoint` (`PoseStamped`) — interpreted by the authoritative bridge mode; the complete operator-supplied quaternion is retained unchanged
 - `/runner/route_control` — `start`, `stop`, `clear`, `loop_on`, `loop_off`, `remove_last`
 - `/runner/route` (`nav_msgs/Path`), `/runner/route_markers` (numbered `MarkerArray`)
-- `/runner/autonomy_state` — goal state, error meaning, waypoint index, loop mode
+- `/runner/waypoint_queue`, `/runner/waypoint_queue_markers` — consumable queue visualization; the active front is distinct and arrows show orientation
+- `/runner/autonomy_state` — goal state, mode, error meaning, route/queue progress, loop mode
 - Routes persist to `~/.ros/runner_route.json`
 
-Routes dispatch as **`NavigateThroughPoses`**, not chained single goals — RPP decelerates to zero at every goal, so chaining would stop at each waypoint.
+The default **WAYPOINT** mode holds at most 20 complete poses in a
+nonpersistent FIFO. The front dispatches through `NavigateToPose`; action
+success consumes it and automatically starts the next. A navigation failure
+retries the identical front once with a fresh action execution. A second
+failure pauses and retains it. `stop` cancels and pauses without consuming,
+`start` resumes the retained front with a reset retry budget, and `clear`
+cancels and empties the queue. Chained single goals deliberately stop and go
+at every waypoint; repeated breakaway is the accepted cost of this workflow.
 
-**Known defect:** a re-dispatched identical route does not replan from the vehicle's new position. Nav2 reuses the parsed tree when the XML filename is unchanged; BT.CPP halts nodes to IDLE but does not clear `GoalUpdatedCondition`'s remembered poses, so an identical goal is never seen as updated and the stale path validates. Recommended fix: clear the `path` blackboard entry on new action execution. **Not implemented.**
+**ROUTE** mode retains the persistent ordered collection and dispatches it as
+`NavigateThroughPoses`, not chained single goals. Route start, stop, clear,
+undo, looping, visualization, and storage keep their existing semantics.
+
+Mode commands are absolute and idempotent. Entering WAYPOINT cancels route
+execution, clears the persistent route with its loop state, and starts an
+empty queue. Entering ROUTE cancels queue navigation, clears the entire queue
+and retry/pause state, and starts an empty route. Repeating the already-active
+mode command changes nothing. One bridge-owned monotonic generation guards
+send, acceptance, result, cancellation, restoration, retry, replacement,
+stop, clear, and mode-transition callbacks.
+
+**Fresh identical execution:** Nav2 reuses the parsed tree when the XML
+filename is unchanged; halt-to-IDLE does not clear `GoalUpdatedCondition`'s
+remembered pose. Previously an identical goal could therefore leave a valid
+old `path` on the blackboard and skip planning from the new robot position.
+Both active trees now begin with `UnsetBlackboard key="path"` in a normal
+`Sequence` before the unchanged `PipelineSequence`. The reset runs once per
+action execution, so `IsPathValid` cannot accept a previous execution's path.
 
 ---
 
@@ -326,12 +352,19 @@ autonomy latch.
 | Escape | clear held/queued state and send brake/disarm for at least one second |
 | F5 / F6 / F7 / F8 / F9 | route start / stop / clear / loop toggle / undo last |
 | F10 / F11 | clear global obstacle marks / toggle the global obstacle layer |
+| F12 | alternate the sender-requested WAYPOINT / ROUTE mode |
 | Space + W/A/S/D | manual hold-to-run driving |
 
-The protocol accepts command values 0–7: none, start, stop, clear, loop toggle,
-remove last, clear global obstacles, and toggle global obstacles. F11 reads
-the current runtime parameter before requesting its inverse. Neither costmap
-command changes the saved static map.
+Protocol v2 retains the exact 27-byte layout. Command values 0–7 keep their
+meanings: none, start, stop, clear, loop toggle, remove last, clear global
+obstacles, and toggle global obstacles. Values 8 and 9 are the additive
+`SET_WAYPOINT_MODE` and `SET_ROUTE_MODE` commands. F12 changes the sender's
+local requested mode and queues a finite three-packet burst of the
+corresponding absolute command. The bridge is authoritative; the printed
+event is requested, not acknowledged, state. Both processes independently
+start in WAYPOINT and sender startup does not send a destructive mode command.
+F11 reads the current runtime parameter before requesting its inverse. Neither
+costmap command changes the saved static map.
 
 **The autonomy latch deliberately survives sender or connection loss
 (D-71).** This prevents intermittent laptop links from stopping a route.
@@ -509,7 +542,6 @@ Latest validated run:
 **Phase 1 closeout**
 
 - **Re-measure the feedforward table** above 0.290 m/s using R1 fixed-throttle mode. The current table is stale and truncated; measured speed exceeds command by up to 24%.
-- **Fix identical-goal re-dispatch** (§4.16) — clear the `path` blackboard entry on new action execution.
 - **Physically validate global obstacle marking and clearing** with a placed
   object, then verify that enabled-layer lethal-cell counts stabilize. The
   layer, Overwrite semantics, runtime controls, and bounded planning recovery
@@ -559,6 +591,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-71 | **Keyboard autonomy is a 600 s Pi-side latch; manual hold-to-run is always available. Supersedes the `--teleop` portion of D-68.** | Intermittent sender loss was stopping routes. Backtick toggles the latch, controller takeover clears it, and Escape repeatedly transmits brake/disarm for at least one second. Protocol v2 command values 0–7 add global-costmap clear/toggle without adding another control channel. |
 | D-72 | **Freeze and decay the PI integrator during confirmed teleop preemption.** | Continuing to integrate while `twist_mux` discards autonomy output stores a stale correction for later resume. Fresh `/teleop/active_mode` state freezes accumulation and decays the integral toward zero; stale or missing state preserves prior behavior. |
 | D-73 | **Vendor Navigation2 RPP 1.3.12 and regulate from maximum known path cost through the carrot.** | Robot-cell-only cost reacts after entering inflation. Half-cell-or-denser path sampling gives anticipatory slowdown while preserving upstream behavior outside cost regulation. Unit/build validation passes; controlled floor comparison remains outstanding. |
+| D-74 | **Separate default WAYPOINT queue and persistent ROUTE workflows share `/runner/waypoint`; the bridge remains the sole Nav2 action owner.** WAYPOINT preserves the full supplied pose in a 20-item, in-memory-only FIFO executed sequentially with `NavigateToPose`; one failure retry is allowed before pausing with the front retained. ROUTE preserves full pose orientation, persistence, controls, and `NavigateThroughPoses`. Absolute idempotent mode commands clear and cancel the opposite collection on actual transitions only. | One Foxglove pose tool serves both operator workflows without a competing action owner or topic. Sequential queue execution intentionally accepts stop-and-go and repeated breakaway. A single generation arbiter prevents stale callbacks from reviving canceled work, while clearing `path` once at the start of both BTs forces fresh planning for identical queue retries, resumed goals, and route replays. Protocol-v2 values 8/9 carry repeated absolute F12 requests without changing the 27-byte layout. |
 
 ---
 

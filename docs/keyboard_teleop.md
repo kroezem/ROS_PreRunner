@@ -31,9 +31,25 @@ requests the selected throttle, S requests full brake, and A/D request full
 steering. Releasing Space requests brake. Space does not clear the autonomy
 latch. `=`/`-` change the throttle setpoint by 0.01 once per physical press.
 
-Route controls are F5 start, F6 stop, F7 clear, F8 loop toggle, and F9 undo
-last waypoint. These publish the corresponding command through the Pi bridge
-to `/runner/route_control`.
+The navigation bridge and sender both start in WAYPOINT mode. F12 alternates
+the sender's locally requested mode between WAYPOINT and ROUTE, printing
+`Navigation mode requested: ...`. This is not Pi acknowledgement. Each press
+queues three identical absolute `SET_WAYPOINT_MODE` or `SET_ROUTE_MODE`
+commands to reduce UDP loss risk; key autorepeat cannot flip the mode again
+until F12 is released.
+
+The same Foxglove `/runner/waypoint` `PoseStamped` tool serves both modes and
+preserves its complete orientation. In WAYPOINT mode poses enter a
+nonpersistent FIFO, execute individually, and are consumed on Nav2 success.
+One failure is retried; a second pauses with the failed front retained. F5
+resumes, F6 stops while retaining the queue, and F7 clears it. Route-only F8
+and F9 commands are ignored in WAYPOINT mode.
+
+In ROUTE mode, F5 start, F6 stop, F7 clear, F8 loop toggle, and F9 undo the
+last waypoint retain their persistent-route behavior. Changing modes is
+destructive: the bridge cancels active opposite-mode navigation and clears
+that mode's complete collection. Repeated receipt of the already-active
+absolute mode command is a no-op.
 
 Global costmap controls are F10 to clear currently accumulated global obstacle
 marks and F11 to enable or disable the global costmap obstacle layer. F11
@@ -50,7 +66,8 @@ posture before Phase 2 racing speeds.
 ## Pi policy
 
 `keyboard_bridge` listens on UDP port 49321 by default, validates the exact
-27-byte version-two packet, applies the default 0.50 forward cap, and publishes
+27-byte version-two packet, including additive absolute navigation commands
+8 and 9, applies the default 0.50 forward cap, and publishes
 `/teleop/keyboard_state` at 20 Hz. `valid` still reports 150 ms sender
 liveness, while `mode=MODE_SUPPRESS` reports an armed Pi latch even when
 `valid=false`. Armed keyboard autonomy publishes `teleop_suppress` continuously
