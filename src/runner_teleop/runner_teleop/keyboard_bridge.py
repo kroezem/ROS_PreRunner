@@ -43,6 +43,8 @@ from runner_teleop.keyboard_protocol import ROUTE_START
 from runner_teleop.keyboard_protocol import ROUTE_STOP
 from runner_teleop.keyboard_protocol import ROUTE_TOGGLE_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import sequence_delta
+from runner_teleop.keyboard_protocol import SET_ROUTE_MODE
+from runner_teleop.keyboard_protocol import SET_WAYPOINT_MODE
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
 
@@ -77,6 +79,8 @@ ROUTE_COMMAND_NAMES = {
     ROUTE_REMOVE_LAST: 'remove_last',
     ROUTE_CLEAR_GLOBAL_OBSTACLES: 'clear_global_obstacles',
     ROUTE_TOGGLE_GLOBAL_OBSTACLES: 'toggle_global_obstacles',
+    SET_WAYPOINT_MODE: 'set_waypoint_mode',
+    SET_ROUTE_MODE: 'set_route_mode',
 }
 
 

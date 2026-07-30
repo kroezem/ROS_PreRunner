@@ -2,7 +2,6 @@
 """Send latched autonomy and keyboard state to Runner over UDP."""
 
 import argparse
-from collections import deque
 import math
 import secrets
 import signal
@@ -11,6 +10,7 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
 
 MAGIC = b'RKEY'
 VERSION = 2
@@ -25,9 +25,12 @@ ROUTE_LOOP_TOGGLE = 4
 ROUTE_REMOVE_LAST = 5
 ROUTE_CLEAR_GLOBAL_OBSTACLES = 6
 ROUTE_TOGGLE_GLOBAL_OBSTACLES = 7
+SET_WAYPOINT_MODE = 8
+SET_ROUTE_MODE = 9
 PACKET_FORMAT = '!4sBBQIffB'
 DEFAULT_PORT = 49321
 SEND_PERIOD = 0.05
+MODE_COMMAND_BURST_COUNT = 3
 # One extra cadence period guarantees a full second between transmission
 # opportunities even when Escape arrives immediately after a send.
 DISARM_BURST_SECONDS = 1.0 + SEND_PERIOD
@@ -107,6 +110,7 @@ class KeyboardInput:
         self.autonomy_latch_timeout = autonomy_latch_timeout
         self.pressed = set()
         self.route_commands = deque()
+        self.navigation_mode = 'WAYPOINT'
         self.autonomy_armed_at = None
         self.autonomy_armed = False
         self.disarm_until = None
@@ -118,7 +122,7 @@ class KeyboardInput:
             self.clear(now=now)
             return
         valid = {
-            'w', 's', 'a', 'd', 'space', '`', '=', '-',
+            'w', 's', 'a', 'd', 'space', '`', '=', '-', 'navigation_mode',
             *ROUTE_KEYS,
         }
         if token not in valid:
@@ -151,6 +155,20 @@ class KeyboardInput:
                     self.disarm_until = None
             elif token in ROUTE_KEYS:
                 self.route_commands.append(ROUTE_KEYS[token])
+            elif token == 'navigation_mode':
+                if self.navigation_mode == 'WAYPOINT':
+                    self.navigation_mode = 'ROUTE'
+                    command = SET_ROUTE_MODE
+                else:
+                    self.navigation_mode = 'WAYPOINT'
+                    command = SET_WAYPOINT_MODE
+                self.route_commands.extend(
+                    [command] * MODE_COMMAND_BURST_COUNT
+                )
+                print(
+                    f'\nNavigation mode requested: {self.navigation_mode}',
+                    flush=True,
+                )
 
     def release(self, token):
         """Apply one independent normalized keyup event."""
@@ -295,6 +313,7 @@ def main(argv=None):
         keyboard.Key.f9: 'route_remove_last',
         keyboard.Key.f10: 'clear_global_obstacles',
         keyboard.Key.f11: 'toggle_global_obstacles',
+        keyboard.Key.f12: 'navigation_mode',
     }
 
     def token(key):
@@ -356,6 +375,10 @@ def main(argv=None):
     print(
         'Routes: F5=start F6=stop F7=clear F8=loop toggle '
         'F9=undo last waypoint'
+    )
+    print(
+        'Navigation mode: default WAYPOINT; F12 alternates requested '
+        'WAYPOINT/ROUTE mode'
     )
     print(
         'Costmap: F10=clear accumulated global obstacle marks; '

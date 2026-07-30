@@ -25,6 +25,8 @@ from runner_teleop.keyboard_protocol import ROUTE_CLEAR_GLOBAL_OBSTACLES
 from runner_teleop.keyboard_protocol import ROUTE_LOOP_TOGGLE
 from runner_teleop.keyboard_protocol import ROUTE_REMOVE_LAST
 from runner_teleop.keyboard_protocol import ROUTE_TOGGLE_GLOBAL_OBSTACLES
+from runner_teleop.keyboard_protocol import SET_ROUTE_MODE
+from runner_teleop.keyboard_protocol import SET_WAYPOINT_MODE
 from runner_teleop.keyboard_protocol import VERSION
 from sensor_msgs.msg import Joy
 
@@ -79,6 +81,8 @@ def test_route_command_codes_map_to_bridge_commands():
     assert ROUTE_COMMAND_NAMES[ROUTE_REMOVE_LAST] == 'remove_last'
     assert ROUTE_CLEAR_GLOBAL_OBSTACLES == 6
     assert ROUTE_TOGGLE_GLOBAL_OBSTACLES == 7
+    assert SET_WAYPOINT_MODE == 8
+    assert SET_ROUTE_MODE == 9
     assert (
         ROUTE_COMMAND_NAMES[ROUTE_CLEAR_GLOBAL_OBSTACLES]
         == 'clear_global_obstacles'
@@ -87,6 +91,24 @@ def test_route_command_codes_map_to_bridge_commands():
         ROUTE_COMMAND_NAMES[ROUTE_TOGGLE_GLOBAL_OBSTACLES]
         == 'toggle_global_obstacles'
     )
+    assert ROUTE_COMMAND_NAMES[SET_WAYPOINT_MODE] == 'set_waypoint_mode'
+    assert ROUTE_COMMAND_NAMES[SET_ROUTE_MODE] == 'set_route_mode'
+
+
+@pytest.mark.parametrize(
+    ('command', 'name'),
+    [
+        (SET_WAYPOINT_MODE, 'set_waypoint_mode'),
+        (SET_ROUTE_MODE, 'set_route_mode'),
+    ],
+)
+def test_absolute_navigation_mode_commands_encode_and_decode(command, name):
+    decoded = decode_packet(packet(route_command=command))
+
+    assert decoded.route_command == command
+    assert ROUTE_COMMAND_NAMES[decoded.route_command] == name
+    assert len(packet(route_command=command)) == 27
+    assert VERSION == 2
 
 
 @pytest.mark.parametrize(
@@ -105,7 +127,7 @@ def test_route_command_codes_map_to_bridge_commands():
         packet(steering=math.nan),
         packet(steering=-1.01),
         packet(steering=1.01),
-        packet(route_command=8),
+        packet(route_command=10),
     ],
 )
 def test_malformed_and_invalid_packets_are_rejected(data):
@@ -542,6 +564,27 @@ def publish_costmap_diagnostic(bridge):
     bridge._last_published_valid = False
     bridge._publish()
     return bridge._publisher.messages[-1].global_obstacles_state
+
+
+@pytest.mark.parametrize(
+    ('command', 'expected'),
+    [
+        (SET_WAYPOINT_MODE, 'set_waypoint_mode'),
+        (SET_ROUTE_MODE, 'set_route_mode'),
+    ],
+)
+def test_pi_bridge_publishes_absolute_mode_commands(
+    monkeypatch,
+    command,
+    expected,
+):
+    bridge, _, _ = make_costmap_bridge(monkeypatch)
+
+    bridge._dispatch_route_command(command)
+
+    assert [message.data for message in bridge._route_control_pub.messages] == [
+        expected
+    ]
 
 
 def complete_toggle_read(bridge, enabled):

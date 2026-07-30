@@ -29,6 +29,7 @@ def state():
 
 def test_initially_disarmed_and_space_retains_hold_to_run_role(state):
     assert not state.autonomy_armed
+    assert state.navigation_mode == 'WAYPOINT'
     assert state.state(now=0.0)[:3] == (
         sender.MODE_BRAKE,
         0.0,
@@ -268,6 +269,43 @@ def test_each_route_key_has_the_expected_wire_command(
 ):
     state.press(token, now=0.0)
     assert state.state(now=0.0)[3] == expected
+
+
+def test_f12_alternates_absolute_mode_commands_in_finite_bursts(
+    state,
+    capsys,
+):
+    state.press('navigation_mode', now=0.0)
+    state.press('navigation_mode', now=0.1)
+
+    assert state.navigation_mode == 'ROUTE'
+    assert [
+        state.state(now=0.2 + index * 0.1)[3]
+        for index in range(sender.MODE_COMMAND_BURST_COUNT)
+    ] == [sender.SET_ROUTE_MODE] * sender.MODE_COMMAND_BURST_COUNT
+    assert state.state(now=0.6)[3] == sender.ROUTE_NONE
+    assert 'Navigation mode requested: ROUTE' in capsys.readouterr().out
+
+    state.release('navigation_mode')
+    state.press('navigation_mode', now=1.0)
+
+    assert state.navigation_mode == 'WAYPOINT'
+    assert [
+        state.state(now=1.1 + index * 0.1)[3]
+        for index in range(sender.MODE_COMMAND_BURST_COUNT)
+    ] == [sender.SET_WAYPOINT_MODE] * sender.MODE_COMMAND_BURST_COUNT
+    assert 'Navigation mode requested: WAYPOINT' in capsys.readouterr().out
+
+
+def test_mode_command_burst_does_not_change_packet_layout(state):
+    state.press('navigation_mode', now=0.0)
+    command = state.state(now=0.0)[3]
+
+    encoded = sender.packet(1, 2, sender.MODE_BRAKE, 0.0, 0.0, command)
+
+    assert command == sender.SET_ROUTE_MODE
+    assert len(encoded) == 27
+    assert sender.VERSION == 2
 
 
 @pytest.mark.parametrize('value', ['0', '-1', 'nan', 'inf'])
