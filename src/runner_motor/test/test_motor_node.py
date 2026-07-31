@@ -1,5 +1,6 @@
 import math
 
+from geometry_msgs.msg import Twist
 import pytest
 import rclpy
 
@@ -8,175 +9,252 @@ from runner_motor import motor_node
 
 class FakePWM:
     instances = []
+    events = []
 
-    def __init__(self, chip, channel):
-        self.chip = chip
+    def __init__(self, chip_path, channel):
+        self.chip_path = chip_path
         self.channel = channel
-        self.enabled = False
-        self.duty_cycle_ns = None
         self.period_ns = None
+        self.duty_cycle_ns = None
+        self.polarity = None
+        self.enabled = None
         self.__class__.instances.append(self)
+
+    def set_period_ns(self, value):
+        self.period_ns = value
+        self.events.append((self.channel, 'period', value))
+
+    def set_duty_cycle_ns(self, value):
+        self.duty_cycle_ns = value
+        self.events.append((self.channel, 'duty', value))
+
+    def set_polarity(self, value):
+        self.polarity = value
+        self.events.append((self.channel, 'polarity', value))
 
     def enable(self):
         self.enabled = True
+        self.events.append((self.channel, 'enable', 1))
 
     def disable(self):
         self.enabled = False
+        self.events.append((self.channel, 'enable', 0))
+
+
+class FakeLine:
+    def __init__(self):
+        self.values = [motor_node.DIR_FORWARD]
+        self.released = False
+
+    def set_value(self, value):
+        self.values.append(value)
+        FakePWM.events.append(('dir', value))
+
+    def release(self):
+        self.released = True
+
+
+class FakeChip:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
 def motor_factory(monkeypatch):
     nodes = []
     FakePWM.instances = []
-    monkeypatch.setattr(motor_node, 'PWM', FakePWM)
-    monkeypatch.setattr(motor_node.time, 'sleep', lambda _duration: None)
+    FakePWM.events = []
+    line = FakeLine()
+    chip = FakeChip()
+    monkeypatch.setattr(motor_node, 'SysfsPWM', FakePWM)
 
-    def create(mode=None):
-        args = []
-        if mode is not None:
-            value = "''" if mode == '' else mode
-            args = ['--ros-args', '-p', f'esc_mode:={value}']
-        rclpy.init(args=args)
-        try:
-            node = motor_node.MotorNode()
-        except BaseException:
-            rclpy.shutdown()
-            raise
+    def request_direction_output():
+        FakePWM.events.append(('dir', motor_node.DIR_FORWARD))
+        return chip, line
+
+    monkeypatch.setattr(
+        motor_node, 'request_direction_output', request_direction_output
+    )
+
+    def create():
+        rclpy.init()
+        node = motor_node.MotorNode()
         nodes.append(node)
         return node
 
-    yield create
+    yield create, line, chip
 
     for node in nodes:
+        node.stop()
         node.destroy_node()
     if rclpy.ok():
         rclpy.shutdown()
 
 
-def test_unset_esc_mode_refuses_startup_before_pwm(motor_factory):
-    with pytest.raises(ValueError, match='esc_mode is required'):
-        motor_factory()
-    assert FakePWM.instances == []
+@pytest.mark.parametrize(
+    ('command', 'direction', 'duty_ns'),
+    [
+        (-2.0, -1, 50_000),
+        (-0.5, -1, 25_000),
+        (0.0, 0, 0),
+        (0.25, 1, 12_500),
+        (2.0, 1, 50_000),
+        (math.nan, 0, 0),
+        (math.inf, 0, 0),
+        (-math.inf, 0, 0),
+    ],
+)
+def test_signed_command_mapping(command, direction, duty_ns):
+    assert motor_node.map_motor_command(command) == (direction, duty_ns)
 
 
-def test_invalid_esc_mode_refuses_startup_before_pwm(motor_factory):
-    with pytest.raises(ValueError, match='esc_mode is required'):
-        motor_factory('invalid')
-    assert FakePWM.instances == []
+def test_sysfs_pwm_writes_attributes_without_unexport(tmp_path):
+    channel_path = tmp_path / 'pwm0'
+    channel_path.mkdir()
+    for attribute in ('period', 'duty_cycle', 'polarity', 'enable'):
+        (channel_path / attribute).touch()
+
+    pwm = motor_node.SysfsPWM(tmp_path, 0)
+    pwm.set_period_ns(50_000)
+    pwm.set_duty_cycle_ns(25_000)
+    pwm.set_polarity('normal')
+    pwm.enable()
+
+    assert (channel_path / 'period').read_text() == '50000'
+    assert (channel_path / 'duty_cycle').read_text() == '25000'
+    assert (channel_path / 'polarity').read_text() == 'normal'
+    assert (channel_path / 'enable').read_text() == '1'
+    assert not (tmp_path / 'unexport').exists()
 
 
-def test_non_string_esc_mode_refuses_startup_before_pwm(motor_factory):
-    with pytest.raises(ValueError, match='esc_mode is required'):
-        motor_factory(1)
-    assert FakePWM.instances == []
+def test_direction_gpio_is_requested_exclusively_by_chip_label():
+    requests = []
+
+    class Line:
+        def request(self, **kwargs):
+            requests.append(kwargs)
+
+    class Chip:
+        OPEN_BY_LABEL = object()
+
+        def __init__(self, identifier, how):
+            requests.append(('chip', identifier, how))
+
+        def get_line(self, offset):
+            requests.append(('line', offset))
+            return Line()
+
+    class Gpiod:
+        pass
+
+    Gpiod.Chip = Chip
+    Gpiod.LINE_REQ_DIR_OUT = object()
+
+    chip, _line = motor_node.request_direction_output(Gpiod)
+
+    assert isinstance(chip, Chip)
+    assert requests == [
+        ('chip', motor_node.GPIO_CHIP_LABEL, Chip.OPEN_BY_LABEL),
+        ('line', motor_node.MOTOR_DIR_GPIO),
+        {
+            'consumer': 'runner_motor_dir',
+            'type': Gpiod.LINE_REQ_DIR_OUT,
+            'default_vals': [motor_node.DIR_FORWARD],
+        },
+    ]
 
 
-def test_empty_esc_mode_refuses_startup_before_pwm(motor_factory):
-    with pytest.raises(ValueError, match='esc_mode is required'):
-        motor_factory('')
-    assert FakePWM.instances == []
+def test_safe_startup_configuration_and_order(motor_factory):
+    create, _line, _chip = motor_factory
+    create()
+    motor, servo = FakePWM.instances
+
+    assert motor.period_ns == motor_node.MOTOR_PERIOD_NS
+    assert motor.duty_cycle_ns == 0
+    assert motor.polarity == 'normal'
+    assert motor.enabled
+    assert servo.period_ns == motor_node.SERVO_PERIOD_NS
+    assert servo.duty_cycle_ns == motor_node.us_to_ns(motor_node.STEER_CTR)
+    assert servo.enabled
+
+    motor_enable = FakePWM.events.index((0, 'enable', 1))
+    direction_defined = FakePWM.events.index(
+        ('dir', motor_node.DIR_FORWARD)
+    )
+    assert (0, 'duty', 0) in FakePWM.events[:direction_defined]
+    assert direction_defined < motor_enable
 
 
-@pytest.mark.parametrize('mode', ['race', 'normal'])
-def test_valid_esc_mode_is_accepted(motor_factory, mode):
-    node = motor_factory(mode)
-    assert node._esc_mode == mode
-    assert len(FakePWM.instances) == 2
-    assert all(pwm.enabled for pwm in FakePWM.instances)
+def test_direction_change_zeros_duty_before_dir(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+    FakePWM.events = []
+
+    message = Twist()
+    message.linear.x = -0.5
+    node.on_cmd(message)
+
+    assert FakePWM.events[:3] == [
+        (0, 'duty', 0),
+        ('dir', motor_node.DIR_REVERSE),
+        (0, 'duty', 25_000),
+    ]
+    assert line.values[-1] == motor_node.DIR_REVERSE
 
 
 @pytest.mark.parametrize(
-    ('mode', 'command', 'expected'),
-    [
-        ('race', 1.0, 1750),
-        ('race', 0.0, 1500),
-        ('race', -0.05, 1500),
-        ('race', -0.5, 1349),
-        ('race', -1.0, 1000),
-        ('normal', -0.5, 1405),
-        ('normal', -1.0, 1250),
-    ],
+    ('command', 'expected_direction', 'expected_duty'),
+    [(-1.0, -1, 50_000), (0.0, 0, 0), (0.5, 1, 25_000)],
 )
-def test_command_mapping(mode, command, expected):
-    pulse_us, _direction_input = motor_node.map_esc_command(command, mode)
-    assert pulse_us == expected
-
-
-def test_normal_mapping_preserves_non_finite_clamping():
-    assert motor_node.map_esc_command(math.nan, 'normal')[0] == 1750
-    assert motor_node.map_esc_command(math.inf, 'normal')[0] == 1750
-    assert motor_node.map_esc_command(-math.inf, 'normal')[0] == 1250
-
-
-@pytest.mark.parametrize('initial_state', [motor_node.STOP, motor_node.FWD])
-def test_race_negative_enters_brake(initial_state):
-    assert motor_node.next_direction_state(
-        initial_state, 'in_rev', 'race'
-    ) == motor_node.BRAKE
-
-
-def test_race_repeated_negative_remains_brake_and_never_reports_reverse():
-    state = motor_node.STOP
-    directions = []
-    for _ in range(3):
-        state = motor_node.next_direction_state(state, 'in_rev', 'race')
-        directions.append(
-            -1 if state == motor_node.REV else int(state != motor_node.STOP)
-        )
-    assert state == motor_node.BRAKE
-    assert directions == [1, 1, 1]
-
-
-@pytest.mark.parametrize(
-    ('initial_state', 'direction_input', 'expected'),
-    [
-        (motor_node.STOP, 'in_fwd', motor_node.FWD),
-        (motor_node.REV, 'in_fwd', motor_node.FWD),
-        (motor_node.FWD, 'in_neu', motor_node.STOP),
-        (motor_node.REV, 'in_neu', motor_node.STOP),
-        (motor_node.STOP, 'in_rev', motor_node.REV),
-        (motor_node.REV, 'in_rev', motor_node.REV),
-        (motor_node.FWD, 'in_rev', motor_node.BRAKE),
-        (motor_node.BRAKE, 'in_rev', motor_node.BRAKE),
-    ],
-)
-def test_normal_direction_transitions(
-    initial_state, direction_input, expected
+def test_command_publishes_direction(
+    motor_factory, command, expected_direction, expected_duty
 ):
-    assert motor_node.next_direction_state(
-        initial_state, direction_input, 'normal'
-    ) == expected
-
-
-@pytest.mark.parametrize(
-    ('mode', 'expected'),
-    [('race', 1000), ('normal', 1500)],
-)
-def test_watchdog_pulse(mode, expected):
-    assert motor_node.watchdog_pulse_us(mode) == expected
-
-
-@pytest.mark.parametrize('mode', ['race', 'normal'])
-def test_watchdog_sets_stop_and_publishes_zero(motor_factory, mode):
-    node = motor_factory(mode)
-    node._dir_state = motor_node.FWD
-    node._last_cmd -= motor_node.CMD_TIMEOUT_S + 1.0
-
+    create, _line, _chip = motor_factory
+    node = create()
     direction_messages = []
-    state_messages = []
+    node._direction_pub.publish = direction_messages.append
+
+    message = Twist()
+    message.linear.x = command
+    node.on_cmd(message)
+
+    assert direction_messages[-1].data == expected_direction
+    assert node.motor.duty_cycle_ns == expected_duty
+
+
+def test_watchdog_sets_zero_duty_and_publishes_zero(motor_factory):
+    create, _line, _chip = motor_factory
+    node = create()
+    node.motor.duty_cycle_ns = motor_node.MOTOR_PERIOD_NS
+    node._last_cmd -= motor_node.CMD_TIMEOUT_S + 1.0
+    direction_messages = []
     warnings = []
     node._direction_pub.publish = direction_messages.append
-    node._state_pub.publish = state_messages.append
     node.get_logger().warn = warnings.append
 
     node._watchdog()
 
-    assert node._dir_state == motor_node.STOP
+    assert node.motor.duty_cycle_ns == 0
     assert direction_messages[-1].data == 0
-    assert state_messages[-1].data == motor_node.STOP
-    expected = 1000 if mode == 'race' else 1500
-    assert node.esc.duty_cycle_ns == motor_node.us_to_ns(expected)
     assert warnings == [
-        '/cmd_vel watchdog timeout; '
-        f'esc_mode={mode}; ESC pulse={expected} us'
+        '/cmd_vel watchdog timeout; motor duty=0 (active brake)'
     ]
+
+
+def test_shutdown_brakes_publishes_zero_and_does_not_unexport(motor_factory):
+    create, line, chip = motor_factory
+    node = create()
+    direction_messages = []
+    node._direction_pub.publish = direction_messages.append
+    node.motor.duty_cycle_ns = motor_node.MOTOR_PERIOD_NS
+
+    node.stop()
+
+    assert node.motor.duty_cycle_ns == 0
+    assert node.motor.enabled
+    assert direction_messages[-1].data == 0
+    assert line.released
+    assert chip.closed

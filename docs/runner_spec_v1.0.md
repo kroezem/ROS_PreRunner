@@ -95,7 +95,7 @@ Traction voltage remains unobservable — `/battery` is the UPS fuel gauge only.
 | `runner_bringup` | `scan_rebinner` | `/scan` → `/scan_slam`, fixed 503-bin angular rebinning (D-37) |
 | `runner_bringup` | `foxglove_goal_bridge` | Goal and route management (§4.16) |
 | `runner_imu` | `bno085_node` | BNO085 → `/imu/data` @ 50 Hz |
-| `runner_motor` | `motor_node` | `/cmd_vel` → ESC + steering PWM. Persistent systemd hardware owner; requires `esc_mode` (D-46, D-75) |
+| `runner_motor` | `motor_node` | `/cmd_vel` → MD13S sign-magnitude + steering PWM. Persistent systemd hardware owner (D-75, D-76) |
 | `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Sole GPIO 22 owner, libgpiod (D-54) |
 | `runner_teleop` | `teleop_node` | `/joy` → `/cmd_vel_teleop`, three-state hold-to-run (D-48); keyboard bridge |
 | `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized), with PI speed control (§4.15) |
@@ -121,9 +121,8 @@ launch/
 ```
 
 `motor_node` is not part of the launch tree. `runner-motor.service` starts it at
-boot with `esc_mode: race`; the parameter still has no default and an unset
-invocation refuses to start. Composites own the complete application graph but
-depend on the persistent platform hardware service (D-75).
+boot with no ESC-mode parameter. Composites own the complete application graph
+but depend on the persistent platform hardware service (D-75).
 
 ### 4.3 Scan topology (D-37)
 
@@ -146,7 +145,7 @@ Nav2 costmaps consume raw `/scan`. Every new map is built through `/scan_slam`.
 | `/map` | `map_server` (D-50) |
 | `/slam_map` | slam_toolbox (visualization only) |
 | `/cmd_vel` | `twist_mux` |
-| ESC + steering PWM | persistent `motor_node` systemd service |
+| MD13S PWM/DIR + steering PWM | persistent `motor_node` systemd service |
 | GPIO 22 | `encoder_node` |
 
 ### 4.5 Static extrinsics
@@ -163,7 +162,7 @@ The prior fixed-window estimator quantized 0.3 m/s to exactly two values (0.206 
 
 **Magnet spacing is period-2**, from bipolar-latch switching asymmetry: ±1.5% in July, ±5.5% currently, structure unchanged. Cancelled entirely by depth ≥ 2. The magnitude change coincided with a measurement-method change and must be re-scoped on the signal line before any mechanical inspection.
 
-**Direction (D-42):** `/wheel/odom` signed by `pending_direction` — latest nonzero command, latched through zeros. Steady-state disagreement with `sign(EKF vx)`: 0.0% versus 27.6% for stop-gated `active_direction`. Under race mode the sign is not load-bearing for autonomy.
+**Direction (D-42):** `/wheel/odom` signed by `pending_direction` — latest nonzero command, latched through zeros. Steady-state disagreement with `sign(EKF vx)`: 0.0% versus 27.6% for stop-gated `active_direction`. The MD13S motor owner publishes the direct signed command.
 
 **Magnitude is unreliable under wheelspin:** p90 wheel/EKF ratio 2.04. Not an EKF velocity source.
 
@@ -313,17 +312,23 @@ action execution, so `IsPathValid` cannot accept a previous execution's path.
 
 ## 5 · Teleop & motor control
 
-### 5.1 ESC race mode (D-46)
+### 5.1 MD13S sign-magnitude drive (D-76, supersedes D-46/D-47)
 
-Reverse physically disabled; the reverse channel is proportional brake only. **Preliminary** — reverse returns with a brushed H-bridge. Phase 1 was always forward-only.
+GPIO12 supplies normal-polarity 20 kHz PWM and GPIO23 supplies DIR. Positive
+normalized commands select forward, negative commands select reverse, and
+absolute magnitude maps linearly to PWM duty. Zero duty is MD13S active brake.
+Direction changes first force duty to zero, then switch DIR, then apply the new
+duty. There is no ESC arming sequence, pulse mapping, deadband, expo, mode
+parameter, or reverse gate.
 
-Buys: D-34's handshake becomes unnecessary; full 1000 µs brake authority; dead-man release and watchdog timeout become real braking events (D-47); direction sign irrelevant to autonomy.
+GPIO23 is exclusively requested from the `pinctrl-rp1` chip by label. GPIO22
+remains exclusively reserved for the encoder and is not part of motor control.
+`/motor/direction` reports the signed command as `Int8` -1, 0, or +1.
 
-Costs: manual recovery when the vehicle noses into an obstacle or a goal needs a three-point turn. **Phase 1 success is defined as reaching goals in open areas, not all goals.**
-
-`esc_mode` has no default; the node refuses to start unset, because in `normal` mode the same brake-on-loss behaviour would command full-speed reverse.
-
-Braking costs no meaningful battery — dynamic braking dissipates kinetic energy. **Not a parking brake**: holding force is proportional to speed and zero at rest.
+The existing teleop command labels still call negative commands "brake"; at
+the motor boundary they are now reverse commands. Traction remains disconnected
+until the separately planned wheels-off-ground validation resolves the complete
+operator-control behavior.
 
 ### 5.2 Teleop three-state hold-to-run (D-48)
 
@@ -331,9 +336,9 @@ Priority **X > R1 > L1 > brake**. Releasing all buttons brakes within one public
 
 | Input | Behaviour |
 |---|---|
-| Nothing held | full brake, `linear.x = −1.0` |
-| **X** | manual — R2 throttle, L2 brake, stick steering |
-| **R1** | fixed throttle setpoint (D-pad adjusts), stick steering, L2 brake live |
+| Nothing held | legacy "full brake" label, `linear.x = −1.0`; now MD13S reverse |
+| **X** | manual — R2 forward, L2 negative/reverse command, stick steering |
+| **R1** | fixed forward setpoint (D-pad adjusts), stick steering, L2 negative/reverse command live |
 | **L1** | `teleop_suppress` — publishes nothing, autonomy passes through |
 
 In code and docs L1 is **`teleop_suppress`**. "Autonomy enable" is operator-facing only; it is not an arming gate — the real gate is the mux and the watchdog.
@@ -386,19 +391,24 @@ while driving. Escape clears everything and the autonomy latch auto-expires.
 
 ### 5.4 Motor control
 
-ESC curve deadband + expo, `THR_MAX_US = 1750`, forward onset 1550 µs, crossover 0.05, exponent 2.0 (D-08). Watchdog 0.2 s → 1000 µs full brake in race mode (D-47). `runner-pwm-setup.service` temporarily prepares PWM export and permissions; persistent runtime ownership belongs to `motor_node` (D-75, superseding the ownership portion of D-23).
+GPIO12 uses normal-polarity 20 kHz PWM (`period=50000 ns`) with signed command
+magnitude mapped linearly to duty. GPIO23 is DIR. Duty zero is active brake.
+GPIO13 remains normal-polarity 50 Hz steering PWM (`period=20000000 ns`).
+`runner-pwm-setup.service` temporarily prepares PWM export and permissions;
+persistent direct-sysfs runtime control belongs to `motor_node`, which never
+unexports either channel (D-75/D-76, superseding the ownership portion of
+D-23).
 
 `runner-motor.service` starts at boot, requires the PWM setup service, and is
 not stopped with an application composite. Composite teardown stops command
-publication; D-09 then applies the existing race-ESC watchdog output after
-200 ms while the hardware owner remains alive. This is an ownership change
-only. MD13S output behavior and its hardware validation remain pending.
-
-**Do not change the throttle expo.** The motor sees pulse width; breakaway is at ~1574 µs and is a physical threshold, confirmed by a stand test where unloaded wheels would not turn at command 0.3. Changing the exponent moves which normalized value maps to that pulse width without changing what it produces. The adapter inverts the curve by lookup and absorbs the exponent entirely.
+publication; D-09 writes duty zero and publishes direction zero after 200 ms
+while the hardware owner remains alive. Shutdown also writes duty zero before
+releasing GPIO23. The timer and steering command mapping are unchanged.
 
 **Breakaway is direction-dependent** (0.340–0.380 normalized). Floor slope, drivetrain warm-up, and sweep order were confounded and never separated. The adapter uses the worst case observed.
 
-**Residual hazard, unsolved in software:** SIGKILL bypasses `stop()` and leaves the last PWM active. Under race mode, SIGKILL during forward throttle leaves the vehicle accelerating. The Pi-controlled high-side FET (§3.3) is the fix.
+**Residual hazard, unsolved in software:** SIGKILL bypasses `stop()` and leaves
+the last sysfs duty active. The Pi-controlled high-side FET (§3.3) is the fix.
 
 ---
 
@@ -571,7 +581,7 @@ Latest validated run:
 
 **Deferred with triggers**
 
-- **Brushed H-bridge / reverse** — trigger: available now via an off-the-shelf module; unlocks Reeds-Shepp, `BackUp` recovery, and known direction
+- **Reverse autonomy enablement** — trigger: wheels-off-ground MD13S validation and an explicit safe operator-control contract; unlocks Reeds-Shepp, `BackUp` recovery, and known direction
 - **IMU scan deskewing** — trigger: Phase 2 speeds
 - **Lateral velocity via `v̇y = a_y − vx·ω`** — free, untested
 - **Quadrature encoder** — trigger: a consumer of signed wheel velocity
@@ -605,6 +615,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-73 | **Vendor Navigation2 RPP 1.3.12 and regulate from maximum known path cost through the carrot.** | Robot-cell-only cost reacts after entering inflation. Half-cell-or-denser path sampling gives anticipatory slowdown while preserving upstream behavior outside cost regulation. Unit/build validation passes; controlled floor comparison remains outstanding. |
 | D-74 | **Separate default WAYPOINT queue and persistent ROUTE workflows share `/runner/waypoint`; the bridge remains the sole Nav2 action owner.** WAYPOINT preserves the full supplied pose in a 20-item, in-memory-only FIFO executed sequentially with `NavigateToPose`; one failure retry is allowed before pausing with the front retained. ROUTE preserves full pose orientation, persistence, controls, and `NavigateThroughPoses`. Absolute idempotent mode commands clear and cancel the opposite collection on actual transitions only. | One Foxglove pose tool serves both operator workflows without a competing action owner or topic. Sequential queue execution intentionally accepts stop-and-go and repeated breakaway. A single generation arbiter prevents stale callbacks from reviving canceled work, while clearing `path` once at the start of both BTs forces fresh planning for identical queue retries, resumed goals, and route replays. Protocol-v2 values 8/9 carry repeated absolute F12 requests without changing the 27-byte layout. |
 | D-75 | **`motor_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** This amends D-29: runnable composites remain complete application graphs but may depend on persistent platform services. It supersedes the ownership portion of D-23: `runner-pwm-setup.service` temporarily prepares export and permissions, while `motor_node` continuously owns PWM12/13. D-09 remains the primary composite-stop path. | Launch teardown and hardware ownership have independent lifecycles. Keeping the motor owner alive lets command publication cease on composite teardown and permits the 200 ms watchdog to apply the existing stop output. `Restart=always` with a 0.1 s delay bounds recovery attempts after owner failure. This decision preserves current ESC behavior; MD13S behavior is not yet implemented or validated. |
+| D-76 | **Cytron MD13S replaces hobby-ESC pulse control.** GPIO12 is normal-polarity 20 kHz PWM, GPIO23 is exclusive DIR by `pinctrl-rp1` label, and normalized sign/magnitude map directly to DIR/duty. Duty zero is active brake. D-09 remains 200 ms. Supersedes D-08, D-34, D-46, and D-47 at the motor boundary. | Direct sign-magnitude control removes ESC arming, neutral/deadband/expo/pulse mappings, the mode interlock, and the reverse FSM. Safe startup writes duty zero, defines DIR, then enables motor PWM before subscribing. Direct sysfs access never implicitly unexports GPIO12/13 PWM. Traction-disconnected smoke check only; wheels-off-ground validation remains pending. |
 
 ---
 

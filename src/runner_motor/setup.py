@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools', 'std_msgs'],
+    install_requires=['setuptools'],
     zip_safe=True,
     maintainer='matti',
     maintainer_email='matti@todo.todo',

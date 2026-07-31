@@ -7,23 +7,17 @@ drives manually. The analyzer only reads the resulting MCAP bag.
 ## Known command semantics
 
 `/cmd_vel_teleop.linear.x` and mux output `/cmd_vel.linear.x` are normalized
-ESC commands, not metres per second.
+motor commands, not metres per second.
 `runner_teleop/teleop_node.py` maps R2 to `0.0` through `+1.0` and L2 to
 `0.0` through `-1.0` while X is held. With no motion button held, it
-continuously publishes the race-mode full-brake command `-1.0`.
-`runner_motor/motor_node.py` clamps the field to `[-1.0, +1.0]`: positive is
-forward, values below `-0.05` request brake, and values from `-0.05` through
-zero produce the 1500 us neutral pulse. Zero is neutral/coast at this layer,
-not an active brake.
-
-The ESC conversion is in `motor_node.py`, after `/cmd_vel`: the first 0.05
-of positive magnitude ramps from 1500 to the configured 1550 us forward
-onset, then an exponent-2 curve reaches the 1750 us forward limit. Reverse
-magnitude uses the same crossover and exponent toward the 1250 us
-brake/reverse limit. Those software values do **not** establish the physical
-ground-motion deadband; this protocol measures it. The published normalized
-values in the ladders below are therefore valid, but physical motion remains
-unknown until the test.
+currently publishes the command `-1.0` when no motion button is held.
+`runner_motor/motor_node.py` clamps finite input to `[-1.0, +1.0]`: sign
+selects the MD13S DIR output and absolute magnitude maps linearly to 20 kHz
+PWM duty. Zero maps to duty zero, the MD13S active-brake state. There is no
+software deadband, expo, pulse conversion, or reverse gate. The teleop label
+"brake" for negative commands predates the MD13S migration; negative commands
+now request reverse at the motor boundary. Do not perform this protocol until
+that operator-control behavior has passed wheels-off-ground validation.
 
 ## Operator controls
 
@@ -62,8 +56,8 @@ The production defaults are an initial setpoint of `0.30`, step `0.01`,
 minimum `0.00`, and maximum `0.50`. The selected setpoint persists only for
 the teleop process lifetime and resets to `0.30` at every process start unless
 the production launch explicitly overrides the initial parameter. Every R1
-press logs the selected setpoint and expected race-mode ESC pulse. That pulse
-is calculated from the configured software mapping; it is not measured
+press logs the selected setpoint and its legacy expected-ESC-pulse diagnostic.
+That diagnostic is not used by the MD13S motor mapping and is not measured
 feedback.
 
 `/teleop/fixed_throttle_setpoint` (`std_msgs/msg/Float32`) continuously
@@ -105,9 +99,10 @@ ros2 launch runner_bringup map.launch.py
 ```
 
 `map.launch.py` is the existing composite that includes sensors, estimation,
-SLAM mapping, and the mutually exclusive teleop entry point. Together these
-provide teleop, motor, encoder, EKF, TF, and scan without adding another
-resource owner. Run exactly this one top-level launch; do not also start
+SLAM mapping, and the mutually exclusive teleop entry point. Together with the
+persistent `runner-motor.service`, these provide teleop, motor, encoder, EKF,
+TF, and scan without adding another resource owner. Run exactly this one
+top-level launch; do not also start
 `teleop.launch.py` or `localize.launch.py`.
 
 In another sourced terminal, check:
@@ -196,7 +191,7 @@ For every level:
 3. Hold steering straight.
 4. Apply the target normalized throttle without feathering.
 5. Hold it for at least 6.0 seconds.
-6. Release to neutral (`/cmd_vel.linear.x` near zero).
+6. Command zero (`/cmd_vel.linear.x` near zero) for active brake.
 7. Wait for `/wheel/encoder_state.stationary=true` **and** physical stop.
 8. Leave at least 2.0 seconds of zero command between segments.
 9. Record the target and actual hold in the run sheet.
@@ -216,10 +211,9 @@ Run forward and reverse separately, stopping fully between every level:
 ```
 
 Use the listed positive values for forward and their exact negatives for
-reverse. Hold every nonzero level for at least 6.0 seconds. The `-0.02` and
-`-0.04` commands are expected to remain neutral in the current motor layer;
-recording them verifies the command-path boundary and must not be mistaken for
-an ESC ground-motion result.
+reverse. Hold every nonzero level for at least 6.0 seconds. Small negative
+commands now produce proportionally small reverse duty; their inclusion
+measures physical breakaway rather than a software mapping threshold.
 
 If motion starts, continue through at least three ladder levels above the
 first sustained motion, subject to safe speed. If it has not started by
@@ -250,14 +244,9 @@ complete the table if the available lane or response is unsafe.
 ## Reverse behavior
 
 Characterize reverse independently and retain the negative published signs.
-The ESC may require its existing brake/re-arm behavior:
-
-- come to a complete physical and encoder-confirmed stop before each reverse
-  run;
-- follow the existing manual ESC behavior;
-- do not automate, bypass, or redesign the handshake;
-- discard and repeat a segment if a negative command was held but reverse did
-  not actually engage.
+Come to a complete physical and encoder-confirmed stop before each reverse
+run. The motor node zeros PWM before changing DIR; no ESC brake/re-arm sequence
+or reverse FSM remains.
 
 The analyzer never combines forward and reverse into one curve.
 

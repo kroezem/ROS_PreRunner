@@ -17,9 +17,9 @@ adapter:
 | Topic | Type | `linear.x` | `angular.z` | Owner |
 |---|---|---|---|---|
 | `/cmd_vel_nav` | `geometry_msgs/msg/Twist` | m/s | rad/s | external controlled test publisher in Stage 2 |
-| `/cmd_vel_auto` | `geometry_msgs/msg/Twist` | normalized throttle/brake | normalized steering | `drive_adapter` |
-| `/cmd_vel_teleop` | `geometry_msgs/msg/Twist` | normalized throttle/brake | normalized steering | `runner_teleop` |
-| `/cmd_vel` | `geometry_msgs/msg/Twist` | normalized throttle/brake | normalized steering | `twist_mux` |
+| `/cmd_vel_auto` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `drive_adapter` |
+| `/cmd_vel_teleop` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `runner_teleop` |
+| `/cmd_vel` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `twist_mux` |
 
 `motor_driver` remains the only `/cmd_vel` consumer requiring normalized
 motor commands and the sole PWM owner. Nav2-unit commands must never be
@@ -48,8 +48,8 @@ periodically republish a last command. Consequently, once all upstream
 publications stop, `/cmd_vel` is immediately event-silent; expiry prevents a
 later lower-priority callback from being masked by an old command.
 
-`motor_driver` retains its independent 0.20 s watchdog and applies full race
-brake after `/cmd_vel` loss. If `twist_mux` exits, `/cmd_vel` becomes silent
+`motor_driver` retains its independent 0.20 s watchdog and applies MD13S active
+brake (duty zero) after `/cmd_vel` loss. If `twist_mux` exits, `/cmd_vel` becomes silent
 and the watchdog brakes. If `drive_adapter` exits during L1 suppression,
 `/cmd_vel_auto` and then `/cmd_vel` become silent and the watchdog brakes.
 If teleop exits with no autonomy traffic, the watchdog brakes after the last
@@ -63,13 +63,14 @@ The Stage 2 bench launch is:
 ros2 launch runner_bringup autonomy_bench.launch.py
 ```
 
-It starts only `joy_node`, `runner_teleop`, `drive_adapter`, `twist_mux`,
-`motor_driver`, and `encoder_node`. A controlled publisher may supply
+It starts only `joy_node`, `runner_teleop`, `drive_adapter`, `twist_mux`, and
+`encoder_node`; the persistent `runner-motor.service` owns `motor_driver`.
+A controlled publisher may supply
 `/cmd_vel_nav`; no planner, controller server, costmap, behavior-tree
 navigator, or autonomous goal is part of this launch.
 
 For evidence, record or inspect `/cmd_vel_teleop`, `/cmd_vel_auto`,
-`/cmd_vel`, `/teleop/active_mode`, `/drive_adapter/state`, `/motor/state`,
+`/cmd_vel`, `/teleop/active_mode`, `/drive_adapter/state`, `/motor/direction`,
 and `/wheel/encoder_state`. `twist_mux` also publishes standard
 `/diagnostics`; source transitions should still be established by correlating
 timestamped input and output events, not by command values alone.

@@ -1,38 +1,24 @@
+import math
+from pathlib import Path
 import time
 
 from geometry_msgs.msg import Twist
-from periphery import PWM
+import gpiod
 import rclpy
-from rclpy.exceptions import InvalidParameterTypeException
 from rclpy.node import Node
-from rclpy.parameter import Parameter
-from std_msgs.msg import Int8, String
+from std_msgs.msg import Int8
 
-PWM_CHIP = 0  # verify with: ls /sys/class/pwm/ after adding overlay
-# change to 2 if pwmchip2 is the RP1 controller on your Pi 5
-FRAME_NS = 20_000_000  # 50 Hz
+PWM_CHIP_PATH = Path('/sys/class/pwm/pwmchip0')
+MOTOR_PWM_CHANNEL = 0  # GPIO12
+SERVO_PWM_CHANNEL = 1  # GPIO13
+MOTOR_PERIOD_NS = 50_000  # 20 kHz
+SERVO_PERIOD_NS = 20_000_000  # 50 Hz
 CMD_TIMEOUT_S = 0.2
 
-NEUTRAL_US = 1500  # ESC neutral — no movement
-FWD_ONSET_US = 1550
-REV_ONSET_US = 1450
-CROSS_FRAC = 0.05
-EXPO = 2.0
-THR_MAX_US = 1750
-BRK_MAX_US = 1250
-RACE_BRK_MAX_US = 1000
-
-VALID_ESC_MODES = ('race', 'normal')
-ESC_MODE_ERROR = (
-    "esc_mode is required and must be explicitly set to 'race' or 'normal'; "
-    'motor_driver will not start because incorrect mode selection can create '
-    'unsafe throttle behavior'
-)
-
-STOP = 'STOP'
-FWD = 'FWD'
-BRAKE = 'BRAKE'
-REV = 'REV'
+GPIO_CHIP_LABEL = 'pinctrl-rp1'
+MOTOR_DIR_GPIO = 23
+DIR_FORWARD = 0
+DIR_REVERSE = 1
 
 STEER_CTR = 1500  # servo centre
 STEER_US = 500  # ± range around centre
@@ -42,153 +28,164 @@ def us_to_ns(us):
     return int(us * 1000)
 
 
-def map_esc_input(magnitude, onset_us, limit_us):
-    if magnitude == 0.0:
-        return NEUTRAL_US
-    if magnitude <= CROSS_FRAC:
-        return int(NEUTRAL_US + magnitude / CROSS_FRAC * (onset_us - NEUTRAL_US))
-    u = (magnitude - CROSS_FRAC) / (1.0 - CROSS_FRAC)
-    u_shaped = u ** EXPO
-    return int(onset_us + u_shaped * (limit_us - onset_us))
+def map_motor_command(linear_x):
+    """Return (direction, duty_ns) for a normalized signed command."""
+    if not math.isfinite(linear_x):
+        linear_x = 0.0
+    command = max(-1.0, min(1.0, linear_x))
+    direction = (command > 0.0) - (command < 0.0)
+    return direction, int(abs(command) * MOTOR_PERIOD_NS)
 
 
-def validate_esc_mode(parameter):
-    if (
-        parameter.type_ != Parameter.Type.STRING
-        or parameter.value not in VALID_ESC_MODES
-    ):
-        raise ValueError(ESC_MODE_ERROR)
-    return parameter.value
+class SysfsPWM:
+    """Control an already-exported PWM channel without owning its export."""
+
+    def __init__(self, chip_path, channel):
+        self.path = Path(chip_path) / f'pwm{channel}'
+        if not self.path.is_dir():
+            raise RuntimeError(
+                f'PWM channel is not exported: {self.path}; '
+                'runner-pwm-setup.service must run first'
+            )
+
+    def _write(self, attribute, value):
+        with (self.path / attribute).open('w') as output:
+            output.write(str(value))
+
+    def set_period_ns(self, period_ns):
+        self._write('period', period_ns)
+
+    def set_duty_cycle_ns(self, duty_ns):
+        self._write('duty_cycle', duty_ns)
+
+    def set_polarity(self, polarity):
+        self._write('polarity', polarity)
+
+    def enable(self):
+        self._write('enable', 1)
+
+    def disable(self):
+        self._write('enable', 0)
 
 
-def map_esc_command(linear_x, esc_mode):
-    cmd = max(-1.0, min(1.0, linear_x))
-    if cmd > 0.0:
-        return map_esc_input(cmd, FWD_ONSET_US, THR_MAX_US), 'in_fwd'
-    if cmd < -0.05:
-        reverse_limit = (
-            RACE_BRK_MAX_US if esc_mode == 'race' else BRK_MAX_US
+def request_direction_output(gpiod_module=gpiod):
+    """Exclusively request the MD13S DIR line by GPIO chip label."""
+    chip = gpiod_module.Chip(
+        GPIO_CHIP_LABEL, gpiod_module.Chip.OPEN_BY_LABEL
+    )
+    line = chip.get_line(MOTOR_DIR_GPIO)
+    try:
+        line.request(
+            consumer='runner_motor_dir',
+            type=gpiod_module.LINE_REQ_DIR_OUT,
+            default_vals=[DIR_FORWARD],
         )
-        return map_esc_input(-cmd, REV_ONSET_US, reverse_limit), 'in_rev'
-    return NEUTRAL_US, 'in_neu'
-
-
-def next_direction_state(current_state, direction_input, esc_mode):
-    if direction_input == 'in_fwd':
-        return FWD
-    if direction_input == 'in_neu':
-        return STOP
-    if esc_mode == 'race':
-        return BRAKE
-    if current_state in (FWD, BRAKE):
-        return BRAKE
-    return REV
-
-
-def watchdog_pulse_us(esc_mode):
-    return RACE_BRK_MAX_US if esc_mode == 'race' else NEUTRAL_US
+    except Exception:
+        chip.close()
+        raise
+    return chip, line
 
 
 class MotorNode(Node):
     def __init__(self):
         super().__init__('motor_driver')
-        try:
-            self._esc_mode = validate_esc_mode(
-                self.declare_parameter('esc_mode', Parameter.Type.STRING)
-            )
-        except (InvalidParameterTypeException, ValueError):
-            self.get_logger().error(ESC_MODE_ERROR)
-            raise ValueError(ESC_MODE_ERROR) from None
-        self.esc = PWM(PWM_CHIP, 0)  # GPIO 12
-        self.servo = PWM(PWM_CHIP, 1)   # GPIO 13
-        for p in (self.esc, self.servo):
-            p.period_ns = FRAME_NS
-        self._write(NEUTRAL_US, STEER_CTR)
-        self.esc.enable()
+
+        self.motor = SysfsPWM(PWM_CHIP_PATH, MOTOR_PWM_CHANNEL)
+        self.servo = SysfsPWM(PWM_CHIP_PATH, SERVO_PWM_CHANNEL)
+
+        # Remove any stale drive before changing the motor PWM configuration.
+        self.motor.set_duty_cycle_ns(0)
+        self.motor.disable()
+        self.motor.set_polarity('normal')
+        self.motor.set_period_ns(MOTOR_PERIOD_NS)
+        self.motor.set_duty_cycle_ns(0)
+
+        # Steering retains its existing 50 Hz, centred startup behavior.
+        self.servo.disable()
+        self.servo.set_polarity('normal')
+        self.servo.set_period_ns(SERVO_PERIOD_NS)
+        self.servo.set_duty_cycle_ns(us_to_ns(STEER_CTR))
         self.servo.enable()
-        self._arm_esc()
-        self.create_subscription(Twist, '/cmd_vel', self.on_cmd, 10)
+
+        # Define DIR while motor duty is zero, then start the 20 kHz output.
+        self._gpio_chip, self._dir_line = request_direction_output()
+        self._hardware_direction = DIR_FORWARD
+        self.motor.enable()
+
         self._direction_pub = self.create_publisher(
             Int8, '/motor/direction', 10
         )
-        self._state_pub = self.create_publisher(
-            String, '/motor/state', 10
-        )
-        self._dir_state = STOP
         self._last_cmd = time.monotonic()
         self._cmd_timed_out = False
+        self._stopped = False
         self.create_timer(0.05, self._watchdog)
-        self.get_logger().info(
-            f'motor_driver ready; esc_mode={self._esc_mode}'
-        )
 
-    def _arm_esc(self):
-        self._write(NEUTRAL_US, STEER_CTR)
-        time.sleep(1.0)
-        self._write(NEUTRAL_US, STEER_CTR)
-        time.sleep(1.0)
-        self.get_logger().info('ESC armed')
+        # Subscribe only after all motor outputs are in their safe state.
+        self.create_subscription(Twist, '/cmd_vel', self.on_cmd, 10)
+        self._direction_pub.publish(Int8(data=0))
+        self.get_logger().info('motor_driver ready; MD13S PWM=20 kHz')
 
-    def _write(self, thr_us, steer_us):
-        self.esc.duty_cycle_ns = us_to_ns(thr_us)
-        self.servo.duty_cycle_ns = us_to_ns(steer_us)
+    def _set_motor(self, direction, duty_ns):
+        if direction != 0:
+            hardware_direction = (
+                DIR_FORWARD if direction > 0 else DIR_REVERSE
+            )
+            if hardware_direction != self._hardware_direction:
+                self.motor.set_duty_cycle_ns(0)
+                self._dir_line.set_value(hardware_direction)
+                self._hardware_direction = hardware_direction
+        self.motor.set_duty_cycle_ns(duty_ns)
 
     def on_cmd(self, msg: Twist):
         if self._cmd_timed_out:
             self.get_logger().info('/cmd_vel recovered')
             self._cmd_timed_out = False
         self._last_cmd = time.monotonic()
-        thr_us, dir_input = map_esc_command(
-            msg.linear.x, self._esc_mode
-        )
 
-        previous_state = self._dir_state
-        self._dir_state = next_direction_state(
-            self._dir_state, dir_input, self._esc_mode
-        )
-
-        direction = -1 if self._dir_state == REV else int(self._dir_state != STOP)
+        direction, duty_ns = map_motor_command(msg.linear.x)
+        self._set_motor(direction, duty_ns)
         self._direction_pub.publish(Int8(data=direction))
-        if self._dir_state != previous_state:
-            self._state_pub.publish(String(data=self._dir_state))
 
         steer_us = int(
             STEER_CTR
             + max(-1.0, min(1.0, msg.angular.z)) * STEER_US
         )
-        self._write(thr_us, steer_us)
+        self.servo.set_duty_cycle_ns(us_to_ns(steer_us))
 
     def _watchdog(self):
         if time.monotonic() - self._last_cmd <= CMD_TIMEOUT_S:
             return
+        self.motor.set_duty_cycle_ns(0)
         if not self._cmd_timed_out:
-            pulse_us = watchdog_pulse_us(self._esc_mode)
             self.get_logger().warn(
-                '/cmd_vel watchdog timeout; '
-                f'esc_mode={self._esc_mode}; ESC pulse={pulse_us} us'
+                '/cmd_vel watchdog timeout; motor duty=0 (active brake)'
             )
             self._cmd_timed_out = True
-            state_changed = self._dir_state != STOP
-            self._dir_state = STOP
             self._direction_pub.publish(Int8(data=0))
-            if state_changed:
-                self._state_pub.publish(String(data=STOP))
-        self.esc.duty_cycle_ns = us_to_ns(watchdog_pulse_us(self._esc_mode))
 
     def stop(self):
-        self._write(NEUTRAL_US, STEER_CTR)
-        self.esc.disable()
+        if self._stopped:
+            return
+        self.motor.set_duty_cycle_ns(0)
+        self._direction_pub.publish(Int8(data=0))
+        self.servo.set_duty_cycle_ns(us_to_ns(STEER_CTR))
         self.servo.disable()
+        self._dir_line.release()
+        self._gpio_chip.close()
+        self._stopped = True
 
 
 def main():
     rclpy.init()
-    node = MotorNode()
+    node = None
     try:
+        node = MotorNode()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop()
+        if node is not None:
+            node.stop()
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
