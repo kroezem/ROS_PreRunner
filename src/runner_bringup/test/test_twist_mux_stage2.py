@@ -69,7 +69,7 @@ def test_launches_remap_only_mux_output_to_normalized_motor_input():
     assert bench.count("package='runner_teleop'") == 2
     assert bench.count("executable='keyboard_bridge'") == 1
     assert bench.count("package='runner_drive_adapter'") == 1
-    assert bench.count("package='runner_motor'") == 1
+    assert "package='runner_motor'" not in bench
     assert bench.count("package='runner_encoder'") == 1
     assert "('/cmd_vel_out', '/cmd_vel')" in bench
     assert "('/cmd_vel_nav', '/cmd_vel')" not in bench
@@ -80,6 +80,7 @@ def test_launches_remap_only_mux_output_to_normalized_motor_input():
     assert manual.count("package='twist_mux'") == 1
     assert manual.count("package='runner_teleop'") == 2
     assert manual.count("executable='keyboard_bridge'") == 1
+    assert "package='runner_motor'" not in manual
     assert "('/cmd_vel_out', '/cmd_vel')" in manual
     assert "('/cmd_vel_nav', '/cmd_vel')" not in manual
 

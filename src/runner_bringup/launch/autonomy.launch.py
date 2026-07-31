@@ -110,11 +110,4 @@ def generate_launch_description():
             parameters=[mux_parameters],
             remappings=[('/cmd_vel_out', '/cmd_vel')],
         ),
-        Node(
-            package='runner_motor',
-            executable='motor_node',
-            name='motor_driver',
-            output='screen',
-            parameters=[{'esc_mode': 'race'}],
-        ),
     ])

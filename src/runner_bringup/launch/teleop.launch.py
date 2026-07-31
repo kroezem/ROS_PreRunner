@@ -1,6 +1,6 @@
 # map.launch.py, localize.launch.py, and teleop.launch.py are mutually exclusive.
 # Each is a complete runnable entry point; run exactly one.
-# Running more than one may duplicate UART sensor or PWM motor ownership.
+# Running more than one may duplicate application and sensor resources.
 # Internal tiers under launch/include are not standalone production entry points.
 
 import os
@@ -62,10 +62,5 @@ def generate_launch_description():
             output='screen',
             parameters=[mux_parameters],
             remappings=[('/cmd_vel_out', '/cmd_vel')],
-        ),
-        Node(
-            package='runner_motor',
-            executable='motor_node',
-            parameters=[{'esc_mode': 'race'}],
         ),
     ])

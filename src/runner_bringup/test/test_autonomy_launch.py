@@ -49,7 +49,6 @@ def test_composite_adds_only_missing_command_chain_nodes():
         'runner_teleop',
         'runner_drive_adapter',
         'twist_mux',
-        'runner_motor',
     ]
     assert 'runner_encoder' not in packages
     assert 'robot_localization' not in packages
@@ -74,13 +73,16 @@ def test_command_chain_parameters_match_the_stage2_bench():
         "package='twist_mux'",
         'parameters=[mux_parameters]',
         "remappings=[('/cmd_vel_out', '/cmd_vel')]",
-        "package='runner_motor'",
-        "parameters=[{'esc_mode': 'race'}]",
     )
 
     for fragment in required_fragments:
         assert fragment in autonomy
         assert fragment in bench
+
+    assert "package='runner_motor'" not in autonomy
+    assert "package='runner_motor'" not in bench
+    assert 'esc_mode' not in autonomy
+    assert 'esc_mode' not in bench
 
 
 def test_composite_preserves_controller_and_mux_topic_ownership():

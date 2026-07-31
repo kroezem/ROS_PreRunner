@@ -31,7 +31,6 @@
   <depend>runner_imu</depend>
   <depend>runner_drive_adapter</depend>
   <depend>runner_teleop</depend>
-  <depend>runner_motor</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>slam_toolbox</depend>

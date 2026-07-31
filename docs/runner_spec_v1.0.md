@@ -26,7 +26,8 @@ All compute and sensing is onboard — no external motion capture, no fixed anch
 - **A metric can be right and reported wrong.** Every reported metric states its analysis window (D-45).
 - **A fix can create the next failure.** Fixing global obstacle marking enabled `IsPathValid` to work, which caused 12 Hz replanning, which caused steering oscillation. Fixing that with a rate limiter caused blindness. Sequence matters as much as correctness.
 - **One owner per resource.**
-- **A runnable launch must be complete on its own** (D-29).
+- **A runnable application launch must be complete on its own; persistent
+  platform hardware services remain outside composites** (D-29, D-75).
 - **Validation effort scales with hardware contact, not perceived importance** (D-57).
 
 ---
@@ -94,7 +95,7 @@ Traction voltage remains unobservable — `/battery` is the UPS fuel gauge only.
 | `runner_bringup` | `scan_rebinner` | `/scan` → `/scan_slam`, fixed 503-bin angular rebinning (D-37) |
 | `runner_bringup` | `foxglove_goal_bridge` | Goal and route management (§4.16) |
 | `runner_imu` | `bno085_node` | BNO085 → `/imu/data` @ 50 Hz |
-| `runner_motor` | `motor_node` | `/cmd_vel` → ESC + steering PWM. Sole PWM owner. Requires `esc_mode` (D-46) |
+| `runner_motor` | `motor_node` | `/cmd_vel` → ESC + steering PWM. Persistent systemd hardware owner; requires `esc_mode` (D-46, D-75) |
 | `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Sole GPIO 22 owner, libgpiod (D-54) |
 | `runner_teleop` | `teleop_node` | `/joy` → `/cmd_vel_teleop`, three-state hold-to-run (D-48); keyboard bridge |
 | `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized), with PI speed control (§4.15) |
@@ -112,14 +113,17 @@ launch/
 ├── map.launch.py       = sensors + estimation + slam_map      + teleop
 ├── localize.launch.py  = sensors + estimation + slam_localize + teleop
 ├── nav2.launch.py      = localize + map_server + planner + controller + bt_navigator + goal bridge
-├── autonomy.launch.py  = nav2 + drive_adapter + twist_mux + motor_node
-├── teleop.launch.py    = joy + teleop_node + motor_node
+├── autonomy.launch.py  = nav2 + drive_adapter + twist_mux
+├── teleop.launch.py    = joy + teleop_node + twist_mux
 └── include/
     ├── sensors / estimation / slam_map / slam_localize
     └── lidar / imu / encoder / tf_static / rf2o / ekf
 ```
 
-`esc_mode: race` is set in the `motor_node` declaration and inherited by composites. The parameter has no default; an unset launch refuses to start.
+`motor_node` is not part of the launch tree. `runner-motor.service` starts it at
+boot with `esc_mode: race`; the parameter still has no default and an unset
+invocation refuses to start. Composites own the complete application graph but
+depend on the persistent platform hardware service (D-75).
 
 ### 4.3 Scan topology (D-37)
 
@@ -142,7 +146,7 @@ Nav2 costmaps consume raw `/scan`. Every new map is built through `/scan_slam`.
 | `/map` | `map_server` (D-50) |
 | `/slam_map` | slam_toolbox (visualization only) |
 | `/cmd_vel` | `twist_mux` |
-| ESC + steering PWM | `motor_node` |
+| ESC + steering PWM | persistent `motor_node` systemd service |
 | GPIO 22 | `encoder_node` |
 
 ### 4.5 Static extrinsics
@@ -382,7 +386,13 @@ while driving. Escape clears everything and the autonomy latch auto-expires.
 
 ### 5.4 Motor control
 
-ESC curve deadband + expo, `THR_MAX_US = 1750`, forward onset 1550 µs, crossover 0.05, exponent 2.0 (D-08). Watchdog 0.2 s → 1000 µs full brake in race mode (D-47). PWM export owned by `runner-pwm-setup.service` (D-23).
+ESC curve deadband + expo, `THR_MAX_US = 1750`, forward onset 1550 µs, crossover 0.05, exponent 2.0 (D-08). Watchdog 0.2 s → 1000 µs full brake in race mode (D-47). `runner-pwm-setup.service` temporarily prepares PWM export and permissions; persistent runtime ownership belongs to `motor_node` (D-75, superseding the ownership portion of D-23).
+
+`runner-motor.service` starts at boot, requires the PWM setup service, and is
+not stopped with an application composite. Composite teardown stops command
+publication; D-09 then applies the existing race-ESC watchdog output after
+200 ms while the hardware owner remains alive. This is an ownership change
+only. MD13S output behavior and its hardware validation remain pending.
 
 **Do not change the throttle expo.** The motor sees pulse width; breakaway is at ~1574 µs and is a physical threshold, confirmed by a stand test where unloaded wheels would not turn at command 0.3. Changing the exponent moves which normalized value maps to that pulse width without changing what it produces. The adapter inverts the curve by lookup and absorbs the exponent entirely.
 
@@ -594,6 +604,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-72 | **Freeze and decay the PI integrator during confirmed teleop preemption.** | Continuing to integrate while `twist_mux` discards autonomy output stores a stale correction for later resume. Fresh `/teleop/active_mode` state freezes accumulation and decays the integral toward zero; stale or missing state preserves prior behavior. |
 | D-73 | **Vendor Navigation2 RPP 1.3.12 and regulate from maximum known path cost through the carrot.** | Robot-cell-only cost reacts after entering inflation. Half-cell-or-denser path sampling gives anticipatory slowdown while preserving upstream behavior outside cost regulation. Unit/build validation passes; controlled floor comparison remains outstanding. |
 | D-74 | **Separate default WAYPOINT queue and persistent ROUTE workflows share `/runner/waypoint`; the bridge remains the sole Nav2 action owner.** WAYPOINT preserves the full supplied pose in a 20-item, in-memory-only FIFO executed sequentially with `NavigateToPose`; one failure retry is allowed before pausing with the front retained. ROUTE preserves full pose orientation, persistence, controls, and `NavigateThroughPoses`. Absolute idempotent mode commands clear and cancel the opposite collection on actual transitions only. | One Foxglove pose tool serves both operator workflows without a competing action owner or topic. Sequential queue execution intentionally accepts stop-and-go and repeated breakaway. A single generation arbiter prevents stale callbacks from reviving canceled work, while clearing `path` once at the start of both BTs forces fresh planning for identical queue retries, resumed goals, and route replays. Protocol-v2 values 8/9 carry repeated absolute F12 requests without changing the 27-byte layout. |
+| D-75 | **`motor_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** This amends D-29: runnable composites remain complete application graphs but may depend on persistent platform services. It supersedes the ownership portion of D-23: `runner-pwm-setup.service` temporarily prepares export and permissions, while `motor_node` continuously owns PWM12/13. D-09 remains the primary composite-stop path. | Launch teardown and hardware ownership have independent lifecycles. Keeping the motor owner alive lets command publication cease on composite teardown and permits the 200 ms watchdog to apply the existing stop output. `Restart=always` with a 0.1 s delay bounds recovery attempts after owner failure. This decision preserves current ESC behavior; MD13S behavior is not yet implemented or validated. |
 
 ---
 
@@ -611,6 +622,6 @@ resources, phase scope, or decision-log changes (D-36).
 
 **Measurement:** MCAP bags over comparable routes, analyzed by the same in-repo scripts. **State the analysis window** (D-45). "Feels better" is not a result.
 
-**Standing rules:** `source install/setup.bash` after every build. A runnable launch is complete on its own and ships with its VS Code task (D-29). Every new map is built through `/scan_slam` (D-37). A green build is not evidence a node runs. **Verify saturation and bounds before concluding a limit is the cause.**
+**Standing rules:** `source install/setup.bash` after every build. A runnable application launch is complete on its own, may depend on persistent platform services, and ships with its VS Code task (D-29, D-75). Every new map is built through `/scan_slam` (D-37). A green build is not evidence a node runs. **Verify saturation and bounds before concluding a limit is the cause.**
 
 CAD in Onshape; remote via Tailscale + VS Code Remote-SSH.

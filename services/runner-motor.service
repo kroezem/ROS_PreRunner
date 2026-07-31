@@ -1,0 +1,17 @@
+[Unit]
+Description=Runner motor hardware owner
+Requires=runner-pwm-setup.service
+After=runner-pwm-setup.service
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_motor motor_node --ros-args -p esc_mode:=race'
+Restart=always
+RestartSec=0.1
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
