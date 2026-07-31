@@ -12,35 +12,58 @@ from runner_motor import motor_node
 class FakePWM:
     instances = []
     events = []
+    initial_states = {}
+    period_readbacks = {}
 
     def __init__(self, chip_path, channel):
         self.chip_path = chip_path
         self.channel = channel
-        self.period_ns = 0
-        self.duty_cycle_ns = None
-        self.polarity = None
-        self.enabled = None
+        state = self.initial_states.get(channel, {})
+        self.period_ns = state.get('period_ns', 0)
+        self.duty_cycle_ns = state.get('duty_cycle_ns', 0)
+        self.polarity = state.get('polarity', 'normal')
+        self.enabled = state.get('enabled', False)
         self.__class__.instances.append(self)
 
+    def get_period_ns(self):
+        return self.period_readbacks.get(self.channel, self.period_ns)
+
+    def get_duty_cycle_ns(self):
+        return self.duty_cycle_ns
+
+    def get_polarity(self):
+        return self.polarity
+
+    def is_enabled(self):
+        return self.enabled
+
     def set_period_ns(self, value):
+        if value <= 0 or self.duty_cycle_ns > value:
+            raise OSError(errno.EINVAL, 'Invalid argument')
         self.period_ns = value
         self.events.append((self.channel, 'period', value))
 
     def set_duty_cycle_ns(self, value):
-        if self.period_ns == 0:
+        if self.period_ns == 0 or not 0 <= value <= self.period_ns:
             raise OSError(errno.EINVAL, 'Invalid argument')
         self.duty_cycle_ns = value
         self.events.append((self.channel, 'duty', value))
 
     def set_polarity(self, value):
+        if self.period_ns == 0 or self.enabled:
+            raise OSError(errno.EINVAL, 'Invalid argument')
         self.polarity = value
         self.events.append((self.channel, 'polarity', value))
 
     def enable(self):
+        if self.period_ns == 0 or self.duty_cycle_ns > self.period_ns:
+            raise OSError(errno.EINVAL, 'Invalid argument')
         self.enabled = True
         self.events.append((self.channel, 'enable', 1))
 
     def disable(self):
+        if self.period_ns == 0 or self.duty_cycle_ns > self.period_ns:
+            raise OSError(errno.EINVAL, 'Invalid argument')
         self.enabled = False
         self.events.append((self.channel, 'enable', 0))
 
@@ -71,6 +94,8 @@ def motor_factory(monkeypatch):
     nodes = []
     FakePWM.instances = []
     FakePWM.events = []
+    FakePWM.initial_states = {}
+    FakePWM.period_readbacks = {}
     line = FakeLine()
     chip = FakeChip()
     monkeypatch.setattr(motor_node, 'SysfsPWM', FakePWM)
@@ -83,7 +108,9 @@ def motor_factory(monkeypatch):
         motor_node, 'request_direction_output', request_direction_output
     )
 
-    def create():
+    def create(initial_states=None, period_readbacks=None):
+        FakePWM.initial_states = initial_states or {}
+        FakePWM.period_readbacks = period_readbacks or {}
         rclpy.init()
         node = motor_node.MotorNode()
         nodes.append(node)
@@ -134,6 +161,47 @@ def test_sysfs_pwm_writes_attributes_without_unexport(tmp_path):
     assert not (tmp_path / 'unexport').exists()
 
 
+def test_sysfs_pwm_retries_attributes_becoming_present(tmp_path, monkeypatch):
+    pwm = motor_node.SysfsPWM(tmp_path, 0)
+    sleeps = []
+
+    def make_attribute(_delay):
+        sleeps.append(_delay)
+        channel_path = tmp_path / 'pwm0'
+        channel_path.mkdir()
+        (channel_path / 'period').write_text('50000')
+
+    monkeypatch.setattr(motor_node.time, 'sleep', make_attribute)
+
+    assert pwm.get_period_ns() == 50_000
+    assert sleeps == [motor_node.PWM_IO_RETRY_S]
+
+
+def test_sysfs_pwm_retries_attribute_becoming_writable(
+    tmp_path, monkeypatch
+):
+    channel_path = tmp_path / 'pwm0'
+    channel_path.mkdir()
+    period_path = channel_path / 'period'
+    period_path.touch()
+    real_open = type(period_path).open
+    attempts = []
+
+    def delayed_open(path, *args, **kwargs):
+        if path == period_path and args == ('w',) and not attempts:
+            attempts.append(path)
+            raise PermissionError(errno.EACCES, 'Permission denied', path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(period_path), 'open', delayed_open)
+    monkeypatch.setattr(motor_node.time, 'sleep', lambda _delay: None)
+
+    motor_node.SysfsPWM(tmp_path, 0).set_period_ns(50_000)
+
+    assert period_path.read_text() == '50000'
+    assert attempts == [period_path]
+
+
 def test_direction_gpio_is_requested_exclusively_by_chip_label():
     requests = []
 
@@ -174,6 +242,8 @@ def test_direction_gpio_is_requested_exclusively_by_chip_label():
 def test_fresh_pwm_rejects_duty_before_period():
     FakePWM.instances = []
     FakePWM.events = []
+    FakePWM.initial_states = {}
+    FakePWM.period_readbacks = {}
     pwm = FakePWM(motor_node.PWM_CHIP_PATH, motor_node.MOTOR_PWM_CHANNEL)
 
     with pytest.raises(OSError) as error:
@@ -183,7 +253,7 @@ def test_fresh_pwm_rejects_duty_before_period():
     assert FakePWM.events == []
 
 
-def test_safe_startup_configuration_and_order(motor_factory):
+def test_fresh_pwm_startup_configuration_and_order(motor_factory):
     create, _line, _chip = motor_factory
     create()
     motor, servo = FakePWM.instances
@@ -201,8 +271,6 @@ def test_safe_startup_configuration_and_order(motor_factory):
         if event[0] in (motor_node.MOTOR_PWM_CHANNEL, 'dir')
     ]
     assert motor_events == [
-        (0, 'enable', 0),
-        (0, 'polarity', 'normal'),
         (0, 'period', motor_node.MOTOR_PERIOD_NS),
         (0, 'duty', 0),
         ('dir', motor_node.DIR_FORWARD),
@@ -213,12 +281,105 @@ def test_safe_startup_configuration_and_order(motor_factory):
         if event[0] == motor_node.SERVO_PWM_CHANNEL
     ]
     assert servo_events == [
-        (1, 'enable', 0),
-        (1, 'polarity', 'normal'),
         (1, 'period', motor_node.SERVO_PERIOD_NS),
         (1, 'duty', motor_node.us_to_ns(motor_node.STEER_CTR)),
         (1, 'enable', 1),
     ]
+
+
+def test_configured_disabled_pwm_startup_is_state_safe(motor_factory):
+    create, _line, _chip = motor_factory
+    create({
+        0: {
+            'period_ns': 100_000,
+            'duty_cycle_ns': 75_000,
+            'polarity': 'normal',
+            'enabled': False,
+        },
+        1: {
+            'period_ns': 25_000_000,
+            'duty_cycle_ns': 21_000_000,
+            'polarity': 'inversed',
+            'enabled': False,
+        },
+    })
+
+    assert _motor_events() == [
+        (0, 'duty', 0),
+        (0, 'period', motor_node.MOTOR_PERIOD_NS),
+        (0, 'duty', 0),
+        ('dir', motor_node.DIR_FORWARD),
+        (0, 'enable', 1),
+    ]
+    assert [event for event in FakePWM.events if event[0] == 1] == [
+        (1, 'polarity', 'normal'),
+        (1, 'duty', 0),
+        (1, 'period', motor_node.SERVO_PERIOD_NS),
+        (1, 'duty', motor_node.us_to_ns(motor_node.STEER_CTR)),
+        (1, 'enable', 1),
+    ]
+
+
+def test_hot_enabled_recovery_zeros_duty_first_and_stays_enabled(
+    motor_factory,
+):
+    create, _line, _chip = motor_factory
+    create({
+        0: {
+            'period_ns': 100_000,
+            'duty_cycle_ns': 75_000,
+            'polarity': 'normal',
+            'enabled': True,
+        },
+        1: {
+            'period_ns': 25_000_000,
+            'duty_cycle_ns': 21_000_000,
+            'polarity': 'normal',
+            'enabled': True,
+        },
+    })
+
+    motor_events = [event for event in FakePWM.events if event[0] == 0]
+    servo_events = [event for event in FakePWM.events if event[0] == 1]
+    assert motor_events == [
+        (0, 'duty', 0),
+        (0, 'period', motor_node.MOTOR_PERIOD_NS),
+        (0, 'duty', 0),
+    ]
+    assert servo_events == [
+        (1, 'duty', 0),
+        (1, 'period', motor_node.SERVO_PERIOD_NS),
+        (1, 'duty', motor_node.us_to_ns(motor_node.STEER_CTR)),
+    ]
+    assert all(pwm.enabled for pwm in FakePWM.instances)
+
+
+def test_hot_enabled_unexpected_polarity_fails_without_disabling():
+    FakePWM.instances = []
+    FakePWM.events = []
+    FakePWM.initial_states = {
+        0: {
+            'period_ns': 50_000,
+            'duty_cycle_ns': 25_000,
+            'polarity': 'inversed',
+            'enabled': True,
+        },
+    }
+    FakePWM.period_readbacks = {}
+    pwm = FakePWM(motor_node.PWM_CHIP_PATH, 0)
+
+    with pytest.raises(RuntimeError, match='unexpected polarity'):
+        motor_node.initialize_pwm(pwm, motor_node.MOTOR_PERIOD_NS, 0)
+
+    assert FakePWM.events == [(0, 'duty', 0)]
+    assert pwm.enabled
+
+
+def test_startup_fails_on_incorrect_period_readback(motor_factory):
+    create, _line, _chip = motor_factory
+
+    with pytest.raises(RuntimeError, match='PWM period read-back failed'):
+        create(period_readbacks={0: motor_node.MOTOR_PERIOD_NS + 1})
 
 
 def _command(node, linear_x):

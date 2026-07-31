@@ -1,3 +1,4 @@
+import errno
 import math
 from pathlib import Path
 import time
@@ -15,6 +16,8 @@ SERVO_PWM_CHANNEL = 1  # GPIO13
 MOTOR_PERIOD_NS = 50_000  # 20 kHz
 SERVO_PERIOD_NS = 20_000_000  # 50 Hz
 CMD_TIMEOUT_S = 0.2
+PWM_IO_ATTEMPTS = 20
+PWM_IO_RETRY_S = 0.05
 
 GPIO_CHIP_LABEL = 'pinctrl-rp1'
 MOTOR_DIR_GPIO = 23
@@ -43,15 +46,52 @@ class SysfsPWM:
 
     def __init__(self, chip_path, channel):
         self.path = Path(chip_path) / f'pwm{channel}'
-        if not self.path.is_dir():
-            raise RuntimeError(
-                f'PWM channel is not exported: {self.path}; '
-                'runner-pwm-setup.service must run first'
-            )
+
+    def _retry_io(self, attribute, operation):
+        path = self.path / attribute
+        for attempt in range(PWM_IO_ATTEMPTS):
+            try:
+                return operation(path)
+            except OSError as error:
+                transient = error.errno in (
+                    errno.ENOENT,
+                    errno.EACCES,
+                    errno.EPERM,
+                )
+                if not transient or attempt == PWM_IO_ATTEMPTS - 1:
+                    if transient:
+                        raise RuntimeError(
+                            f'PWM attribute did not become available after '
+                            f'{PWM_IO_ATTEMPTS} attempts: {path}'
+                        ) from error
+                    raise
+                time.sleep(PWM_IO_RETRY_S)
+
+    def _read(self, attribute):
+        def read(path):
+            with path.open() as source:
+                return source.read().strip()
+
+        return self._retry_io(attribute, read)
 
     def _write(self, attribute, value):
-        with (self.path / attribute).open('w') as output:
-            output.write(str(value))
+        def write(path):
+            with path.open('w') as output:
+                output.write(str(value))
+
+        self._retry_io(attribute, write)
+
+    def get_period_ns(self):
+        return int(self._read('period'))
+
+    def get_duty_cycle_ns(self):
+        return int(self._read('duty_cycle'))
+
+    def get_polarity(self):
+        return self._read('polarity')
+
+    def is_enabled(self):
+        return bool(int(self._read('enable')))
 
     def set_period_ns(self, period_ns):
         self._write('period', period_ns)
@@ -67,6 +107,46 @@ class SysfsPWM:
 
     def disable(self):
         self._write('enable', 0)
+
+
+def initialize_pwm(pwm, target_period_ns, target_duty_ns, defer_enable=False):
+    """Put one PWM channel into its intended valid state."""
+    if not 0 <= target_duty_ns <= target_period_ns:
+        raise ValueError('PWM duty must be between zero and its period')
+
+    enabled = pwm.is_enabled()
+    if enabled:
+        # This must be the first write during hot recovery.
+        pwm.set_duty_cycle_ns(0)
+        polarity = pwm.get_polarity()
+        if polarity != 'normal':
+            raise RuntimeError(
+                'enabled PWM has unexpected polarity '
+                f'{polarity!r}; refusing to disable it during recovery'
+            )
+        pwm.set_period_ns(target_period_ns)
+        pwm.set_duty_cycle_ns(target_duty_ns)
+        return False
+
+    period_ns = pwm.get_period_ns()
+    if period_ns == 0:
+        # A period write is the only valid first write for a fresh channel.
+        pwm.set_period_ns(target_period_ns)
+
+    polarity = pwm.get_polarity()
+    if polarity != 'normal':
+        pwm.set_polarity('normal')
+
+    if period_ns != 0:
+        duty_ns = pwm.get_duty_cycle_ns()
+        if duty_ns > target_period_ns:
+            pwm.set_duty_cycle_ns(0)
+        pwm.set_period_ns(target_period_ns)
+
+    pwm.set_duty_cycle_ns(target_duty_ns)
+    if not defer_enable:
+        pwm.enable()
+    return True
 
 
 def request_direction_output(gpiod_module=gpiod):
@@ -94,25 +174,34 @@ class MotorNode(Node):
         self.motor = SysfsPWM(PWM_CHIP_PATH, MOTOR_PWM_CHANNEL)
         self.servo = SysfsPWM(PWM_CHIP_PATH, SERVO_PWM_CHANNEL)
 
-        # Configure the motor without writing duty against a fresh period of 0.
-        self.motor.disable()
-        self.motor.set_polarity('normal')
-        self.motor.set_period_ns(MOTOR_PERIOD_NS)
-        self.motor.set_duty_cycle_ns(0)
+        motor_needs_enable = initialize_pwm(
+            self.motor, MOTOR_PERIOD_NS, 0, defer_enable=True
+        )
 
         # Steering retains its existing 50 Hz, centred startup behavior.
-        self.servo.disable()
-        self.servo.set_polarity('normal')
-        self.servo.set_period_ns(SERVO_PERIOD_NS)
-        self.servo.set_duty_cycle_ns(us_to_ns(STEER_CTR))
-        self.servo.enable()
+        initialize_pwm(
+            self.servo, SERVO_PERIOD_NS, us_to_ns(STEER_CTR)
+        )
 
         # Define DIR while motor duty is zero, then start the 20 kHz output.
         self._gpio_chip, self._dir_line = request_direction_output()
         self._hardware_direction = DIR_FORWARD
         self._direction_latch = 0
         self._pending_reversal = None
-        self.motor.enable()
+        if motor_needs_enable:
+            self.motor.enable()
+
+        motor_period = self.motor.get_period_ns()
+        servo_period = self.servo.get_period_ns()
+        if (
+            motor_period != MOTOR_PERIOD_NS
+            or servo_period != SERVO_PERIOD_NS
+        ):
+            raise RuntimeError(
+                'PWM period read-back failed: '
+                f'motor={motor_period} ns (expected {MOTOR_PERIOD_NS}), '
+                f'servo={servo_period} ns (expected {SERVO_PERIOD_NS})'
+            )
 
         self._direction_pub = self.create_publisher(
             Int8, '/motor/direction', 10
