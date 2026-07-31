@@ -153,7 +153,7 @@ def test_runtime_arbitration_preemption_fallthrough_and_stale_silence(
     auto = Twist()
     auto.linear.x = 0.21
     brake = Twist()
-    brake.linear.x = -1.0
+    brake.linear.x = 0.0
 
     try:
         assert _spin_until(
@@ -226,7 +226,7 @@ def test_runtime_arbitration_preemption_fallthrough_and_stale_silence(
             lambda: len(outputs) > previous_count,
             0.10,
         )
-        assert outputs[-1].linear.x == -1.0
+        assert outputs[-1].linear.x == 0.0
         assert output_times[-1] - published_at < 0.05
 
         outputs.clear()

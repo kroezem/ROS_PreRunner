@@ -243,13 +243,18 @@ Nav2 → /cmd_vel_nav (SI) → drive_adapter → /cmd_vel_auto (normalized) → 
 | Ki normal / stall | **0.06 / 0.30** |
 | Gain switch | ratio < 0.40 or > 1.60, 0.10 hysteresis |
 | Integrator bounds | −0.25 … +0.16 |
-| Output bounds | **−0.20 … +0.70** |
+| Output bounds | **0.00 … +0.70** |
 | `maximum_commanded_speed` | 0.60 m/s |
 | Minimum sustainable speed | 0.126 m/s |
 
 **Error-dependent integral gain (D-66).** At Ki = 0.06 with a 0.29 m/s error the integrator needs 18 s to traverse its range, against a 10 s progress-checker abort — too slow to break a stall. Measured during stalls: throttle peaked at 0.530 against a 0.70 ceiling and the integrator at 0.065 against +0.16, so **neither was saturated** and the ceiling was never the constraint. The high gain is symmetric so persistent overspeed unwinds at the same rate.
 
 **Wheelspin guard** freezes the integrator when encoder speed materially exceeds EKF `vx`.
+
+The adapter is forward-only: explicit stop and rejected inputs publish zero,
+and PI correction clamps at zero rather than requesting reverse. Feedforward,
+PI gains, promotion thresholds, and integrator bounds remain provisional until
+Stage 2 validation; the output-floor correction does not retune them.
 
 **Teleop preemption freezes and decays the integrator (D-72).** The adapter
 subscribes to `/teleop/active_mode`. A fresh value other than
@@ -341,10 +346,10 @@ before Phase 3 closed-loop performance work begins, either fault or any observed
 locked-wheel slide during hardware validation requires independent motion and
 encoder-health evidence before reversal authorization.
 
-The existing teleop command labels still call negative commands "brake"; at
-the motor boundary they are now reverse commands. Traction remains disconnected
-until the separately planned wheels-off-ground validation resolves the complete
-operator-control behavior.
+Teleop uses negative commands only for intentional L2 reverse. Every brake,
+neutral, release, invalid-input, and timeout path publishes zero. Traction
+remains disconnected until the separately planned wheels-off-ground validation
+resolves the complete operator-control behavior.
 
 ### 5.2 Teleop three-state hold-to-run (D-48)
 
@@ -352,9 +357,9 @@ Priority **X > R1 > L1 > brake**. Releasing all buttons brakes within one public
 
 | Input | Behaviour |
 |---|---|
-| Nothing held | legacy "full brake" label, `linear.x = −1.0`; now MD13S reverse |
-| **X** | manual — R2 forward, L2 negative/reverse command, stick steering |
-| **R1** | fixed forward setpoint (D-pad adjusts), stick steering, L2 negative/reverse command live |
+| Nothing held | `linear.x = 0.0`, MD13S active brake |
+| **X** | manual — R2 proportional forward, L2 proportional reverse, neither is zero; stick steering |
+| **R1** | R2 applies the fixed forward setpoint (D-pad adjusts), L2 is proportional reverse, neither is zero; stick steering |
 | **L1** | `teleop_suppress` — publishes nothing, autonomy passes through |
 
 In code and docs L1 is **`teleop_suppress`**. "Autonomy enable" is operator-facing only; it is not an arming gate — the real gate is the mux and the watchdog.
@@ -371,6 +376,8 @@ owns packet validation, the **150 ms manual-input liveness timeout measured on
 the Pi** (browser and laptop clocks are not trusted), the speed cap, and
 arbitration. The physical controller always preempts and clears the keyboard
 autonomy latch.
+Keyboard brake, disarmed, invalid, neutral, timeout, and inhibited states all
+publish zero; keyboard input never generates a negative motor command.
 
 | Key | Behaviour |
 |---|---|
@@ -571,7 +578,7 @@ Latest validated run:
 | Braking samples | **0** |
 | `NO_VALID_PATH` | **0** |
 
-**Zero braking samples** — minimum throttle +0.314. RPP regulates speed smoothly downward and the vehicle coasts to match; nothing requests deceleration. The −0.20 negative bound has never been approached.
+**Zero braking samples** — minimum throttle +0.314. RPP regulates speed smoothly downward and the vehicle coasts to match; nothing requests deceleration. The adapter output floor is now zero, so PI correction cannot request reverse.
 
 ---
 
@@ -631,7 +638,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-73 | **Vendor Navigation2 RPP 1.3.12 and regulate from maximum known path cost through the carrot.** | Robot-cell-only cost reacts after entering inflation. Half-cell-or-denser path sampling gives anticipatory slowdown while preserving upstream behavior outside cost regulation. Unit/build validation passes; controlled floor comparison remains outstanding. |
 | D-74 | **Separate default WAYPOINT queue and persistent ROUTE workflows share `/runner/waypoint`; the bridge remains the sole Nav2 action owner.** WAYPOINT preserves the full supplied pose in a 20-item, in-memory-only FIFO executed sequentially with `NavigateToPose`; one failure retry is allowed before pausing with the front retained. ROUTE preserves full pose orientation, persistence, controls, and `NavigateThroughPoses`. Absolute idempotent mode commands clear and cancel the opposite collection on actual transitions only. | One Foxglove pose tool serves both operator workflows without a competing action owner or topic. Sequential queue execution intentionally accepts stop-and-go and repeated breakaway. A single generation arbiter prevents stale callbacks from reviving canceled work, while clearing `path` once at the start of both BTs forces fresh planning for identical queue retries, resumed goals, and route replays. Protocol-v2 values 8/9 carry repeated absolute F12 requests without changing the 27-byte layout. |
 | D-75 | **`motor_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** This amends D-29: runnable composites remain complete application graphs but may depend on persistent platform services. It supersedes the ownership portion of D-23: `runner-pwm-setup.service` temporarily prepares export and permissions, while `motor_node` continuously owns PWM12/13. D-09 remains the primary composite-stop path. | Launch teardown and hardware ownership have independent lifecycles. Keeping the motor owner alive lets command publication cease on composite teardown and permits the 200 ms watchdog to apply the existing stop output. `Restart=always` with a 0.1 s delay bounds recovery attempts after owner failure. This decision preserves current ESC behavior; MD13S behavior is not yet implemented or validated. |
-| D-76 | **Cytron MD13S replaces hobby-ESC pulse control.** GPIO12 is normal-polarity 20 kHz PWM, GPIO23 is exclusive DIR by `pinctrl-rp1` label, and normalized sign/magnitude map directly to DIR/duty. Duty zero is active brake. D-09 remains 200 ms. Supersedes D-08, D-34, D-46, and D-47 at the motor boundary. | Direct sign-magnitude control removes ESC arming, neutral/deadband/expo/pulse mappings, the mode interlock, and the reverse FSM. Safe startup writes duty zero, defines DIR, then enables motor PWM before subscribing. Direct sysfs access never implicitly unexports GPIO12/13 PWM. Traction-disconnected smoke check only; wheels-off-ground validation remains pending. |
+| D-76 | **Cytron MD13S replaces hobby-ESC pulse control.** GPIO12 is normal-polarity 20 kHz PWM, GPIO23 is exclusive DIR by `pinctrl-rp1` label, and normalized sign/magnitude map directly to DIR/duty. Duty zero is active brake. D-09 remains 200 ms. Supersedes D-08, D-34, D-46, and D-47 at the motor boundary. | Direct sign-magnitude control removes ESC arming, neutral/deadband/expo/pulse mappings and the ESC reverse FSM. The later stationary gate permits DIR changes only after post-request stop evidence. Safe startup writes duty zero, defines DIR, then enables motor PWM before subscribing. Direct sysfs access never implicitly unexports GPIO12/13 PWM. Traction-disconnected smoke check only; wheels-off-ground validation remains pending. |
 
 ---
 

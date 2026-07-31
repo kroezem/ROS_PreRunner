@@ -6,7 +6,7 @@ current command boundary:
 ```
 /cmd_vel_nav (m/s, rad/s)
   -> runner_drive_adapter
-  -> /cmd_vel_auto (normalized throttle/brake, normalized steering)
+  -> /cmd_vel_auto (normalized forward command/brake, normalized steering)
   -> twist_mux
   -> /cmd_vel
   -> motor_node
@@ -14,9 +14,10 @@ current command boundary:
 
 The adapter remains the sole SI-to-normalized converter. `twist_mux` remains
 the sole `/cmd_vel` publisher and `motor_node` remains the sole PWM owner.
-Stale `/cmd_vel_nav` still produces silence, explicit zero still produces
-full brake, reverse remains rejected, and `steering_infeasible` still produces
-full brake with zero steering.
+Stale `/cmd_vel_nav` still produces silence, explicit zero produces active
+brake, reverse remains rejected to zero, and infeasible steering is clamped.
+The published motor-command range is forward-only `[0.0, 0.70]`; provisional
+PI correction may reduce output to zero but cannot request reverse.
 
 Stage 1 used an encoder-triggered 0.380 breakaway kick. Stage 4 demonstrated
 that it added no torque at the maximum calibrated command because the

@@ -9,28 +9,27 @@ drives manually. The analyzer only reads the resulting MCAP bag.
 `/cmd_vel_teleop.linear.x` and mux output `/cmd_vel.linear.x` are normalized
 motor commands, not metres per second.
 `runner_teleop/teleop_node.py` maps R2 to `0.0` through `+1.0` and L2 to
-`0.0` through `-1.0` while X is held. With no motion button held, it
-currently publishes the command `-1.0` when no motion button is held.
+`0.0` through `-1.0` while X is held. With neither trigger active, or when the
+dead-man is released, it publishes `0.0` for MD13S active brake.
 `runner_motor/motor_node.py` clamps finite input to `[-1.0, +1.0]`: sign
 selects the MD13S DIR output and absolute magnitude maps linearly to 20 kHz
 PWM duty. Zero maps to duty zero, the MD13S active-brake state. There is no
-software deadband, expo, pulse conversion, or reverse gate. The teleop label
-"brake" for negative commands predates the MD13S migration; negative commands
-now request reverse at the motor boundary. Do not perform this protocol until
-that operator-control behavior has passed wheels-off-ground validation.
+software deadband, expo, or pulse conversion. Negative commands are intentional
+reverse only, and a DIR change waits for a post-request stationary encoder
+sample. Do not perform this protocol until that operator-control behavior has
+passed wheels-off-ground validation.
 
 ## Operator controls
 
 - **X:** hold for normal manual drive. R2 supplies positive throttle.
-- **R1:** hold for fixed-throttle drive. R2 does not change its positive
-  throttle.
+- **R1:** hold for fixed-throttle mode; R2 applies the selected positive
+  setpoint.
 - **L1:** `teleop_suppress`: teleop stops publishing `/cmd_vel_teleop` while
   L1 alone is held. L1 by itself is not an autonomy arming gate and does not
   make autonomy safe or active.
 - **D-pad up/down:** raise/lower the process-lifetime fixed-throttle setpoint
   by one configured step per press.
-- **L2:** proportional brake in both X and R1 modes; it overrides positive
-  throttle.
+- **L2:** proportional reverse in both X and R1 modes; it overrides R2.
 - **Left stick:** steering remains live in X and R1 modes.
 - **Release all motion buttons:** full brake within the next 50 ms publication
   cycle.
@@ -245,8 +244,9 @@ complete the table if the available lane or response is unsafe.
 
 Characterize reverse independently and retain the negative published signs.
 Come to a complete physical and encoder-confirmed stop before each reverse
-run. The motor node zeros PWM before changing DIR; no ESC brake/re-arm sequence
-or reverse FSM remains.
+run. The motor node zeros PWM and waits for a post-request
+`stationary=true` sample before changing DIR; no dwell timer or ESC
+brake/re-arm sequence remains.
 
 The analyzer never combines forward and reverse into one curve.
 

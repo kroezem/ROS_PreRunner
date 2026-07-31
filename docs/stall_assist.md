@@ -104,8 +104,8 @@ decay cannot start another event.
 The maximum event duration covers ramp, hold, and decay. Reaching the ceiling
 without confirmed motion also ends the event. Command staleness preserves the
 existing silence rule rather than republishing a stale brake or throttle.
-Explicit zero, brake/reverse, invalid input, steering infeasibility, sensor
-staleness, and shutdown all terminate elevated throttle immediately.
+Explicit zero, rejected reverse, invalid input, sensor staleness, and shutdown
+all terminate elevated throttle immediately at zero command.
 
 ## Parameters
 

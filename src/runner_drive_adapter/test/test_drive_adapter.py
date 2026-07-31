@@ -107,7 +107,7 @@ def test_positive_output_saturates_and_integrator_freezes():
     assert adapter.integrator_state == before
 
 
-def test_negative_output_saturates_and_integrator_freezes():
+def test_overspeed_output_saturates_at_zero_and_integrator_freezes():
     adapter = DriveAdapter(AdapterConfig())
     _update(adapter, 0.0, speed=0.29, measured=3.0, ekf=3.0)
     before = adapter.integrator_state
@@ -115,7 +115,7 @@ def test_negative_output_saturates_and_integrator_freezes():
         adapter, 0.10, speed=0.29, measured=3.0, ekf=3.0
     )
 
-    assert decision.final_throttle == -0.20
+    assert decision.final_throttle == 0.0
     assert decision.saturation_state == 'lower'
     assert adapter.integrator_state == before
 
@@ -230,7 +230,7 @@ def test_stall_integral_gain_crosses_full_span_in_three_to_five_seconds():
     )
 
 
-def test_overspeed_correction_reaches_negative_bound_in_2_25_seconds():
+def test_provisional_integrator_keeps_negative_bound_with_zero_output_floor():
     config = AdapterConfig()
     overspeed_error = 0.37
 
@@ -240,7 +240,7 @@ def test_overspeed_correction_reaches_negative_bound_in_2_25_seconds():
     )
 
     assert config.integrator_min == -0.25
-    assert config.output_min == -0.20
+    assert config.output_min == 0.0
     assert correction_time == pytest.approx(2.25, abs=0.01)
 
 
@@ -643,7 +643,7 @@ def test_stop_and_invalid_forward_commands_full_brake(speed, reason):
 
     assert decision.mode == 'brake'
     assert decision.reason == reason
-    assert decision.final_throttle == -1.0
+    assert decision.final_throttle == 0.0
 
 
 @pytest.mark.parametrize(
@@ -656,7 +656,7 @@ def test_nonfinite_input_is_safely_braked(speed, yaw):
     )
 
     assert decision.reason == 'nonfinite_input'
-    assert decision.final_throttle == -1.0
+    assert decision.final_throttle == 0.0
 
 
 @pytest.mark.parametrize('direction', [-1.0, 1.0])
@@ -736,7 +736,8 @@ def test_diagnostics_contain_all_tuning_fields():
         },
         {'integrator_min': 0.20},
         {'integrator_max': -0.30},
-        {'output_min': 0.0},
+        {'output_min': -0.01},
+        {'output_min': 0.01},
         {'output_max': 0.37},
         {'output_max': 1.01},
         {'breakaway_integrator_preload': 0.20},

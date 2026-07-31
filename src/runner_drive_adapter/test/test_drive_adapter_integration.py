@@ -178,7 +178,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         stop = Twist()
         nav_pub.publish(stop)
         _spin_for(executor, 0.10)
-        assert commands[-1].linear.x == -1.0
+        assert commands[-1].linear.x == 0.0
         assert commands[-1].angular.z == 0.0
         assert 'reason=explicit_stop' in states[-1].data
     finally:

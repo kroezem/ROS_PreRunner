@@ -110,7 +110,7 @@ class AdapterConfig:
     stall_integral_gain_hysteresis: float = 0.10
     integrator_min: float = -0.25
     integrator_max: float = 0.16
-    output_min: float = -0.20
+    output_min: float = 0.0
     output_max: float = 0.70
     breakaway_integrator_preload: float = 0.04
     encoder_metres_per_edge: float = 0.010282
@@ -195,8 +195,8 @@ class AdapterConfig:
             )
         if self.integrator_min >= self.integrator_max:
             raise ValueError('integrator_min must be less than integrator_max')
-        if self.output_min >= 0.0:
-            raise ValueError('output_min must permit bounded braking')
+        if self.output_min != 0.0:
+            raise ValueError('output_min must be zero for forward-only output')
         if self.output_max > 1.0 or self.output_max <= 0.0:
             raise ValueError('output_max must be within (0, 1]')
         if self.output_max < max(self.throttle_breakpoints):
@@ -257,7 +257,7 @@ class AdapterDecision:
     integrator_enabled: bool = False
     saturation_state: str = 'none'
     wheelspin_guard: bool = False
-    final_throttle: float = -1.0
+    final_throttle: float = 0.0
     normalized_steering: float = 0.0
     steering_saturated: bool = False
     integral_gain: float = 0.0

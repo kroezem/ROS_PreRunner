@@ -149,7 +149,9 @@ class TeleopNode(Node):
         )
 
         self._axis_steer = self.get_parameter('axis_steer').value
-        self._axis_brake = self.get_parameter('axis_brake').value
+        # Keep the deployed parameter name for launch compatibility; L2 is
+        # reverse under the MD13S sign-magnitude command contract.
+        self._axis_reverse = self.get_parameter('axis_brake').value
         self._axis_throttle = self.get_parameter('axis_throttle').value
         self._deadman_button = self.get_parameter('deadman_button').value
         initial = self.get_parameter(
@@ -218,7 +220,7 @@ class TeleopNode(Node):
 
         self._steer = 0.0
         self._manual_cmd = 0.0
-        self._brake = 0.0
+        self._reverse = 0.0
         self._manual_held = False
         self._fixed_throttle_held = False
         self._teleop_suppress_held = False
@@ -242,7 +244,7 @@ class TeleopNode(Node):
         self._keyboard_suppress_rearm_ready = True
         self.get_logger().info(
             'runner_teleop ready  |  X=manual  R1=fixed throttle  '
-            'L1=teleop suppress  L-stick=steer  L2=brake'
+            'L1=teleop suppress  L-stick=steer  L2=reverse'
         )
         self.get_logger().info(
             f'Fixed throttle initialized to '
@@ -319,23 +321,23 @@ class TeleopNode(Node):
 
         if max(
             self._axis_steer,
-            self._axis_brake,
+            self._axis_reverse,
             self._axis_throttle,
         ) >= len(msg.axes):
             self._manual_cmd = 0.0
-            self._brake = 1.0
+            self._reverse = 0.0
             return
 
-        brake_raw = msg.axes[self._axis_brake]
+        reverse_raw = msg.axes[self._axis_reverse]
         throttle_raw = msg.axes[self._axis_throttle]
         self._steer = (
             msg.axes[self._axis_steer]
             * (-1.0 if INVERT_STEER else 1.0)
         )
         throttle = _trigger(throttle_raw)
-        self._brake = _trigger(brake_raw)
+        self._reverse = _trigger(reverse_raw)
         self._manual_cmd = (
-            -self._brake if self._brake > THROTTLE_DEADZONE
+            -self._reverse if self._reverse > THROTTLE_DEADZONE
             else throttle
         )
 
@@ -423,7 +425,7 @@ class TeleopNode(Node):
             self.fixed_throttle_inhibited_until_r1_release = False
             self._steer = 0.0
             self._manual_cmd = 0.0
-            self._brake = 1.0
+            self._reverse = 0.0
         if (
             self._keyboard_valid
             and now - self._last_keyboard_state_at
@@ -445,10 +447,12 @@ class TeleopNode(Node):
         if mode == MANUAL_MODE:
             command = self._manual_cmd
         elif mode == FIXED_THROTTLE_MODE:
-            command = (
-                -self._brake if self._brake > THROTTLE_DEADZONE
-                else self._fixed_throttle_setpoint
-            )
+            if self._reverse > THROTTLE_DEADZONE:
+                command = -self._reverse
+            elif self._manual_cmd > THROTTLE_DEADZONE:
+                command = self._fixed_throttle_setpoint
+            else:
+                command = 0.0
         elif mode == TELEOP_SUPPRESS_MODE:
             self._active_mode_pub.publish(String(data=mode))
             return
@@ -457,7 +461,7 @@ class TeleopNode(Node):
             and self._keyboard_mode & KeyboardState.MODE_BRAKE
         ):
             mode = KEYBOARD_BRAKE_MODE
-            command = -1.0
+            command = 0.0
             self._steer = self._keyboard_steer
         elif (
             self._keyboard_suppress_requested
@@ -483,10 +487,10 @@ class TeleopNode(Node):
                 )
                 else BRAKE_MODE
             )
-            command = -1.0
+            command = 0.0
             self._steer = self._keyboard_steer
         else:
-            command = -1.0
+            command = 0.0
 
         self._active_mode_pub.publish(String(data=mode))
         msg = Twist()

@@ -230,13 +230,13 @@ class DriveAdapterNode(Node):
         if decision.reason == 'negative_speed':
             self._warning(
                 'negative_speed',
-                f'Rejecting negative speed {speed:.9f} m/s; full brake',
+                f'Rejecting negative speed {speed:.9f} m/s; zero brake',
                 now,
             )
         elif decision.reason == 'nonfinite_input':
             self._error(
                 'nonfinite_input',
-                'Rejecting non-finite /cmd_vel_nav input; full brake',
+                'Rejecting non-finite /cmd_vel_nav input; zero brake',
                 now,
             )
         elif decision.reason == 'maximum_speed_clamped':

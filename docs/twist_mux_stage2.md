@@ -17,8 +17,8 @@ adapter:
 | Topic | Type | `linear.x` | `angular.z` | Owner |
 |---|---|---|---|---|
 | `/cmd_vel_nav` | `geometry_msgs/msg/Twist` | m/s | rad/s | external controlled test publisher in Stage 2 |
-| `/cmd_vel_auto` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `drive_adapter` |
-| `/cmd_vel_teleop` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `runner_teleop` |
+| `/cmd_vel_auto` | `geometry_msgs/msg/Twist` | normalized forward-only command, 0.0…0.70 | normalized steering | `drive_adapter` |
+| `/cmd_vel_teleop` | `geometry_msgs/msg/Twist` | normalized signed motor command; negative is intentional L2 reverse only | normalized steering | `runner_teleop` |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | normalized signed motor command | normalized steering | `twist_mux` |
 
 `motor_driver` remains the only `/cmd_vel` consumer requiring normalized
@@ -30,7 +30,7 @@ connected directly to `/cmd_vel`.
 The Jazzy `twist_mux` input priorities are teleop `100` and autonomy `50`.
 No lock topics are configured. Any fresh teleop publication therefore
 preempts autonomy in the mux input callback, without waiting for a timeout.
-This includes manual X, fixed-throttle R1, and the normal full-brake command.
+This includes manual X, fixed-throttle R1, and the normal zero-brake command.
 
 The teleop timeout is `0.15 s`. Teleop normally publishes at 20 Hz, so three
 nominal periods fit in the timeout: one missed 50 ms publication does not
@@ -77,10 +77,7 @@ timestamped input and output events, not by command values alone.
 
 ## Stage 3 handoff
 
-The adapter currently full-brakes with reason `steering_infeasible`. That was
-correct for Stage 1 bench validation but may be too harsh during RPP path
-tracking because transiently infeasible corrections can occur while joining
-a path. During Stage 3, instrument the frequency of `steering_infeasible`. If
-it is not rare, consider clamping steering at the measured maximum and
-accepting temporary understeer so the controller can correct on a later
-cycle. Stage 2 does not change this policy.
+The adapter clamps infeasible steering at the measured maximum while preserving
+forward speed. Stage 2 must validate the provisional feedforward, PI gains,
+promotion thresholds, integrator bounds, and the new zero output floor without
+turning PI deceleration into a reverse command.
