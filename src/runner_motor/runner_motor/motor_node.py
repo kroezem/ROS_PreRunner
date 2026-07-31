@@ -94,8 +94,7 @@ class MotorNode(Node):
         self.motor = SysfsPWM(PWM_CHIP_PATH, MOTOR_PWM_CHANNEL)
         self.servo = SysfsPWM(PWM_CHIP_PATH, SERVO_PWM_CHANNEL)
 
-        # Remove any stale drive before changing the motor PWM configuration.
-        self.motor.set_duty_cycle_ns(0)
+        # Configure the motor without writing duty against a fresh period of 0.
         self.motor.disable()
         self.motor.set_polarity('normal')
         self.motor.set_period_ns(MOTOR_PERIOD_NS)

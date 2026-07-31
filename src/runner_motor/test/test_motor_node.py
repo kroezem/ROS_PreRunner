@@ -1,3 +1,4 @@
+import errno
 import math
 
 from geometry_msgs.msg import Twist
@@ -15,7 +16,7 @@ class FakePWM:
     def __init__(self, chip_path, channel):
         self.chip_path = chip_path
         self.channel = channel
-        self.period_ns = None
+        self.period_ns = 0
         self.duty_cycle_ns = None
         self.polarity = None
         self.enabled = None
@@ -26,6 +27,8 @@ class FakePWM:
         self.events.append((self.channel, 'period', value))
 
     def set_duty_cycle_ns(self, value):
+        if self.period_ns == 0:
+            raise OSError(errno.EINVAL, 'Invalid argument')
         self.duty_cycle_ns = value
         self.events.append((self.channel, 'duty', value))
 
@@ -168,6 +171,18 @@ def test_direction_gpio_is_requested_exclusively_by_chip_label():
     ]
 
 
+def test_fresh_pwm_rejects_duty_before_period():
+    FakePWM.instances = []
+    FakePWM.events = []
+    pwm = FakePWM(motor_node.PWM_CHIP_PATH, motor_node.MOTOR_PWM_CHANNEL)
+
+    with pytest.raises(OSError) as error:
+        pwm.set_duty_cycle_ns(0)
+
+    assert error.value.errno == errno.EINVAL
+    assert FakePWM.events == []
+
+
 def test_safe_startup_configuration_and_order(motor_factory):
     create, _line, _chip = motor_factory
     create()
@@ -181,12 +196,29 @@ def test_safe_startup_configuration_and_order(motor_factory):
     assert servo.duty_cycle_ns == motor_node.us_to_ns(motor_node.STEER_CTR)
     assert servo.enabled
 
-    motor_enable = FakePWM.events.index((0, 'enable', 1))
-    direction_defined = FakePWM.events.index(
-        ('dir', motor_node.DIR_FORWARD)
-    )
-    assert (0, 'duty', 0) in FakePWM.events[:direction_defined]
-    assert direction_defined < motor_enable
+    motor_events = [
+        event for event in FakePWM.events
+        if event[0] in (motor_node.MOTOR_PWM_CHANNEL, 'dir')
+    ]
+    assert motor_events == [
+        (0, 'enable', 0),
+        (0, 'polarity', 'normal'),
+        (0, 'period', motor_node.MOTOR_PERIOD_NS),
+        (0, 'duty', 0),
+        ('dir', motor_node.DIR_FORWARD),
+        (0, 'enable', 1),
+    ]
+    servo_events = [
+        event for event in FakePWM.events
+        if event[0] == motor_node.SERVO_PWM_CHANNEL
+    ]
+    assert servo_events == [
+        (1, 'enable', 0),
+        (1, 'polarity', 'normal'),
+        (1, 'period', motor_node.SERVO_PERIOD_NS),
+        (1, 'duty', motor_node.us_to_ns(motor_node.STEER_CTR)),
+        (1, 'enable', 1),
+    ]
 
 
 def _command(node, linear_x):
