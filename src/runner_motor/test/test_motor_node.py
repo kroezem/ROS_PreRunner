@@ -3,6 +3,7 @@ import math
 from geometry_msgs.msg import Twist
 import pytest
 import rclpy
+from runner_interfaces.msg import EncoderState
 
 from runner_motor import motor_node
 
@@ -188,26 +189,118 @@ def test_safe_startup_configuration_and_order(motor_factory):
     assert direction_defined < motor_enable
 
 
-def test_direction_change_zeros_duty_before_dir(motor_factory):
+def _command(node, linear_x):
+    message = Twist()
+    message.linear.x = linear_x
+    node.on_cmd(message)
+
+
+def _stationary(node, value=True):
+    node._on_encoder_state(EncoderState(stationary=value))
+
+
+def _motor_events():
+    return [
+        event for event in FakePWM.events
+        if event[0] in (motor_node.MOTOR_PWM_CHANNEL, 'dir')
+    ]
+
+
+def test_opposite_command_brakes_while_encoder_reports_moving(motor_factory):
     create, line, _chip = motor_factory
     node = create()
     FakePWM.events = []
 
-    message = Twist()
-    message.linear.x = -0.5
-    node.on_cmd(message)
+    _command(node, -0.5)
+    _stationary(node, False)
 
-    assert FakePWM.events[:3] == [
+    assert _motor_events() == [(0, 'duty', 0)]
+    assert line.values == [motor_node.DIR_FORWARD]
+    assert node._pending_reversal == (motor_node.DIR_REVERSE, 25_000)
+
+
+def test_only_post_request_stationary_sample_authorizes_reversal(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+
+    _stationary(node)
+    FakePWM.events = []
+    _command(node, -0.5)
+    assert line.values == [motor_node.DIR_FORWARD]
+
+    _stationary(node)
+
+    assert _motor_events() == [
+        (0, 'duty', 0),
         (0, 'duty', 0),
         ('dir', motor_node.DIR_REVERSE),
         (0, 'duty', 25_000),
     ]
     assert line.values[-1] == motor_node.DIR_REVERSE
+    assert node._pending_reversal is None
+
+
+def test_zero_cancels_pending_reversal(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+
+    _command(node, -0.5)
+    _command(node, 0.0)
+    _stationary(node)
+
+    assert line.values == [motor_node.DIR_FORWARD]
+    assert node._pending_reversal is None
+    assert node.motor.duty_cycle_ns == 0
+    assert node._direction_latch == -1
+
+
+def test_repeated_pending_commands_apply_latest_duty(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+
+    _command(node, -0.2)
+    _command(node, -0.7)
+    assert node._pending_reversal == (motor_node.DIR_REVERSE, 35_000)
+
+    _stationary(node)
+
+    assert line.values[-1] == motor_node.DIR_REVERSE
+    assert node.motor.duty_cycle_ns == 35_000
+
+
+def test_reversal_gate_operates_in_both_directions(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+
+    _command(node, -0.4)
+    _stationary(node)
+    assert line.values[-1] == motor_node.DIR_REVERSE
+    assert node.motor.duty_cycle_ns == 20_000
+
+    _command(node, 0.6)
+    _stationary(node, False)
+    assert line.values[-1] == motor_node.DIR_REVERSE
+    assert node.motor.duty_cycle_ns == 0
+
+    _stationary(node)
+    assert line.values[-1] == motor_node.DIR_FORWARD
+    assert node.motor.duty_cycle_ns == 30_000
+
+
+def test_same_hardware_direction_command_applies_immediately(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+
+    _command(node, 0.5)
+
+    assert line.values == [motor_node.DIR_FORWARD]
+    assert node.motor.duty_cycle_ns == 25_000
+    assert node._pending_reversal is None
 
 
 @pytest.mark.parametrize(
     ('command', 'expected_direction', 'expected_duty'),
-    [(-1.0, -1, 50_000), (0.0, 0, 0), (0.5, 1, 25_000)],
+    [(-1.0, -1, 0), (0.0, 0, 0), (0.5, 1, 25_000)],
 )
 def test_command_publishes_direction(
     motor_factory, command, expected_direction, expected_duty
@@ -225,36 +318,43 @@ def test_command_publishes_direction(
     assert node.motor.duty_cycle_ns == expected_duty
 
 
-def test_watchdog_sets_zero_duty_and_publishes_zero(motor_factory):
+def test_direction_telemetry_stays_latched_through_zero_watchdog_and_shutdown(
+    motor_factory,
+):
     create, _line, _chip = motor_factory
     node = create()
-    node.motor.duty_cycle_ns = motor_node.MOTOR_PERIOD_NS
-    node._last_cmd -= motor_node.CMD_TIMEOUT_S + 1.0
     direction_messages = []
-    warnings = []
     node._direction_pub.publish = direction_messages.append
-    node.get_logger().warn = warnings.append
 
+    _command(node, -0.5)
+    _command(node, 0.0)
+    assert [message.data for message in direction_messages] == [-1, -1]
+
+    node._last_cmd -= motor_node.CMD_TIMEOUT_S + 1.0
+    warnings = []
+    node.get_logger().warn = warnings.append
     node._watchdog()
 
     assert node.motor.duty_cycle_ns == 0
-    assert direction_messages[-1].data == 0
+    assert direction_messages[-1].data == -1
     assert warnings == [
         '/cmd_vel watchdog timeout; motor duty=0 (active brake)'
     ]
-
-
-def test_shutdown_brakes_publishes_zero_and_does_not_unexport(motor_factory):
-    create, line, chip = motor_factory
-    node = create()
-    direction_messages = []
-    node._direction_pub.publish = direction_messages.append
-    node.motor.duty_cycle_ns = motor_node.MOTOR_PERIOD_NS
 
     node.stop()
 
     assert node.motor.duty_cycle_ns == 0
     assert node.motor.enabled
-    assert direction_messages[-1].data == 0
+    assert direction_messages[-1].data == -1
+
+
+def test_shutdown_brakes_without_unexport(motor_factory):
+    create, line, chip = motor_factory
+    node = create()
+
+    node.stop()
+
+    assert node.motor.duty_cycle_ns == 0
+    assert node.motor.enabled
     assert line.released
     assert chip.closed

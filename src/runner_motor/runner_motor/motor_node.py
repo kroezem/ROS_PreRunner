@@ -6,6 +6,7 @@ from geometry_msgs.msg import Twist
 import gpiod
 import rclpy
 from rclpy.node import Node
+from runner_interfaces.msg import EncoderState
 from std_msgs.msg import Int8
 
 PWM_CHIP_PATH = Path('/sys/class/pwm/pwmchip0')
@@ -110,6 +111,8 @@ class MotorNode(Node):
         # Define DIR while motor duty is zero, then start the 20 kHz output.
         self._gpio_chip, self._dir_line = request_direction_output()
         self._hardware_direction = DIR_FORWARD
+        self._direction_latch = 0
+        self._pending_reversal = None
         self.motor.enable()
 
         self._direction_pub = self.create_publisher(
@@ -122,18 +125,42 @@ class MotorNode(Node):
 
         # Subscribe only after all motor outputs are in their safe state.
         self.create_subscription(Twist, '/cmd_vel', self.on_cmd, 10)
+        self.create_subscription(
+            EncoderState,
+            '/wheel/encoder_state',
+            self._on_encoder_state,
+            10,
+        )
         self._direction_pub.publish(Int8(data=0))
         self.get_logger().info('motor_driver ready; MD13S PWM=20 kHz')
 
     def _set_motor(self, direction, duty_ns):
-        if direction != 0:
-            hardware_direction = (
-                DIR_FORWARD if direction > 0 else DIR_REVERSE
-            )
-            if hardware_direction != self._hardware_direction:
-                self.motor.set_duty_cycle_ns(0)
-                self._dir_line.set_value(hardware_direction)
-                self._hardware_direction = hardware_direction
+        if direction == 0:
+            self._pending_reversal = None
+            self.motor.set_duty_cycle_ns(0)
+            return
+
+        self._direction_latch = direction
+        hardware_direction = (
+            DIR_FORWARD if direction > 0 else DIR_REVERSE
+        )
+        if hardware_direction == self._hardware_direction:
+            self._pending_reversal = None
+            self.motor.set_duty_cycle_ns(duty_ns)
+            return
+
+        self.motor.set_duty_cycle_ns(0)
+        self._pending_reversal = (hardware_direction, duty_ns)
+
+    def _on_encoder_state(self, msg: EncoderState):
+        if not msg.stationary or self._pending_reversal is None:
+            return
+
+        hardware_direction, duty_ns = self._pending_reversal
+        self.motor.set_duty_cycle_ns(0)
+        self._dir_line.set_value(hardware_direction)
+        self._hardware_direction = hardware_direction
+        self._pending_reversal = None
         self.motor.set_duty_cycle_ns(duty_ns)
 
     def on_cmd(self, msg: Twist):
@@ -144,7 +171,7 @@ class MotorNode(Node):
 
         direction, duty_ns = map_motor_command(msg.linear.x)
         self._set_motor(direction, duty_ns)
-        self._direction_pub.publish(Int8(data=direction))
+        self._direction_pub.publish(Int8(data=self._direction_latch))
 
         steer_us = int(
             STEER_CTR
@@ -155,19 +182,23 @@ class MotorNode(Node):
     def _watchdog(self):
         if time.monotonic() - self._last_cmd <= CMD_TIMEOUT_S:
             return
+        self._pending_reversal = None
         self.motor.set_duty_cycle_ns(0)
         if not self._cmd_timed_out:
             self.get_logger().warn(
                 '/cmd_vel watchdog timeout; motor duty=0 (active brake)'
             )
             self._cmd_timed_out = True
-            self._direction_pub.publish(Int8(data=0))
+            self._direction_pub.publish(
+                Int8(data=self._direction_latch)
+            )
 
     def stop(self):
         if self._stopped:
             return
+        self._pending_reversal = None
         self.motor.set_duty_cycle_ns(0)
-        self._direction_pub.publish(Int8(data=0))
+        self._direction_pub.publish(Int8(data=self._direction_latch))
         self.servo.set_duty_cycle_ns(us_to_ns(STEER_CTR))
         self.servo.disable()
         self._dir_line.release()

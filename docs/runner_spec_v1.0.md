@@ -317,13 +317,29 @@ action execution, so `IsPathValid` cannot accept a previous execution's path.
 GPIO12 supplies normal-polarity 20 kHz PWM and GPIO23 supplies DIR. Positive
 normalized commands select forward, negative commands select reverse, and
 absolute magnitude maps linearly to PWM duty. Zero duty is MD13S active brake.
-Direction changes first force duty to zero, then switch DIR, then apply the new
-duty. There is no ESC arming sequence, pulse mapping, deadband, expo, mode
-parameter, or reverse gate.
+Same-direction commands apply immediately. An opposite command first forces
+duty to zero and remains pending until a subsequently received
+`/wheel/encoder_state` sample reports `stationary=true`; only then does the
+motor owner switch DIR and apply the latest pending duty. A zero command
+cancels a pending reversal. There is no dwell or timeout-based reversal gate.
+There is also no ESC arming sequence, pulse mapping, deadband, expo, or mode
+parameter.
 
 GPIO23 is exclusively requested from the `pinctrl-rp1` chip by label. GPIO22
 remains exclusively reserved for the encoder and is not part of motor control.
-`/motor/direction` reports the signed command as `Int8` -1, 0, or +1.
+`/motor/direction` reports the last nonzero signed command as `Int8` -1 or +1
+through zero-duty braking, watchdog braking, and shutdown. It reports 0 only
+before the process has received its first nonzero command.
+
+The stationary gate inherits two explicit limits from its single-channel
+encoder evidence. Locked wheels can report no edges while the vehicle is still
+sliding, so `stationary=true` does not prove zero ground speed. Also, an encoder
+GPIO worker failure is logged but currently leaves the publication timer alive;
+after the last edge ages out, the encoder can continue publishing
+`stationary=true`. Phase 3 is the trigger to revisit this evidence boundary:
+before Phase 3 closed-loop performance work begins, either fault or any observed
+locked-wheel slide during hardware validation requires independent motion and
+encoder-health evidence before reversal authorization.
 
 The existing teleop command labels still call negative commands "brake"; at
 the motor boundary they are now reverse commands. Traction remains disconnected
