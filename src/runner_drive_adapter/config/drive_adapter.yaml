@@ -4,12 +4,11 @@ drive_adapter:
     max_steering_angle: 0.3614
     steering_min_speed: 0.05
 
-    # Monotonic steady-state feedforward measurements. The measured
-    # 0.370 -> 0.209 m/s point is excluded: it was a single noisy sample with
-    # run standard deviation 0.094 m/s, while 0.360 was measured twice at
-    # 0.229 and 0.237 m/s.
-    throttle_breakpoints: [0.340, 0.350, 0.360, 0.380]
-    speed_breakpoints: [0.126, 0.188, 0.233, 0.290]
+    # PROVISIONAL MD13S forward fit from bag teleop_20260731_200955:
+    # v = 7.947 * cmd - 0.1436, R2=0.9968, fitted over cmd 0.05-0.25.
+    # This is an initial compatibility inverse, not final characterization.
+    feedforward_speed_per_command: 7.947
+    feedforward_speed_intercept: -0.1436
 
     minimum_moving_speed: 0.126
     floor_promotion_min_ratio: 0.50
@@ -23,7 +22,9 @@ drive_adapter:
     integrator_min: -0.25
     integrator_max: 0.16
     output_min: 0.0
-    output_max: 0.70
+    # Conservative initial compatibility cap; operator driving validation is
+    # required before promotion.
+    output_max: 0.12
     breakaway_integrator_preload: 0.04
 
     encoder_metres_per_edge: 0.010282

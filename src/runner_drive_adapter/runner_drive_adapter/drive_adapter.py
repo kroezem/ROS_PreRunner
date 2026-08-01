@@ -16,69 +16,19 @@
 
 from dataclasses import dataclass
 import math
-from typing import Optional, Sequence
+from typing import Optional
 
 
-def validate_table(
-    throttle_breakpoints: Sequence[float],
-    speed_breakpoints: Sequence[float],
-) -> None:
-    """Validate a replaceable monotonic speed-to-throttle table."""
-    if len(throttle_breakpoints) != len(speed_breakpoints):
-        raise ValueError('throttle and speed breakpoint lengths must match')
-    if len(throttle_breakpoints) < 2:
-        raise ValueError('at least two table points are required')
-    values = tuple(throttle_breakpoints) + tuple(speed_breakpoints)
-    if not all(math.isfinite(value) for value in values):
-        raise ValueError('all table values must be finite')
-    if not all(0.0 <= value <= 1.0 for value in throttle_breakpoints):
-        raise ValueError('throttle breakpoints must be within [0, 1]')
-    if not all(value > 0.0 for value in speed_breakpoints):
-        raise ValueError('speed breakpoints must be positive')
-    if not all(
-        left < right
-        for left, right in zip(
-            throttle_breakpoints,
-            throttle_breakpoints[1:],
-        )
-    ):
-        raise ValueError('throttle breakpoints must be strictly increasing')
-    if not all(
-        left < right
-        for left, right in zip(speed_breakpoints, speed_breakpoints[1:])
-    ):
-        raise ValueError('speed breakpoints must be strictly increasing')
+PROVISIONAL_OUTPUT_MAX = 0.12
 
 
-def lookup_throttle(
+def linear_inverse_feedforward(
     speed: float,
-    throttle_breakpoints: Sequence[float],
-    speed_breakpoints: Sequence[float],
-) -> tuple[float, bool]:
-    """Interpolate throttle and saturate at either end of the table."""
-    validate_table(throttle_breakpoints, speed_breakpoints)
-    if speed <= speed_breakpoints[0]:
-        return float(throttle_breakpoints[0]), speed < speed_breakpoints[0]
-    if speed >= speed_breakpoints[-1]:
-        return float(throttle_breakpoints[-1]), speed > speed_breakpoints[-1]
-
-    for index in range(1, len(speed_breakpoints)):
-        upper_speed = speed_breakpoints[index]
-        if speed <= upper_speed:
-            lower_speed = speed_breakpoints[index - 1]
-            fraction = (speed - lower_speed) / (
-                upper_speed - lower_speed
-            )
-            lower_throttle = throttle_breakpoints[index - 1]
-            upper_throttle = throttle_breakpoints[index]
-            return (
-                float(
-                    lower_throttle
-                    + fraction * (upper_throttle - lower_throttle)
-                ),
-                False,
-            )
-    raise AssertionError('validated lookup table did not contain speed')
+    speed_per_command: float,
+    speed_intercept: float,
+) -> float:
+    """Invert the provisional forward plant v = gain * command + intercept."""
+    return (speed - speed_intercept) / speed_per_command
 
 
 @dataclass(frozen=True)
@@ -88,18 +38,8 @@ class AdapterConfig:
     wheelbase: float = 0.178
     max_steering_angle: float = 0.3614
     steering_min_speed: float = 0.05
-    throttle_breakpoints: tuple[float, ...] = (
-        0.340,
-        0.350,
-        0.360,
-        0.380,
-    )
-    speed_breakpoints: tuple[float, ...] = (
-        0.126,
-        0.188,
-        0.233,
-        0.290,
-    )
+    feedforward_speed_per_command: float = 7.947
+    feedforward_speed_intercept: float = -0.1436
     minimum_moving_speed: float = 0.126
     floor_promotion_min_ratio: float = 0.50
     maximum_commanded_speed: float = 0.60
@@ -111,7 +51,7 @@ class AdapterConfig:
     integrator_min: float = -0.25
     integrator_max: float = 0.16
     output_min: float = 0.0
-    output_max: float = 0.70
+    output_max: float = PROVISIONAL_OUTPUT_MAX
     breakaway_integrator_preload: float = 0.04
     encoder_metres_per_edge: float = 0.010282
     wheelspin_speed_ratio: float = 1.50
@@ -126,21 +66,15 @@ class AdapterConfig:
 
     def __post_init__(self) -> None:
         """Reject unsafe or internally inconsistent parameter sets."""
-        validate_table(
-            self.throttle_breakpoints,
-            self.speed_breakpoints,
-        )
-        values = tuple(
-            value
-            for name, value in self.__dict__.items()
-            if name not in {'throttle_breakpoints', 'speed_breakpoints'}
-        )
+        values = tuple(self.__dict__.values())
         if not all(math.isfinite(value) for value in values):
             raise ValueError('all scalar parameters must be finite')
         positive = {
             'wheelbase': self.wheelbase,
             'max_steering_angle': self.max_steering_angle,
             'steering_min_speed': self.steering_min_speed,
+            'feedforward_speed_per_command':
+                self.feedforward_speed_per_command,
             'minimum_moving_speed': self.minimum_moving_speed,
             'maximum_commanded_speed': self.maximum_commanded_speed,
             'proportional_gain': self.proportional_gain,
@@ -197,11 +131,25 @@ class AdapterConfig:
             raise ValueError('integrator_min must be less than integrator_max')
         if self.output_min != 0.0:
             raise ValueError('output_min must be zero for forward-only output')
-        if self.output_max > 1.0 or self.output_max <= 0.0:
-            raise ValueError('output_max must be within (0, 1]')
-        if self.output_max < max(self.throttle_breakpoints):
+        if (
+            self.output_max > PROVISIONAL_OUTPUT_MAX
+            or self.output_max <= 0.0
+        ):
             raise ValueError(
-                'output_max must reach the maximum feedforward throttle'
+                'output_max must be within the provisional range (0, 0.12]'
+            )
+        maximum_feedforward = linear_inverse_feedforward(
+            self.maximum_commanded_speed,
+            self.feedforward_speed_per_command,
+            self.feedforward_speed_intercept,
+        )
+        if maximum_feedforward < 0.0:
+            raise ValueError(
+                'feedforward must be nonnegative at maximum commanded speed'
+            )
+        if self.output_max < maximum_feedforward:
+            raise ValueError(
+                'output_max must reach the maximum linear feedforward'
             )
         if not (
             self.integrator_min
@@ -217,13 +165,14 @@ class AdapterConfig:
             raise ValueError(
                 'wheelspin_min_speed_excess must be nonnegative'
             )
-        if not (
-            self.speed_breakpoints[0]
-            <= self.minimum_moving_speed
-            <= self.speed_breakpoints[-1]
-        ):
+        minimum_feedforward = linear_inverse_feedforward(
+            self.minimum_moving_speed,
+            self.feedforward_speed_per_command,
+            self.feedforward_speed_intercept,
+        )
+        if minimum_feedforward < 0.0:
             raise ValueError(
-                'minimum_moving_speed must fall within the speed table'
+                'feedforward must be nonnegative at minimum moving speed'
             )
 
     @property
@@ -456,10 +405,10 @@ class DriveAdapter:
             commanded_speed,
             self.config.minimum_moving_speed,
         )
-        feedforward, _table_saturated = lookup_throttle(
+        feedforward = linear_inverse_feedforward(
             effective_speed,
-            self.config.throttle_breakpoints,
-            self.config.speed_breakpoints,
+            self.config.feedforward_speed_per_command,
+            self.config.feedforward_speed_intercept,
         )
         delta = math.atan(self.config.wheelbase * requested_curvature)
         steering = max(
@@ -493,8 +442,8 @@ class DriveAdapter:
         if below_floor:
             self._integrator = 0.0
             proportional = 0.0
-            final = feedforward
-            saturation = 'none'
+            raw_output = feedforward
+            saturation = self._saturation(raw_output)
         else:
             if (
                 base_integration_enabled
@@ -537,10 +486,10 @@ class DriveAdapter:
                 self._integrator = candidate
             raw_output = feedforward + proportional + self._integrator
             saturation = self._saturation(raw_output)
-            final = max(
-                self.config.output_min,
-                min(self.config.output_max, raw_output),
-            )
+        final = max(
+            self.config.output_min,
+            min(self.config.output_max, raw_output),
+        )
 
         reason = 'closed_loop'
         if speed > self.config.maximum_commanded_speed:

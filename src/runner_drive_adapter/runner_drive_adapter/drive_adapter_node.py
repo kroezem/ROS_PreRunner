@@ -62,6 +62,8 @@ class DriveAdapterNode(Node):
             'wheelbase',
             'max_steering_angle',
             'steering_min_speed',
+            'feedforward_speed_per_command',
+            'feedforward_speed_intercept',
             'minimum_moving_speed',
             'floor_promotion_min_ratio',
             'maximum_commanded_speed',
@@ -88,21 +90,7 @@ class DriveAdapterNode(Node):
         )
         for name in names:
             self.declare_parameter(name, getattr(defaults, name))
-        self.declare_parameter(
-            'throttle_breakpoints',
-            list(defaults.throttle_breakpoints),
-        )
-        self.declare_parameter(
-            'speed_breakpoints',
-            list(defaults.speed_breakpoints),
-        )
         values = {name: self.get_parameter(name).value for name in names}
-        values['throttle_breakpoints'] = tuple(
-            self.get_parameter('throttle_breakpoints').value
-        )
-        values['speed_breakpoints'] = tuple(
-            self.get_parameter('speed_breakpoints').value
-        )
         try:
             config = AdapterConfig(**values)
         except (TypeError, ValueError) as error:
@@ -287,9 +275,9 @@ class DriveAdapterNode(Node):
             f'maximum_curvature={c.maximum_curvature:.12f} 1/m'
         )
         self.get_logger().info(
-            'Drive table retained: '
-            f'speeds={list(c.speed_breakpoints)} m/s, '
-            f'throttles={list(c.throttle_breakpoints)}, '
+            'Provisional MD13S linear inverse: '
+            f'speed_per_command={c.feedforward_speed_per_command:.6f}, '
+            f'speed_intercept={c.feedforward_speed_intercept:.6f} m/s, '
             f'maximum_commanded_speed={c.maximum_commanded_speed:.6f} m/s'
         )
         self.get_logger().info(

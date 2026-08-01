@@ -16,7 +16,7 @@ The adapter remains the sole SI-to-normalized converter. `twist_mux` remains
 the sole `/cmd_vel` publisher and `motor_node` remains the sole PWM owner.
 Stale `/cmd_vel_nav` still produces silence, explicit zero produces active
 brake, reverse remains rejected to zero, and infeasible steering is clamped.
-The published motor-command range is forward-only `[0.0, 0.70]`; provisional
+The published motor-command range is forward-only `[0.0, 0.12]`; provisional
 PI correction may reduce output to zero but cannot request reverse.
 
 Stage 1 used an encoder-triggered 0.380 breakaway kick. Stage 4 demonstrated
@@ -27,6 +27,42 @@ been removed rather than left as a second overlapping throttle modifier.
 The current implementation, parameters, evidence, diagnostics, bench
 procedure, and floor-test procedure are documented in
 [stall_assist.md](stall_assist.md).
+
+## Provisional MD13S feedforward
+
+The stale hobby-ESC lookup is no longer used. Forward targets use the inverse
+of `v = 7.947 * cmd - 0.1436`:
+
+```
+cmd = (speed + 0.1436) / 7.947
+```
+
+This fit comes from `teleop_20260731_200955`, has R2 0.9968, and covers input
+commands 0.05 through 0.25. It is a provisional compatibility fit pending
+controlled MD13S characterization. In particular, the lower requested-speed
+examples extrapolate below the fitted command range. Every published adapter
+output is nevertheless clamped to `[0.0, 0.12]`, and an explicit zero target
+still publishes zero.
+
+No tuning changes accompany the inverse. For a later controlled tuning pass,
+the recommendations are:
+
+- Start with Kp 0.05-0.10 and Ki 0.01-0.03 after verifying feedforward-only
+  tracking. The inverse plant slope is about 0.126 command per m/s; the current
+  Kp 0.30 and switched Ki 0.06/0.30 are likely too aggressive under this cap.
+- Initially constrain the integrator contribution to approximately
+  `[-0.03, +0.02]`; the +0.02 side fits within the roughly 0.026 command
+  headroom at a 0.600 m/s target. Recalculate from characterized headroom.
+- Use zero breakaway preload until MD13S onset is measured under load. If a
+  preload is demonstrated necessary, introduce no more than 0.01 first and
+  require repeatable stationary-transition evidence.
+- Temporarily disable floor promotion by setting its minimum ratio to 1.0
+  during characterization, then promote only to a repeatably sustainable
+  measured floor. Do not infer that floor from the extrapolated fit.
+
+These are recommendations only; the configured PI gains, integrator bounds,
+breakaway preload, and floor-promotion settings remain unchanged in this
+compatibility change.
 
 ## Teleop preemption
 
