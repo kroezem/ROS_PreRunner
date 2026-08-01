@@ -24,17 +24,17 @@ from runner_drive_adapter.drive_adapter import (
     AdapterConfig,
     DriveAdapter,
     IntegratorFreezeReason,
-    linear_inverse_feedforward,
+    linear_feedforward,
 )
 from runner_interfaces.msg import AdapterState
 
 
 def _feedforward(speed):
     config = AdapterConfig()
-    return linear_inverse_feedforward(
+    return linear_feedforward(
         speed,
-        config.feedforward_speed_per_command,
-        config.feedforward_speed_intercept,
+        config.feedforward_effort_per_speed,
+        config.feedforward_effort_intercept,
     )
 
 
@@ -71,13 +71,13 @@ def _update(
 @pytest.mark.parametrize(
     ('speed', 'expected_command'),
     [
-        (0.126, 0.0339248),
-        (0.290, 0.0545615),
-        (0.450, 0.0746949),
-        (0.600, 0.0935699),
+        (0.250, 0.0471000),
+        (0.290, 0.0518520),
+        (0.450, 0.0708600),
+        (0.600, 0.0886800),
     ],
 )
-def test_provisional_md13s_linear_inverse(speed, expected_command):
+def test_characterized_md13s_linear_inverse(speed, expected_command):
     decision = _update(
         DriveAdapter(AdapterConfig()),
         0.0,
@@ -96,13 +96,13 @@ def test_provisional_md13s_linear_inverse(speed, expected_command):
 
 def test_feedforward_passes_through_at_zero_error():
     adapter = DriveAdapter(AdapterConfig())
-    decision = _update(adapter, 0.0, speed=0.233, measured=0.233)
+    decision = _update(adapter, 0.0, speed=0.30, measured=0.30)
 
     assert decision.feedforward_throttle == pytest.approx(
-        _feedforward(0.233)
+        _feedforward(0.30)
     )
     assert decision.pi_term == pytest.approx(0.0)
-    assert decision.final_throttle == pytest.approx(_feedforward(0.233))
+    assert decision.final_throttle == pytest.approx(_feedforward(0.30))
 
 
 def test_positive_output_saturates_at_compatibility_ceiling():
@@ -111,9 +111,9 @@ def test_positive_output_saturates_at_compatibility_ceiling():
     first = _update(adapter, 0.0, speed=0.60, measured=0.0)
     second = _update(adapter, 0.10, speed=0.60, measured=0.0)
 
-    assert config.output_max == 0.12
-    assert first.final_throttle == 0.12
-    assert second.final_throttle == 0.12
+    assert config.output_max == 0.14
+    assert first.final_throttle == 0.14
+    assert second.final_throttle == 0.14
     assert second.saturation_state == 'upper'
     assert adapter.integrator_state == 0.0
 
@@ -363,19 +363,19 @@ def test_mux_selection_comparison_uses_bounded_numeric_tolerance():
     )
 
 
-def test_ki_zero_replay_is_bit_identical_to_legacy_output_arithmetic():
+def test_ki_zero_replay_is_bit_identical_to_stage_2b_arithmetic():
     config = AdapterConfig()
 
-    def legacy_output(speed, measured, feedback_fresh=True, kp=0.05):
-        if speed <= 0.0 or speed < config.promotion_threshold:
+    def stage_2b_output(speed, measured, feedback_fresh=True, kp=0.05):
+        if speed <= 0.0:
             return 0.0
-        commanded = min(speed, config.maximum_commanded_speed)
-        effective = max(commanded, config.minimum_moving_speed)
+        effective = min(
+            config.maximum_commanded_speed,
+            max(speed, config.minimum_moving_speed),
+        )
         feedforward = _feedforward(effective)
-        below_floor = speed < config.minimum_moving_speed
         proportional = (
-            kp * (commanded - abs(measured))
-            if feedback_fresh and not below_floor else 0.0
+            kp * (effective - abs(measured)) if feedback_fresh else 0.0
         )
         raw = feedforward + proportional
         return max(config.output_min, min(config.output_max, raw))
@@ -384,22 +384,22 @@ def test_ki_zero_replay_is_bit_identical_to_legacy_output_arithmetic():
     adapter = DriveAdapter(config)
     cases.append(('normal', _update(
         adapter, 0.0, speed=0.29, measured=0.20
-    ), legacy_output(0.29, 0.20)))
+    ), stage_2b_output(0.29, 0.20)))
     cases.append(('direction_mismatch', _update(
         adapter, 0.1, speed=0.29, measured=0.20, pending_direction=-1
-    ), legacy_output(0.29, 0.20)))
+    ), stage_2b_output(0.29, 0.20)))
     adapter.update_adapter_output(0.05, 0.0, 0.2)
     adapter.update_mux_output(0.04, 0.0, 0.2)
     cases.append(('arbitration_loss', _update(
         adapter, 0.2, speed=0.29, measured=0.20
-    ), legacy_output(0.29, 0.20)))
+    ), stage_2b_output(0.29, 0.20)))
     _update(adapter, 0.3, speed=0.40, measured=0.30, ekf=0.10)
     cases.append(('wheelspin', _update(
         adapter, 0.5, speed=0.40, measured=0.30, ekf=0.10
-    ), legacy_output(0.40, 0.30)))
+    ), stage_2b_output(0.40, 0.30)))
     cases.append(('zero', _update(
         adapter, 0.51, speed=0.0
-    ), legacy_output(0.0, 0.0)))
+    ), stage_2b_output(0.0, 0.0)))
 
     stale = DriveAdapter(config)
     stale.update_command(0.29, 0.0, 0.0)
@@ -408,12 +408,12 @@ def test_ki_zero_replay_is_bit_identical_to_legacy_output_arithmetic():
     cases.append((
         'stale_feedback',
         stale.step(0.26),
-        legacy_output(0.29, 0.0, feedback_fresh=False),
+        stage_2b_output(0.29, 0.0, feedback_fresh=False),
     ))
     saturated = DriveAdapter(replace(config, proportional_gain=0.60))
     cases.append(('saturation', _update(
         saturated, 0.0, speed=0.60, measured=0.0
-    ), legacy_output(0.60, 0.0, kp=0.60)))
+    ), stage_2b_output(0.60, 0.0, kp=0.60)))
 
     assert {label for label, _, _ in cases} == {
         'normal',
@@ -447,20 +447,60 @@ def test_wheelspin_requires_ratio_excess_and_duration():
     assert qualified.wheelspin_guard
 
 
-def test_integrator_is_disabled_below_sustainable_floor():
+def test_nonzero_request_is_promoted_before_feedforward_and_p_error():
     adapter = DriveAdapter(AdapterConfig())
     decision = _update(
         adapter, 0.0, speed=0.10, measured=0.0, stationary=True
     )
 
-    assert decision.reason == 'floor_promoted_feedforward'
-    assert decision.effective_speed == 0.126
+    assert decision.reason == 'floor_promoted'
+    assert decision.commanded_speed == 0.10
+    assert decision.effective_speed == 0.25
+    assert decision.speed_error == pytest.approx(0.25)
     assert decision.feedforward_throttle == pytest.approx(
-        _feedforward(0.126)
+        _feedforward(0.25)
     )
+    assert decision.proportional_term == pytest.approx(0.05 * 0.25)
     assert decision.integrator_state == 0.0
     assert not decision.integrator_enabled
-    assert decision.final_throttle == pytest.approx(_feedforward(0.126))
+    assert decision.final_throttle == pytest.approx(
+        _feedforward(0.25) + 0.05 * 0.25
+    )
+    assert not decision.feedforward_floor_violation
+
+
+def test_zero_request_remains_zero_without_feedforward():
+    decision = _update(DriveAdapter(AdapterConfig()), 0.0, speed=0.0)
+
+    assert decision.commanded_speed == 0.0
+    assert decision.effective_speed == 0.0
+    assert decision.feedforward_throttle == 0.0
+    assert decision.final_throttle == 0.0
+    assert not decision.feedforward_floor_violation
+
+
+@pytest.mark.parametrize('speed', [1e-12, 0.01, 0.249999, 0.25, 0.60, 0.80])
+def test_valid_nonzero_commands_never_assert_feedforward_floor_diagnostic(speed):
+    decision = _update(DriveAdapter(AdapterConfig()), 0.0, speed=speed)
+
+    assert 0.25 <= abs(decision.effective_speed) <= 0.60
+    assert decision.feedforward_throttle >= 0.04
+    assert not decision.feedforward_floor_violation
+
+
+def test_feedforward_floor_diagnostic_asserts_if_floor_is_bypassed():
+    config = AdapterConfig(minimum_moving_speed=0.01)
+    decision = _update(
+        DriveAdapter(config), 0.0, speed=0.01, measured=0.01
+    )
+
+    assert decision.effective_speed == 0.01
+    assert decision.feedforward_throttle == pytest.approx(_feedforward(0.01))
+    assert decision.feedforward_throttle < 0.04
+    assert decision.final_throttle == pytest.approx(
+        decision.feedforward_throttle
+    )
+    assert decision.feedforward_floor_violation
 
 
 def test_stationary_transition_does_not_add_integral_or_breakaway_output():
@@ -482,6 +522,7 @@ def test_command_speed_clamp_keeps_inverse_bounded_and_integral_disabled():
     assert decision.reason == 'maximum_speed_clamped'
     assert decision.commanded_speed == 0.80
     assert decision.effective_speed == 0.60
+    assert decision.speed_error == 0.0
     assert decision.feedforward_throttle == pytest.approx(_feedforward(0.60))
     assert not decision.integrator_enabled
 
@@ -498,12 +539,13 @@ def test_encoder_speed_uses_measured_metres_per_edge():
 
 def test_stale_encoder_disables_p_and_uses_feedforward():
     adapter = DriveAdapter(AdapterConfig())
-    adapter.update_command(0.233, 0.0, 0.0)
+    adapter.update_command(0.30, 0.0, 0.0)
     decision = adapter.step(0.0)
 
     assert decision.reason == 'encoder_stale_feedforward'
     assert not decision.integrator_enabled
-    assert decision.final_throttle == pytest.approx(_feedforward(0.233))
+    assert decision.effective_speed == 0.30
+    assert decision.final_throttle == pytest.approx(_feedforward(0.30))
 
 
 def test_stale_nav_command_is_silent_and_clears_integrator():
@@ -550,7 +592,6 @@ def test_preemption_does_not_change_feedforward_or_proportional_feedback():
     [
         (0.0, 'explicit_stop'),
         (-0.1, 'negative_speed'),
-        (0.05, 'below_promotion_threshold'),
     ],
 )
 def test_stop_and_invalid_forward_commands_full_brake(speed, reason):
@@ -580,14 +621,14 @@ def test_nonfinite_input_is_safely_braked(speed, yaw):
         (0.0, 0.0, True),
         (-0.1, 0.0, True),
         (0.10, 0.0, True),
-        (0.126, 0.126, True),
+        (0.25, 0.25, True),
         (0.29, 0.0, False),
         (0.60, 0.0, True),
         (0.80, 0.0, True),
         (0.29, 3.0, True),
     ],
 )
-def test_every_published_adapter_output_obeys_compatibility_bounds(
+def test_every_published_adapter_output_obeys_safety_authority_bound(
     speed, measured, encoder
 ):
     decision = _update(
@@ -599,7 +640,7 @@ def test_every_published_adapter_output_obeys_compatibility_bounds(
     )
 
     assert decision.publish_command
-    assert 0.0 <= decision.final_throttle <= 0.12
+    assert 0.0 <= decision.final_throttle <= 0.14
 
 
 @pytest.mark.parametrize('direction', [-1.0, 1.0])
@@ -615,7 +656,7 @@ def test_infeasible_steering_is_clamped_without_braking(direction):
 
     assert abs(0.3625 / 0.152) > config.maximum_curvature
     assert decision.mode == 'forward'
-    assert decision.reason == 'closed_loop'
+    assert decision.reason == 'floor_promoted'
     assert decision.normalized_steering == direction
     assert decision.steering_saturated
     assert decision.final_throttle > 0.0
@@ -646,6 +687,7 @@ def test_diagnostics_contain_all_tuning_fields():
         'speed_error=',
         'integrator_state=',
         'feedforward_throttle=',
+        'feedforward_floor_violation=',
         'pi_term=',
         'integral_gain=',
         'stall_integral_gain_active=',
@@ -673,15 +715,15 @@ def test_diagnostics_contain_all_tuning_fields():
     'changes',
     [
         {'maximum_commanded_speed': 0.10},
-        {'feedforward_speed_per_command': 0.0},
-        {'feedforward_speed_intercept': 1.0},
+        {'feedforward_effort_per_speed': 0.0},
+        {'feedforward_effort_intercept': 1.0},
         {'proportional_gain': 0.0},
         {'integral_gain': -0.01},
         {'integrator_bound': 0.0},
         {'output_min': -0.01},
         {'output_min': 0.01},
-        {'output_max': 0.09},
-        {'output_max': 0.13},
+        {'output_max': 0.08},
+        {'output_max': 0.15},
         {'encoder_metres_per_edge': 0.0},
         {'wheelspin_speed_ratio': 1.0},
         {'wheelspin_min_speed_excess': -0.1},

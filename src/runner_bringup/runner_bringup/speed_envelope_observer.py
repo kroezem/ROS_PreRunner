@@ -17,6 +17,7 @@ import yaml
 STATUS_TOPIC = '/speed_envelope/status'
 PUBLICATION_PERIOD_SEC = 1.0
 DEFAULT_REQUEST_TIMEOUT_SEC = 0.25
+MAX_REQUESTS_PER_NODE_PER_TICK = 8
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,16 @@ class SpeedEnvelopeObserver(Node):
                 origin.node_name for origin in self._store.origins
             }
         }
+        self._origins_by_node = {
+            node_name: [
+                origin for origin in self._store.origins
+                if origin.node_name == node_name
+            ]
+            for node_name in self._parameter_clients
+        }
+        self._request_offsets = {
+            node_name: 0 for node_name in self._parameter_clients
+        }
         self._publisher = self.create_publisher(
             SpeedEnvelopeStatus, STATUS_TOPIC, 10
         )
@@ -218,27 +229,34 @@ class SpeedEnvelopeObserver(Node):
         now = time.monotonic()
         self._store.expire(now)
         self._publish()
-        for origin in self._store.origins:
-            observation = self._store.observations[origin.key]
-            if observation.in_flight:
-                continue
-            client = self._parameter_clients[origin.node_name]
-            if not client.services_are_ready():
+        for node_name, origins in self._origins_by_node.items():
+            offset = self._request_offsets[node_name]
+            rotated = origins[offset:] + origins[:offset]
+            selected = [
+                origin for origin in rotated
+                if not self._store.observations[origin.key].in_flight
+            ][:MAX_REQUESTS_PER_NODE_PER_TICK]
+            self._request_offsets[node_name] = (
+                offset + len(selected)
+            ) % len(origins)
+            client = self._parameter_clients[node_name]
+            for origin in selected:
+                if not client.services_are_ready():
+                    token = self._store.begin(
+                        origin.key, now, self._request_timeout
+                    )
+                    self._store.resolve(
+                        origin.key, token, detail='service_unavailable'
+                    )
+                    continue
                 token = self._store.begin(
                     origin.key, now, self._request_timeout
                 )
-                self._store.resolve(
-                    origin.key, token, detail='service_unavailable'
+                future = client.get_parameters([origin.parameter_name])
+                future.add_done_callback(
+                    lambda completed, item=origin, request_token=token:
+                    self._complete(item, request_token, completed)
                 )
-                continue
-            token = self._store.begin(
-                origin.key, now, self._request_timeout
-            )
-            future = client.get_parameters([origin.parameter_name])
-            future.add_done_callback(
-                lambda completed, item=origin, request_token=token:
-                self._complete(item, request_token, completed)
-            )
 
     def _complete(self, origin, token, future):
         try:

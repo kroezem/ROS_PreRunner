@@ -143,6 +143,12 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert 'steering_saturated=false' in states[-1].data
         assert typed_states
         assert typed_states[-1].commanded_speed == 0.20
+        assert typed_states[-1].effective_speed == 0.25
+        assert typed_states[-1].speed_error == (
+            typed_states[-1].effective_speed
+            - typed_states[-1].measured_speed
+        )
+        assert not typed_states[-1].feedforward_floor_violation
         assert typed_states[-1].commanded_yaw_rate == 0.10
         assert typed_states[-1].measured_yaw_rate == 0.15
         assert typed_states[-1].steering_curvature_requested == 0.5

@@ -16,10 +16,19 @@ uint8 INTEGRATOR_NO_COMMAND=11
 uint8 INTEGRATOR_INVALID_COMMAND=12
 
 builtin_interfaces/Time stamp
+# Raw longitudinal SI request received from /cmd_vel_nav. This remains
+# unchanged when adapter floor or ceiling logic intervenes.
 float64 commanded_speed
+# Magnitude-domain speed presented to feedforward and feedback control after
+# acceptance: zero, or within [minimum_moving_speed, maximum_commanded_speed].
+float64 effective_speed
 float64 measured_speed
+# abs(effective_speed) - abs(measured_speed)
 float64 speed_error
 float64 feedforward_throttle
+# True only when a computed nonzero-command feedforward is below 0.04. This is
+# evidence that the configured command-floor path was bypassed; it never clamps.
+bool feedforward_floor_violation
 float64 proportional_term
 float64 integrator_state
 float64 pi_term

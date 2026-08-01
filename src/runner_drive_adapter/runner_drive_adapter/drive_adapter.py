@@ -20,7 +20,8 @@ import math
 from typing import Optional
 
 
-PROVISIONAL_OUTPUT_MAX = 0.12
+MAXIMUM_OUTPUT_AUTHORITY = 0.14
+MINIMUM_EXPECTED_FEEDFORWARD = 0.04
 MAX_INTEGRATION_DT_SEC = 0.5
 SELECTION_ABS_TOLERANCE = 1e-9
 
@@ -43,13 +44,13 @@ class IntegratorFreezeReason(IntEnum):
     INVALID_COMMAND = 12
 
 
-def linear_inverse_feedforward(
+def linear_feedforward(
     speed: float,
-    speed_per_command: float,
-    speed_intercept: float,
+    effort_per_speed: float,
+    effort_intercept: float,
 ) -> float:
-    """Invert the provisional forward plant v = gain * command + intercept."""
-    return (speed - speed_intercept) / speed_per_command
+    """Return the characterized MD13S inverse in normalized effort."""
+    return effort_per_speed * abs(speed) + effort_intercept
 
 
 @dataclass(frozen=True)
@@ -58,17 +59,15 @@ class AdapterConfig:
 
     wheelbase: float = 0.178
     max_steering_angle: float = 0.3614
-    steering_min_speed: float = 0.05
-    feedforward_speed_per_command: float = 7.947
-    feedforward_speed_intercept: float = -0.1436
-    minimum_moving_speed: float = 0.126
-    floor_promotion_min_ratio: float = 0.50
+    feedforward_effort_per_speed: float = 0.1188
+    feedforward_effort_intercept: float = 0.0174
+    minimum_moving_speed: float = 0.25
     maximum_commanded_speed: float = 0.60
     proportional_gain: float = 0.05
     integral_gain: float = 0.0
     integrator_bound: float = 0.005
     output_min: float = 0.0
-    output_max: float = PROVISIONAL_OUTPUT_MAX
+    output_max: float = MAXIMUM_OUTPUT_AUTHORITY
     encoder_metres_per_edge: float = 0.010282
     wheelspin_speed_ratio: float = 1.50
     wheelspin_min_speed_excess: float = 0.10
@@ -87,9 +86,8 @@ class AdapterConfig:
         positive = {
             'wheelbase': self.wheelbase,
             'max_steering_angle': self.max_steering_angle,
-            'steering_min_speed': self.steering_min_speed,
-            'feedforward_speed_per_command':
-                self.feedforward_speed_per_command,
+            'feedforward_effort_per_speed':
+                self.feedforward_effort_per_speed,
             'minimum_moving_speed': self.minimum_moving_speed,
             'maximum_commanded_speed': self.maximum_commanded_speed,
             'proportional_gain': self.proportional_gain,
@@ -111,10 +109,6 @@ class AdapterConfig:
             raise ValueError(
                 'max_steering_angle must be between zero and pi/2'
             )
-        if not 0.0 < self.floor_promotion_min_ratio <= 1.0:
-            raise ValueError(
-                'floor_promotion_min_ratio must be within (0, 1]'
-            )
         if self.integral_gain < 0.0:
             raise ValueError('integral_gain must be nonnegative')
         if self.maximum_commanded_speed < self.minimum_moving_speed:
@@ -124,16 +118,17 @@ class AdapterConfig:
         if self.output_min != 0.0:
             raise ValueError('output_min must be zero for forward-only output')
         if (
-            self.output_max > PROVISIONAL_OUTPUT_MAX
+            self.output_max > MAXIMUM_OUTPUT_AUTHORITY
             or self.output_max <= 0.0
         ):
             raise ValueError(
-                'output_max must be within the provisional range (0, 0.12]'
+                'output_max must be within the safety authority range '
+                '(0, 0.14]'
             )
-        maximum_feedforward = linear_inverse_feedforward(
+        maximum_feedforward = linear_feedforward(
             self.maximum_commanded_speed,
-            self.feedforward_speed_per_command,
-            self.feedforward_speed_intercept,
+            self.feedforward_effort_per_speed,
+            self.feedforward_effort_intercept,
         )
         if maximum_feedforward < 0.0:
             raise ValueError(
@@ -149,22 +144,15 @@ class AdapterConfig:
             raise ValueError(
                 'wheelspin_min_speed_excess must be nonnegative'
             )
-        minimum_feedforward = linear_inverse_feedforward(
+        minimum_feedforward = linear_feedforward(
             self.minimum_moving_speed,
-            self.feedforward_speed_per_command,
-            self.feedforward_speed_intercept,
+            self.feedforward_effort_per_speed,
+            self.feedforward_effort_intercept,
         )
         if minimum_feedforward < 0.0:
             raise ValueError(
                 'feedforward must be nonnegative at minimum moving speed'
             )
-
-    @property
-    def promotion_threshold(self) -> float:
-        """Return the inclusive lower bound for floor promotion."""
-        return (
-            self.minimum_moving_speed * self.floor_promotion_min_ratio
-        )
 
     @property
     def maximum_curvature(self) -> float:
@@ -184,6 +172,7 @@ class AdapterDecision:
     measured_speed: float = 0.0
     speed_error: float = 0.0
     feedforward_throttle: float = 0.0
+    feedforward_floor_violation: bool = False
     proportional_term: float = 0.0
     integrator_state: float = 0.0
     pi_term: float = 0.0
@@ -213,6 +202,8 @@ class AdapterDecision:
             f'measured_speed={self.measured_speed:.9f};'
             f'speed_error={self.speed_error:.9f};'
             f'feedforward_throttle={self.feedforward_throttle:.9f};'
+            f'feedforward_floor_violation='
+            f'{str(self.feedforward_floor_violation).lower()};'
             f'proportional_term={self.proportional_term:.9f};'
             f'integrator_state={self.integrator_state:.9f};'
             f'pi_term={self.pi_term:.9f};'
@@ -397,60 +388,53 @@ class DriveAdapter:
                 IntegratorFreezeReason.NO_COMMAND,
                 **preemption_fields,
             )
+        speed, yaw_rate = self._command
         if now - self._command_time > self.config.cmd_vel_nav_timeout:
             self._reset_transient_state()
             return self._silence(
                 'stale_command',
                 IntegratorFreezeReason.NO_COMMAND,
+                commanded_speed=speed,
                 **preemption_fields,
             )
 
-        speed, yaw_rate = self._command
         if not math.isfinite(speed) or not math.isfinite(yaw_rate):
             return self._brake(
                 'nonfinite_input',
                 IntegratorFreezeReason.INVALID_COMMAND,
+                commanded_speed=speed,
                 **preemption_fields,
             )
         if speed < 0.0:
             return self._brake(
                 'negative_speed',
                 IntegratorFreezeReason.INVALID_COMMAND,
+                commanded_speed=speed,
                 **preemption_fields,
             )
         if speed == 0.0:
             return self._brake(
                 'explicit_stop',
                 IntegratorFreezeReason.ZERO_COMMAND,
+                commanded_speed=speed,
                 **preemption_fields,
             )
-        if speed < self.config.steering_min_speed:
-            return self._brake(
-                'below_steering_min_speed',
-                IntegratorFreezeReason.INVALID_COMMAND,
-                **preemption_fields,
-            )
-        if speed < self.config.promotion_threshold:
-            return self._brake(
-                'below_promotion_threshold',
-                IntegratorFreezeReason.INVALID_COMMAND,
-                **preemption_fields,
-            )
-
         requested_curvature = yaw_rate / speed
         steering_saturated = (
             abs(requested_curvature) > self.config.maximum_curvature
         )
 
-        commanded_speed = min(speed, self.config.maximum_commanded_speed)
-        effective_speed = max(
-            commanded_speed,
-            self.config.minimum_moving_speed,
+        effective_speed = min(
+            self.config.maximum_commanded_speed,
+            max(speed, self.config.minimum_moving_speed),
         )
-        feedforward = linear_inverse_feedforward(
+        feedforward = linear_feedforward(
             effective_speed,
-            self.config.feedforward_speed_per_command,
-            self.config.feedforward_speed_intercept,
+            self.config.feedforward_effort_per_speed,
+            self.config.feedforward_effort_intercept,
+        )
+        feedforward_floor_violation = (
+            feedforward < MINIMUM_EXPECTED_FEEDFORWARD
         )
         delta = math.atan(self.config.wheelbase * requested_curvature)
         steering = max(
@@ -464,18 +448,15 @@ class DriveAdapter:
                 abs(self._encoder_edge_rate)
                 * self.config.encoder_metres_per_edge
             )
-        speed_error = abs(commanded_speed) - abs(measured_speed)
+        speed_error = abs(effective_speed) - abs(measured_speed)
         below_floor = speed < self.config.minimum_moving_speed
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
 
-        if below_floor:
-            proportional = 0.0
-        else:
-            proportional = (
-                self.config.proportional_gain * speed_error
-                if feedback_fresh else 0.0
-            )
+        proportional = (
+            self.config.proportional_gain * speed_error
+            if feedback_fresh else 0.0
+        )
 
         dt = self._integration_dt()
         freeze_reason = self._integrator_freeze_reason(
@@ -518,7 +499,7 @@ class DriveAdapter:
         if speed > self.config.maximum_commanded_speed:
             reason = 'maximum_speed_clamped'
         elif below_floor:
-            reason = 'floor_promoted_feedforward'
+            reason = 'floor_promoted'
         elif not feedback_fresh:
             reason = 'encoder_stale_feedforward'
         pi_term = proportional + self._integrator
@@ -531,6 +512,7 @@ class DriveAdapter:
             measured_speed=measured_speed,
             speed_error=speed_error,
             feedforward_throttle=feedforward,
+            feedforward_floor_violation=feedforward_floor_violation,
             proportional_term=proportional,
             integrator_state=self._integrator,
             pi_term=pi_term,

@@ -48,16 +48,16 @@ nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
 | Parameter | Value | Meaning |
 |---|---:|---|
 | `controller_frequency` | 20.0 Hz | Matches the adapter publication rate |
-| `desired_linear_vel` | 0.290 m/s | Highest measured sustainable speed |
-| `min_approach_linear_velocity` | 0.126 m/s | Lowest measured sustainable speed |
+| `desired_linear_vel` | 0.45 m/s | Nominal path-following speed |
+| `min_approach_linear_velocity` | 0.25 m/s | Confirmed operational command floor |
 | `lookahead_dist` | 0.40 m | Fixed path-carrot distance |
-| `use_velocity_scaled_lookahead_dist` | false | Keeps tuning explicit over the narrow speed range |
+| `use_velocity_scaled_lookahead_dist` | true | Scales lookahead across the configured speed range |
 | `approach_velocity_scaling_dist` | 0.40 m | Starts goal-approach scaling within one lookahead |
-| `regulated_linear_scaling_min_radius` | 0.80 m | Curvature regulation begins above 1.25 m^-1 |
-| `regulated_linear_scaling_min_speed` | 0.126 m/s | Does not request a sub-measured-floor turn speed |
-| `use_cost_regulated_linear_velocity_scaling` | false | Separates the measured curvature effect from obstacle-cost scaling |
+| `regulated_linear_scaling_min_radius` | 0.75 m | Curvature regulation threshold |
+| `regulated_linear_scaling_min_speed` | 0.30 m/s | Confirmed regulated scaling floor |
+| `use_cost_regulated_linear_velocity_scaling` | true | Enables anticipatory path-cost slowdown |
 | `use_collision_detection` | true | RPP checks its projected arc against the local costmap |
-| `max_allowed_time_to_collision_up_to_carrot` | 0.5 s | Collision projection is capped at the carrot |
+| `max_allowed_time_to_collision_up_to_carrot` | 0.15 s | Unchanged short collision-projection horizon |
 | `use_rotate_to_heading` | false | Ackermann vehicle cannot rotate in place |
 | `allow_reversing` | false | Phase 1 is forward-only |
 | `transform_tolerance` | 0.3 s | Matches the established Nav2 transform tolerance |

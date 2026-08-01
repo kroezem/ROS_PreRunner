@@ -71,7 +71,7 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
         'RegulatedPurePursuitController'
     )
     assert rpp['desired_linear_vel'] == 0.45
-    assert rpp['min_approach_linear_velocity'] == 0.126
+    assert rpp['min_approach_linear_velocity'] == 0.25
     assert rpp['allow_reversing'] is False
     assert rpp['use_rotate_to_heading'] is False
     assert rpp['lookahead_dist'] == 0.40
@@ -80,7 +80,7 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     assert rpp['max_lookahead_dist'] == 0.80
     assert rpp['lookahead_time'] == 1.0
     assert rpp['regulated_linear_scaling_min_radius'] == 0.75
-    assert rpp['regulated_linear_scaling_min_speed'] == 0.15
+    assert rpp['regulated_linear_scaling_min_speed'] == 0.30
     assert rpp['use_cost_regulated_linear_velocity_scaling'] is True
     assert rpp['inflation_cost_scaling_factor'] == 10.0
     assert rpp['cost_scaling_dist'] == 0.45

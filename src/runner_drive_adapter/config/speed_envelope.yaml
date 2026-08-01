@@ -9,11 +9,11 @@ controller_server:
     min_x_velocity_threshold: 0.001
     FollowPath:
       desired_linear_vel: 0.45
-      min_approach_linear_velocity: 0.126
+      min_approach_linear_velocity: 0.25
       approach_velocity_scaling_dist: 0.40
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.75
-      regulated_linear_scaling_min_speed: 0.15
+      regulated_linear_scaling_min_speed: 0.30
       use_cost_regulated_linear_velocity_scaling: true
       inflation_cost_scaling_factor: 10.0
       cost_scaling_dist: 0.45
@@ -22,17 +22,15 @@ controller_server:
 
 drive_adapter:
   ros__parameters:
-    steering_min_speed: 0.05
-    feedforward_speed_per_command: 7.947
-    feedforward_speed_intercept: -0.1436
-    minimum_moving_speed: 0.126
-    floor_promotion_min_ratio: 0.50
+    feedforward_effort_per_speed: 0.1188
+    feedforward_effort_intercept: 0.0174
+    minimum_moving_speed: 0.25
     maximum_commanded_speed: 0.60
     proportional_gain: 0.05
     integral_gain: 0.0
     integrator_bound: 0.005
     output_min: 0.0
-    output_max: 0.12
+    output_max: 0.14
     encoder_metres_per_edge: 0.010282
     encoder_state_timeout_sec: 0.25
     cmd_vel_nav_timeout: 0.25

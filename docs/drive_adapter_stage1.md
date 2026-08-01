@@ -16,8 +16,9 @@ The adapter remains the sole SI-to-normalized converter. `twist_mux` remains
 the sole `/cmd_vel` publisher and `motor_node` remains the sole PWM owner.
 Stale `/cmd_vel_nav` still produces silence, explicit zero produces active
 brake, reverse remains rejected to zero, and infeasible steering is clamped.
-The published motor-command range is forward-only `[0.0, 0.12]`; provisional
-proportional correction may reduce output to zero but cannot request reverse.
+The published motor-command range is forward-only `[0.0, 0.14]`; proportional
+correction may reduce output to zero but cannot request reverse. The 0.14
+ceiling is a safety authority bound, not a feedforward target.
 
 Stage 1 used an encoder-triggered 0.380 breakaway kick. Stage 4 demonstrated
 that it added no torque at the maximum calibrated command because the
@@ -28,56 +29,57 @@ The current implementation, parameters, evidence, diagnostics, bench
 procedure, and floor-test procedure are documented in
 [stall_assist.md](stall_assist.md).
 
-## Provisional MD13S feedforward
+## Stage 2B characterized MD13S feedforward
 
-The stale hobby-ESC lookup is no longer used. Forward targets use the inverse
-of `v = 7.947 * cmd - 0.1436`:
+The stale hobby-ESC lookup and provisional plant fit are no longer used.
+Accepted forward targets use the characterized inverse directly in normalized
+effort:
 
 ```
-cmd = (speed + 0.1436) / 7.947
+u_ff = 0.1188 * abs(effective_speed) + 0.0174
 ```
 
-This fit comes from `teleop_20260731_200955`, has R2 0.9968, and covers input
-commands 0.05 through 0.25. It is a provisional compatibility fit pending
-controlled MD13S characterization. In particular, the lower requested-speed
-examples extrapolate below the fitted command range. Every published adapter
-output is nevertheless clamped to `[0.0, 0.12]`, and an explicit zero target
-still publishes zero.
+The adapter does not apply a 0.04 feedforward output floor. Instead, every
+accepted nonzero speed is promoted to at least 0.25 m/s before feedforward and
+P-error calculation. An explicit zero remains exactly zero and receives no
+feedforward. A typed `feedforward_floor_violation` diagnostic reports a
+computed nonzero-command feedforward below 0.04 without changing output; with
+the configured 0.25 m/s floor it remains false and assertion indicates that
+the command-floor path was bypassed.
 
 Bag `rf2o_fix1_20260731_214809` confirms that wheel and RF2O velocity signs
 agree for 99.47% of 1139 moving samples. The remaining speed chatter is a
 feedback limit cycle: the MD13S plant gain is approximately 7.947 m/s per
 command, so the former Kp 0.30 produced a proportional loop gain near 2.38.
-The compatibility controller therefore uses provisional pre-characterization
-tuning of Kp 0.05 and Ki 0. Integral accumulation, breakaway preload,
+The controller uses Kp 0.05 and Ki 0. Integral accumulation, breakaway preload,
 preemption decay, and error-dependent stall gain switching are bypassed. Every
 fresh-feedback output is exactly:
 
 ```
-clamp(feedforward + 0.05 * (commanded_speed - measured_speed), 0.0, 0.12)
+clamp(feedforward + 0.05 * speed_error, 0.0, 0.14)
 ```
 
-Stale encoder feedback and promoted-floor commands remain feedforward-only.
+Here `speed_error = abs(effective_speed) - abs(measured_speed)`. Fresh-feedback
+floor-promoted commands receive the same P correction as other accepted
+commands. Stale encoder feedback remains feedforward-only.
 The legacy integral diagnostic fields are retained for bag compatibility and
 truthfully remain zero/false. Operator driving is required to validate
-smoothness before controlled MD13S characterization.
+the operational floor on hardware. Matti owns that floor-autonomy validation;
+this software stage does not validate vehicle behavior on hardware.
 
-For a later controlled tuning pass:
+### Stage 2B typed acceptance semantics
 
-- Characterize feedforward-only tracking before changing Kp 0.05 or enabling
-  any integral action. The inverse plant slope is about 0.126 command per m/s.
-- Initially constrain the integrator contribution to approximately
-  `[-0.03, +0.02]`; the +0.02 side fits within the roughly 0.026 command
-  headroom at a 0.600 m/s target. Recalculate from characterized headroom.
-- Use zero breakaway preload until MD13S onset is measured under load. If a
-  preload is demonstrated necessary, introduce no more than 0.01 first and
-  require repeatable stationary-transition evidence.
-- Temporarily disable floor promotion by setting its minimum ratio to 1.0
-  during characterization, then promote only to a repeatably sustainable
-  measured floor. Do not infer that floor from the extrapolated fit.
-
-The feedforward coefficients, output bounds, and floor-promotion settings are
-unchanged by this provisional feedback retune.
+- `commanded_speed` is the raw longitudinal SI request, unchanged by the floor
+  or ceiling.
+- `effective_speed` is zero, or has magnitude in `[0.25, 0.60]`; feedforward
+  and feedback use this value.
+- `speed_error` is `abs(effective_speed) - abs(measured_speed)`.
+- Comparing `commanded_speed` with `effective_speed` exposes floor or ceiling
+  intervention in independently interpreted bags.
+- `feedforward_floor_violation` is diagnostic evidence of a bypassed floor,
+  never an output clamp.
+- `final_throttle` cannot exceed the 0.14 safety authority bound, and Ki
+  remains exactly zero pending hardware validation by Matti.
 
 ## Teleop preemption
 

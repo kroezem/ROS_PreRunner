@@ -22,7 +22,7 @@ def test_origin_has_only_expected_consumers_and_flattened_keys():
     """The shared file is the complete narrow two-consumer origin."""
     origins = load_origin(ORIGIN)
 
-    assert len(origins) == 28
+    assert len(origins) == 26
     assert {origin.node_name for origin in origins} == {
         '/controller_server',
         '/drive_adapter',
@@ -34,11 +34,20 @@ def test_origin_has_only_expected_consumers_and_flattened_keys():
         for origin in origins
     )
     assert any(
-        origin.parameter_name == 'output_max' and origin.value == 0.12
+        origin.parameter_name == 'output_max' and origin.value == 0.14
         for origin in origins
     )
     assert any(
         origin.parameter_name == 'integrator_bound' and origin.value == 0.005
+        for origin in origins
+    )
+    assert any(
+        origin.parameter_name == 'integral_gain' and origin.value == 0.0
+        for origin in origins
+    )
+    assert any(
+        origin.parameter_name == 'feedforward_effort_per_speed'
+        and origin.value == 0.1188
         for origin in origins
     )
 

@@ -62,11 +62,9 @@ class DriveAdapterNode(Node):
         names = (
             'wheelbase',
             'max_steering_angle',
-            'steering_min_speed',
-            'feedforward_speed_per_command',
-            'feedforward_speed_intercept',
+            'feedforward_effort_per_speed',
+            'feedforward_effort_intercept',
             'minimum_moving_speed',
-            'floor_promotion_min_ratio',
             'maximum_commanded_speed',
             'proportional_gain',
             'integral_gain',
@@ -213,9 +211,13 @@ class DriveAdapterNode(Node):
         message = AdapterState()
         message.stamp = self.get_clock().now().to_msg()
         message.commanded_speed = decision.commanded_speed
+        message.effective_speed = decision.effective_speed
         message.measured_speed = decision.measured_speed
         message.speed_error = decision.speed_error
         message.feedforward_throttle = decision.feedforward_throttle
+        message.feedforward_floor_violation = (
+            decision.feedforward_floor_violation
+        )
         message.proportional_term = decision.proportional_term
         message.integrator_state = decision.integrator_state
         message.pi_term = decision.pi_term
@@ -279,6 +281,13 @@ class DriveAdapterNode(Node):
                 f'{self.config.maximum_curvature:.12f} 1/m',
                 now,
             )
+        if decision.feedforward_floor_violation:
+            self._error(
+                'feedforward_floor_violation',
+                'Nonzero-command feedforward is below 0.04; configured '
+                'command-floor path was bypassed',
+                now,
+            )
         if decision.reason == 'encoder_stale_feedforward':
             self._warning(
                 'encoder_stale',
@@ -303,9 +312,10 @@ class DriveAdapterNode(Node):
             f'maximum_curvature={c.maximum_curvature:.12f} 1/m'
         )
         self.get_logger().info(
-            'Provisional MD13S linear inverse: '
-            f'speed_per_command={c.feedforward_speed_per_command:.6f}, '
-            f'speed_intercept={c.feedforward_speed_intercept:.6f} m/s, '
+            'Characterized MD13S inverse: '
+            f'effort_per_speed={c.feedforward_effort_per_speed:.6f}, '
+            f'effort_intercept={c.feedforward_effort_intercept:.6f}, '
+            f'minimum_moving_speed={c.minimum_moving_speed:.6f} m/s, '
             f'maximum_commanded_speed={c.maximum_commanded_speed:.6f} m/s'
         )
         self.get_logger().info(

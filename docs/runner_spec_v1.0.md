@@ -241,18 +241,18 @@ Nav2 → /cmd_vel_nav (SI) → drive_adapter → /cmd_vel_auto (normalized) → 
 
 **Steering infeasibility clamps; it does not brake (D-60, supersedes D-56).** When requested curvature exceeds 2.1236 m⁻¹, steering saturates at ±1.0 and speed is maintained, accepting understeer. Brake-on-infeasible was correct for bench validation and wrong in execution: Smac plans at `minimum_turning_radius`, so RPP must exceed path curvature to correct cross-track error, making infeasible requests structural rather than occasional. Measured: with the planner at its old 0.470 m limit, saturation reached **51.3%** of driving samples with requests up to 83% over the limit; with planner margin (D-59) it fell to **1.5%**.
 
-**Throttle:** provisional MD13S linear inverse plus bounded proportional feedback.
+**Throttle:** characterized MD13S inverse plus bounded proportional feedback.
 
 | Parameter | Value |
 |---|---|
-| Feedforward inverse | `cmd = (speed + 0.1436) / 7.947` |
-| Evidence | `teleop_20260731_200955`, R2 0.9968, command fit range 0.05–0.25; **provisional** |
-| Kp | **0.05 (provisional)** |
+| Feedforward inverse | `u_ff = 0.1188 * abs(effective_speed) + 0.0174` |
+| Kp | **0.05** |
 | Ki | **0.00 (disabled)** |
 | Gain switch | **none** |
-| Output bounds | **0.00 … +0.12** |
+| Integrator bound | **±0.005 normalized effort** |
+| Output bounds | **0.00 … +0.14 safety authority** |
 | `maximum_commanded_speed` | 0.60 m/s |
-| Provisional promoted floor | 0.126 m/s (unchanged; MD13S floor uncharacterized) |
+| Promoted command floor | 0.25 m/s |
 
 **Provisional MD13S feedback tuning (D-79, supersedes D-66 and D-72 for the
 compatibility controller).** Bag `rf2o_fix1_20260731_214809` has matching
@@ -269,15 +269,17 @@ disabled.
 
 The adapter is forward-only: explicit stop and rejected inputs publish zero,
 and proportional correction clamps at zero rather than requesting reverse.
-Feedforward, Kp, and promotion thresholds remain provisional until controlled
-characterization.
+Every accepted positive nonzero request below 0.25 m/s is promoted to 0.25
+m/s, and every request above 0.60 m/s is capped, before both feedforward and P
+error calculation. Zero remains zero and receives no feedforward. The
+controller error is `abs(effective_speed) - abs(measured_speed)`.
 
-The inverse is an initial compatibility estimate, not final characterization;
-requested speeds whose inverse is below command 0.05 are extrapolations.
-Controlled follow-up should begin feedforward-only before changing Kp 0.05 or
-enabling any integral action. Breakaway preload should start at zero (at most
-0.01 only after repeatable evidence). Floor promotion remains unchanged and
-must be evaluated separately against a sustainable characterized MD13S floor.
+Typed `AdapterState.commanded_speed` preserves the raw SI request while
+`effective_speed` exposes the zero/floor/ceiling-adjusted controller input.
+`feedforward_floor_violation` reports, without altering output, any computed
+nonzero-command feedforward below 0.04. It is false throughout the configured
+nonzero command domain; assertion is evidence that the floor path was
+bypassed. Matti performs floor-autonomy hardware validation.
 
 **Teleop preemption** remains diagnostic. With integral action disabled it
 does not alter speed feedback. The adapter continues publishing
@@ -580,8 +582,8 @@ marking and bounded-accumulation validation remain outstanding.
 |---|---|
 | Plugin | `RegulatedPurePursuitController` |
 | `desired_linear_vel` | 0.45 m/s |
-| `min_approach_linear_velocity` | 0.126 m/s |
-| **`regulated_linear_scaling_min_speed`** | **0.15 m/s** |
+| `min_approach_linear_velocity` | 0.25 m/s |
+| **`regulated_linear_scaling_min_speed`** | **0.30 m/s** |
 | `regulated_linear_scaling_min_radius` | 0.75 m |
 | **`cost_scaling_dist`** | **0.45 m** |
 | `inflation_cost_scaling_factor` | **10.0** (must equal local `cost_scaling_factor`) |
@@ -670,7 +672,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-61 | **Behaviour tree: `Fallback` (not `ReactiveFallback`), `RateController` at 3 Hz outside it, `Inverter(GoalUpdated)` guarding `IsPathValid`.** | Three separately measured defects. `ReactiveFallback` re-evaluates the stale path mid-plan and halts the planner before its success callback writes the blackboard — `/plan` publishes while `FollowPath` gets zero poses. `RateController` inside the fallback returns RUNNING and short-circuits planning entirely. Without `Inverter(GoalUpdated)`, `IsPathValid` returns SUCCESS on an empty path, which is trivially valid. |
 | D-62 | **The global costmap carries no obstacle layer.** Dynamic obstacles are handled exclusively by the local costmap and RPP collision detection. | A whole-house non-rolling obstacle layer clears only where a later raytrace passes, so phantom marks from motion smear and pose jumps accumulate: measured 308 → 1078 → 1539 lethal cells in 112 s, monotonically, producing progressive `NO_VALID_PATH` and session-length degradation. The layer was inert for the platform's entire history (`max_obstacle_height: 0.0`) — the confident planning the vehicle exhibited was against the static map alone. Accepted cost: no global routing around unmapped obstacles. |
 | D-63 | **Footprint corrected to measured dimensions, `footprint_padding: 0.0`.** | The configured footprint was 0.200 × 0.295 m against a measured 0.165 × 0.290 m — 35 mm too wide, 17.5 mm per side when passing between obstacles. Inscribed radius becomes 0.060 m (governed by rear overhang, not width). Full-lock width of 0.180 m leaves ~7.5 mm/side unmodelled during hard turns, accepted as small against the 0.096 m p95 pose jump already tolerated. |
-| D-64 | **Cost regulation uses a wide range with a minimum-speed floor**, not a narrow range. `cost_scaling_dist` 0.45 with `regulated_linear_scaling_min_speed` 0.15. | Wide regulation without a floor made the vehicle crawl everywhere — median scan range is 1.09 m, so it is within 0.45 m of something almost always. Narrowing the range fixed crawling but removed slowdown where it was wanted. The floor is what makes wide regulation usable: it slows in tight quarters and never regulates itself to a stop. |
+| D-64 | **Cost regulation uses a wide range with a minimum-speed floor**, not a narrow range. Stage 2B retains `cost_scaling_dist` 0.45 and raises `regulated_linear_scaling_min_speed` to the confirmed 0.30 m/s value. | Wide regulation without a floor made the vehicle crawl everywhere — median scan range is 1.09 m, so it is within 0.45 m of something almost always. Narrowing the range fixed crawling but removed slowdown where it was wanted. The floor is what makes wide regulation usable: it slows in tight quarters and never regulates itself to a stop. |
 | D-65 | **RPP collision detection horizon reduced to 0.15 s.** | Jazzy RPP has no graceful-degradation path — a positive collision check throws `NoValidControl` immediately, verified against installed source — so the horizon is the only lever. At 0.5 s and 0.72 m/s it aborted goals on obstructions projected 0.36 m ahead in physically clearable space. |
 | D-66 | **Error-dependent integral gain, symmetric.** Ki 0.06 normal, 0.30 when the measured/commanded ratio is below 0.40 or above 1.60, 0.10 hysteresis. | At Ki 0.06 the integrator needs 18 s to traverse its range against a 10 s progress-checker abort. Measured during stalls: throttle 0.530 of a 0.70 ceiling, integrator 0.065 of +0.16 — **neither saturated**, so the ceiling was never the constraint and a prior diagnosis blaming it was wrong. Symmetry matters because the stale feedforward table also produces persistent overspeed. |
 | D-67 | **`SimpleGoalChecker` with a deliberately loose 0.5 rad yaw tolerance.** | `PositionGoalChecker` ignores orientation, terminating before Smac's final heading-correcting arc — a waypoint placed facing the opposite direction was reached facing the original way. Tolerance is loose because the vehicle cannot rotate in place and has no reverse, so a tight tolerance risks unreachable goals with no recovery. |
@@ -686,6 +688,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-77 | **`encoder_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** `runner-encoder.service` is the sole GPIO 22 owner and restarts on failure. The motor reversal gate remains fail-closed until it receives post-request stationary evidence; while pending, `/motor/direction` reports the hardware-latched DIR rather than the request. | Motor ownership already persists beyond composite lifetime, so its safety gate must not depend on an application launch to supply `/wheel/encoder_state`. Separating encoder hardware ownership prevents both zero-publisher braking and duplicate GPIO consumers. |
 | D-78 | **Replace the stale hobby-ESC adapter lookup with a provisional MD13S linear inverse and cap autonomy output at 0.12.** | Bag `teleop_20260731_200955` fits `v = 7.947*cmd - 0.1436` with R2 0.9968 over command 0.05–0.25. Its inverse removes the hazardous ESC-era 0.340 minimum while the conservative cap bounds compatibility driving. This is smoke-checked scaffolding pending operator driving and controlled characterization, not a final plant model. |
 | D-79 | **Use provisional MD13S Kp 0.05 with Ki 0 and no feedback gain switching. Supersedes D-66 and D-72 for the compatibility controller.** | Bag `rf2o_fix1_20260731_214809` confirms wheel/RF2O `vx` sign agreement in 99.47% of 1139 moving samples. The remaining chatter is a speed-loop limit cycle: Kp 0.30 against measured plant gain 7.947 m/s per command gives loop gain about 2.38 and alternates low drive with active brake. Removing integral state, stall gain switching, breakaway preload, and preemption decay makes output feedforward plus only the provisional Kp correction. Operator driving must validate smoothness before characterization. |
+| D-80 | **Stage 2B applies the characterized MD13S inverse, zero-or-at-least-0.25 m/s adapter semantics, confirmed RPP floors, and a 0.14 safety authority bound while Ki remains disabled. Supersedes the calibration and floor values in D-64, D-78, and D-79.** | Direct effort-domain parameters preserve a clean shared origin. Raw and effective speeds are both typed so floor/ceiling intervention remains bag-visible. A non-clamping sub-0.04 diagnostic proves the configured floor path was used. Software tests cover the negative bypass case; Matti owns hardware floor-autonomy validation. |
 
 ---
 
