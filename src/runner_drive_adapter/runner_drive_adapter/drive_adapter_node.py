@@ -252,13 +252,7 @@ class DriveAdapterNode(Node):
         if command is None:
             return
         speed, yaw_rate = command
-        if decision.reason == 'negative_speed':
-            self._warning(
-                'negative_speed',
-                f'Rejecting negative speed {speed:.9f} m/s; zero brake',
-                now,
-            )
-        elif decision.reason == 'nonfinite_input':
+        if decision.reason == 'nonfinite_input':
             self._error(
                 'nonfinite_input',
                 'Rejecting non-finite /cmd_vel_nav input; zero brake',
@@ -267,7 +261,8 @@ class DriveAdapterNode(Node):
         elif decision.reason == 'maximum_speed_clamped':
             self._warning(
                 'maximum_speed_clamped',
-                f'Requested speed {speed:.9f} m/s exceeds configured maximum '
+                f'Requested speed magnitude {abs(speed):.9f} m/s exceeds '
+                'configured maximum '
                 f'{self.config.maximum_commanded_speed:.9f} m/s; clamping',
                 now,
             )

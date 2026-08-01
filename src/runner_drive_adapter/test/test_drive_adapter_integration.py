@@ -201,6 +201,39 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert suppress_states
         assert 'preempted=false' in suppress_states[-1].mode
 
+        reverse_state_start = len(typed_states)
+        reverse_command = Twist()
+        reverse_command.linear.x = -0.20
+        reverse_command.angular.z = 0.10
+        nav_pub.publish(reverse_command)
+        encoder_pub.publish(EncoderState(
+            stationary=False,
+            edge_rate=2.0,
+            pending_direction=-1,
+        ))
+        reverse_motion = Odometry()
+        reverse_motion.twist.twist.linear.x = -0.20
+        reverse_motion.twist.twist.angular.z = 0.15
+        motion_pub.publish(reverse_motion)
+        mux_output_pub.publish(reverse_command)
+        _spin_for(executor, 0.10)
+        reverse_states = typed_states[reverse_state_start:]
+        assert commands[-1].linear.x < 0.0
+        assert reverse_states
+        reverse_state = reverse_states[-1]
+        assert reverse_state.commanded_speed == -0.20
+        assert reverse_state.effective_speed == -0.25
+        assert reverse_state.measured_speed >= 0.0
+        assert reverse_state.speed_error == (
+            abs(reverse_state.effective_speed)
+            - abs(reverse_state.measured_speed)
+        )
+        assert reverse_state.feedforward_throttle > 0.0
+        assert reverse_state.proportional_term > 0.0
+        assert reverse_state.pi_term >= 0.0
+        assert reverse_state.final_throttle < 0.0
+        assert reverse_state.mode.startswith('reverse;')
+
         _spin_for(executor, 0.30)
         commands.clear()
         _spin_for(executor, 0.15)

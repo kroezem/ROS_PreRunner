@@ -134,7 +134,7 @@ class AdapterConfig:
                 'maximum_commanded_speed must reach minimum_moving_speed'
             )
         if self.output_min != 0.0:
-            raise ValueError('output_min must be zero for forward-only output')
+            raise ValueError('output_min magnitude must be zero')
         if (
             self.output_max > MAXIMUM_OUTPUT_AUTHORITY
             or self.output_max <= 0.0
@@ -443,13 +443,6 @@ class DriveAdapter:
                 commanded_speed=speed,
                 **preemption_fields,
             )
-        if speed < 0.0:
-            return self._brake(
-                'negative_speed',
-                IntegratorFreezeReason.INVALID_COMMAND,
-                commanded_speed=speed,
-                **preemption_fields,
-            )
         if speed == 0.0:
             return self._brake(
                 'explicit_stop',
@@ -462,10 +455,13 @@ class DriveAdapter:
             abs(requested_curvature) > self.config.maximum_curvature
         )
 
-        effective_speed = min(
+        command_sign = 1.0 if speed > 0.0 else -1.0
+        speed_magnitude = abs(speed)
+        effective_speed_magnitude = min(
             self.config.maximum_commanded_speed,
-            max(speed, self.config.minimum_moving_speed),
+            max(speed_magnitude, self.config.minimum_moving_speed),
         )
+        effective_speed = command_sign * effective_speed_magnitude
         feedforward = linear_feedforward(
             effective_speed,
             self.config.feedforward_effort_per_speed,
@@ -487,7 +483,7 @@ class DriveAdapter:
                 * self.config.encoder_metres_per_edge
             )
         speed_error = abs(effective_speed) - abs(measured_speed)
-        below_floor = speed < self.config.minimum_moving_speed
+        below_floor = speed_magnitude < self.config.minimum_moving_speed
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
 
@@ -533,13 +529,14 @@ class DriveAdapter:
 
         raw_output = feedforward + proportional + self._integrator
         saturation = self._saturation(raw_output)
-        final = max(
+        output_magnitude = max(
             self.config.output_min,
             min(self.config.output_max, raw_output),
         )
+        final = command_sign * output_magnitude
 
         reason = 'closed_loop'
-        if speed > self.config.maximum_commanded_speed:
+        if speed_magnitude > self.config.maximum_commanded_speed:
             reason = 'maximum_speed_clamped'
         elif below_floor:
             reason = 'floor_promoted'
@@ -548,7 +545,7 @@ class DriveAdapter:
         pi_term = proportional + self._integrator
         return AdapterDecision(
             publish_command=True,
-            mode='forward',
+            mode='forward' if command_sign > 0.0 else 'reverse',
             reason=reason,
             commanded_speed=speed,
             effective_speed=effective_speed,

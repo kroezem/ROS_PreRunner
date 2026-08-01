@@ -388,8 +388,8 @@ def test_documented_freeze_precedence_is_complete_and_deterministic():
     )
 
 
-def test_integrator_carries_across_stop_and_direction_rejection():
-    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+def test_integrator_carries_across_zero_direction_change_and_mismatch():
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.01))
     _set_selected(adapter, 0.0)
     _update(adapter, 0.0, measured=0.20, sample_time=50.0)
     _set_selected(adapter, 0.1)
@@ -397,12 +397,36 @@ def test_integrator_carries_across_stop_and_direction_rejection():
     held = moving.integrator_state
 
     stopped = _update(adapter, 0.2, speed=0.0, sample_time=50.2)
-    rejected_reverse = _update(adapter, 0.3, speed=-0.1, sample_time=50.3)
+    mismatched_reverse = _update(
+        adapter,
+        0.3,
+        speed=-0.29,
+        measured=0.20,
+        sample_time=50.3,
+        pending_direction=1,
+    )
+    _set_selected(adapter, 0.4, linear=-0.05)
+    latched_reverse = _update(
+        adapter,
+        0.4,
+        speed=-0.29,
+        measured=0.20,
+        sample_time=50.4,
+        pending_direction=-1,
+    )
 
     assert held > 0.0
     assert stopped.integrator_state == held
     assert stopped.integrator_freeze_reason == IntegratorFreezeReason.ZERO_COMMAND
-    assert rejected_reverse.integrator_state == held
+    assert mismatched_reverse.final_throttle < 0.0
+    assert mismatched_reverse.integrator_state == held
+    assert (
+        mismatched_reverse.integrator_freeze_reason
+        == IntegratorFreezeReason.DIRECTION_MISMATCH
+    )
+    assert latched_reverse.integrator_state > held
+    assert latched_reverse.integrator_freeze_reason == IntegratorFreezeReason.NONE
+    assert latched_reverse.final_throttle < 0.0
 
 
 def test_successful_live_integral_gain_change_is_the_only_state_reset():
@@ -553,6 +577,81 @@ def test_ki_zero_replay_is_bit_identical_to_stage_2b_arithmetic():
         assert struct.pack('!d', decision.final_throttle) == struct.pack(
             '!d', expected
         )
+
+
+def test_reverse_floor_preserves_sign_with_magnitude_domain_diagnostics():
+    decision = _update(
+        DriveAdapter(AdapterConfig()),
+        0.0,
+        speed=-0.10,
+        measured=0.0,
+        pending_direction=-1,
+    )
+
+    expected_magnitude = _feedforward(0.25) + 0.05 * 0.25
+    assert decision.mode == 'reverse'
+    assert decision.reason == 'floor_promoted'
+    assert decision.commanded_speed == -0.10
+    assert decision.effective_speed == -0.25
+    assert decision.speed_error == pytest.approx(0.25)
+    assert decision.feedforward_throttle == pytest.approx(_feedforward(0.25))
+    assert decision.proportional_term == pytest.approx(0.05 * 0.25)
+    assert decision.integrator_state == 0.0
+    assert decision.pi_term == pytest.approx(0.05 * 0.25)
+    assert decision.final_throttle == pytest.approx(-expected_magnitude)
+
+
+def test_reverse_maximum_speed_clamp_preserves_sign():
+    decision = _update(
+        DriveAdapter(AdapterConfig()),
+        0.0,
+        speed=-0.80,
+        measured=0.60,
+        ekf=-0.60,
+        pending_direction=-1,
+    )
+
+    assert decision.reason == 'maximum_speed_clamped'
+    assert decision.commanded_speed == -0.80
+    assert decision.effective_speed == -0.60
+    assert decision.speed_error == 0.0
+    assert decision.final_throttle == pytest.approx(-_feedforward(0.60))
+
+
+def test_reverse_stale_feedback_uses_signed_feedforward_only():
+    adapter = DriveAdapter(AdapterConfig())
+    adapter.update_command(-0.30, 0.0, 0.0)
+
+    decision = adapter.step(0.0)
+
+    assert decision.mode == 'reverse'
+    assert decision.reason == 'encoder_stale_feedforward'
+    assert decision.effective_speed == -0.30
+    assert decision.speed_error == pytest.approx(0.30)
+    assert decision.proportional_term == 0.0
+    assert decision.feedforward_throttle == pytest.approx(_feedforward(0.30))
+    assert decision.final_throttle == pytest.approx(-_feedforward(0.30))
+    assert (
+        decision.integrator_freeze_reason
+        == IntegratorFreezeReason.FEEDBACK_STALE
+    )
+
+
+def test_reverse_output_saturates_with_symmetric_authority():
+    adapter = DriveAdapter(AdapterConfig(proportional_gain=0.60))
+
+    decision = _update(
+        adapter,
+        0.0,
+        speed=-0.60,
+        measured=0.0,
+        pending_direction=-1,
+    )
+
+    assert decision.saturation_state == 'upper'
+    assert decision.feedforward_throttle > 0.0
+    assert decision.proportional_term > 0.0
+    assert decision.final_throttle == -0.14
 
 
 def test_wheelspin_requires_ratio_excess_and_duration():
@@ -712,18 +811,11 @@ def test_preemption_does_not_change_feedforward_or_proportional_feedback():
     assert not preempted_decision.stall_integral_gain_active
 
 
-@pytest.mark.parametrize(
-    ('speed', 'reason'),
-    [
-        (0.0, 'explicit_stop'),
-        (-0.1, 'negative_speed'),
-    ],
-)
-def test_stop_and_invalid_forward_commands_full_brake(speed, reason):
-    decision = _update(DriveAdapter(AdapterConfig()), 0.0, speed=speed)
+def test_stop_command_full_brakes():
+    decision = _update(DriveAdapter(AdapterConfig()), 0.0, speed=0.0)
 
     assert decision.mode == 'brake'
-    assert decision.reason == reason
+    assert decision.reason == 'explicit_stop'
     assert decision.final_throttle == 0.0
 
 
@@ -744,7 +836,9 @@ def test_nonfinite_input_is_safely_braked(speed, yaw):
     ('speed', 'measured', 'encoder'),
     [
         (0.0, 0.0, True),
-        (-0.1, 0.0, True),
+        (-0.10, 0.0, True),
+        (-0.60, 0.0, True),
+        (-0.80, 0.0, True),
         (0.10, 0.0, True),
         (0.25, 0.25, True),
         (0.29, 0.0, False),
@@ -765,7 +859,7 @@ def test_every_published_adapter_output_obeys_safety_authority_bound(
     )
 
     assert decision.publish_command
-    assert 0.0 <= decision.final_throttle <= 0.14
+    assert -0.14 <= decision.final_throttle <= 0.14
 
 
 @pytest.mark.parametrize('direction', [-1.0, 1.0])
