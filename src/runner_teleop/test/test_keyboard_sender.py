@@ -69,16 +69,32 @@ def test_independent_key_events_and_opposing_steering_cancel(state):
     assert state.state(now=0.1)[2] == -1.0
 
 
-def test_s_brakes_even_while_space_and_w_are_held(state):
+def test_s_requests_reverse_and_opposing_throttle_keys_cancel(state):
     state.press('space', now=0.0)
-    state.press('w', now=0.0)
     state.press('s', now=0.0)
 
     assert state.state(now=0.0)[:3] == (
-        sender.MODE_BRAKE,
+        sender.MODE_DRIVE,
+        -0.30,
+        0.0,
+    )
+
+    state.press('w', now=0.1)
+    assert state.state(now=0.1)[:3] == (
+        sender.MODE_DRIVE,
         0.0,
         0.0,
     )
+
+
+def test_no_throttle_key_publishes_exact_zero(state):
+    state.press('space', now=0.0)
+
+    mode, throttle, steering, _ = state.state(now=0.0)
+
+    assert mode == sender.MODE_DRIVE
+    assert throttle == 0.0
+    assert steering == 0.0
 
 
 def test_escape_clears_every_held_key_and_zeroes_command(state):

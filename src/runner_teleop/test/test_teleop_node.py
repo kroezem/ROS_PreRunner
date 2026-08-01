@@ -81,10 +81,10 @@ def make_node():
     node._keyboard_mode = KeyboardState.MODE_DRIVE
     node._keyboard_throttle = 0.0
     node._keyboard_steer = 0.0
-    node._keyboard_forward_requested = False
-    node._keyboard_forward_previous = False
-    node._keyboard_forward_ready = False
-    node._keyboard_forward_armed = False
+    node._keyboard_motion_requested = False
+    node._keyboard_motion_previous = False
+    node._keyboard_motion_ready = False
+    node._keyboard_motion_armed = False
     node._keyboard_suppress_requested = False
     node._keyboard_suppress_previous = False
     node._keyboard_suppress_ready = False
@@ -664,6 +664,19 @@ def test_keyboard_motion_brake_steering_and_suppression_priority():
     assert brake.angular.z == -1.0
     assert suppress_mode == KEYBOARD_SUPPRESS_MODE
     assert suppressed is None
+
+
+def test_keyboard_reverse_publishes_negative_cmd_vel_teleop():
+    node = make_node()
+    keyboard_cycle(node, keyboard_state())
+
+    reverse, mode = keyboard_cycle(
+        node,
+        keyboard_state(throttle=-0.30, sequence=2),
+    )
+
+    assert mode == KEYBOARD_MOTION_MODE
+    assert reverse.linear.x == pytest.approx(-0.30)
 
 
 @pytest.mark.parametrize(

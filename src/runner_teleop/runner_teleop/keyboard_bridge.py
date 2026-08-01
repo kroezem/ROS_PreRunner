@@ -239,7 +239,10 @@ class KeyboardReceiver:
             packet=packet,
             source_ip=source_ip,
             accepted_at=now,
-            throttle=min(packet.throttle, self.speed_cap),
+            throttle=max(
+                -self.speed_cap,
+                min(packet.throttle, self.speed_cap),
+            ),
         )
         self.state = accepted
         return accepted, None, gap
@@ -433,7 +436,7 @@ class KeyboardBridge(Node):
                     now,
                 )
             if accepted is not None and (
-                accepted.throttle < accepted.packet.throttle
+                abs(accepted.throttle) < abs(accepted.packet.throttle)
             ):
                 self._warn(
                     'speed_cap',

@@ -86,8 +86,8 @@ def decode_packet(data: bytes) -> KeyboardPacket:
         raise PacketError('throttle must be finite')
     if not math.isfinite(steering):
         raise PacketError('steering must be finite')
-    if not 0.0 <= throttle <= 1.0:
-        raise PacketError('throttle must be within [0.0, 1.0]')
+    if not -1.0 <= throttle <= 1.0:
+        raise PacketError('throttle must be within [-1.0, 1.0]')
     if not -1.0 <= steering <= 1.0:
         raise PacketError('steering must be within [-1.0, 1.0]')
     if route_command not in VALID_ROUTE_COMMANDS:

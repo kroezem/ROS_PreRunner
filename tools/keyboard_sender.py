@@ -215,9 +215,11 @@ class KeyboardInput:
             return MODE_BRAKE, 0.0, 0.0, route_command
         if suppress:
             return MODE_SUPPRESS, 0.0, 0.0, route_command
-        if 'space' not in pressed or 's' in pressed:
+        if 'space' not in pressed:
             return MODE_BRAKE, 0.0, 0.0, route_command
-        throttle = setpoint if 'w' in pressed else 0.0
+        throttle = setpoint * (
+            float('w' in pressed) - float('s' in pressed)
+        )
         steering = float('a' in pressed) - float('d' in pressed)
         return MODE_DRIVE, throttle, steering, route_command
 

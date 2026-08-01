@@ -256,10 +256,10 @@ class TeleopNode(Node):
         self._keyboard_mode = KeyboardState.MODE_DRIVE
         self._keyboard_throttle = 0.0
         self._keyboard_steer = 0.0
-        self._keyboard_forward_requested = False
-        self._keyboard_forward_previous = False
-        self._keyboard_forward_ready = False
-        self._keyboard_forward_armed = False
+        self._keyboard_motion_requested = False
+        self._keyboard_motion_previous = False
+        self._keyboard_motion_ready = False
+        self._keyboard_motion_armed = False
         self._keyboard_suppress_requested = False
         self._keyboard_suppress_previous = False
         self._keyboard_suppress_ready = False
@@ -323,7 +323,7 @@ class TeleopNode(Node):
         self._fixed_throttle_held = fixed_throttle_held
         self._teleop_suppress_held = teleop_suppress_held
         if manual_held or fixed_throttle_held or teleop_suppress_held:
-            self._disarm_held_keyboard_forward()
+            self._disarm_held_keyboard_motion()
             self._keyboard_suppress_armed = False
             self._keyboard_suppress_rearm_ready = False
         self._update_dpad(msg)
@@ -368,15 +368,15 @@ class TeleopNode(Node):
             raw_manual_cmd, self._manual_trigger_expo
         )
 
-    def _disarm_held_keyboard_forward(self):
-        if self._keyboard_forward_requested:
-            self._keyboard_forward_armed = False
-            self._keyboard_forward_ready = False
+    def _disarm_held_keyboard_motion(self):
+        if self._keyboard_motion_requested:
+            self._keyboard_motion_armed = False
+            self._keyboard_motion_ready = False
 
     def _invalidate_keyboard(self):
         self._keyboard_valid = False
-        self._keyboard_forward_armed = False
-        self._keyboard_forward_ready = False
+        self._keyboard_motion_armed = False
+        self._keyboard_motion_ready = False
         self._keyboard_suppress_armed = False
 
     def on_keyboard(self, msg: KeyboardState):
@@ -390,7 +390,7 @@ class TeleopNode(Node):
             )
             or not math.isfinite(msg.throttle)
             or not math.isfinite(msg.steering)
-            or not 0.0 <= msg.throttle <= 1.0
+            or not -1.0 <= msg.throttle <= 1.0
             or not -1.0 <= msg.steering <= 1.0
         ):
             self._invalidate_keyboard()
@@ -416,24 +416,24 @@ class TeleopNode(Node):
             self._keyboard_suppress_requested = True
             self._keyboard_suppress_previous = True
             return
-        forward = msg.throttle > 0.0 and not brake
+        motion = msg.throttle != 0.0 and not brake
 
-        if not forward:
-            self._keyboard_forward_ready = True
-            self._keyboard_forward_armed = False
+        if not motion:
+            self._keyboard_motion_ready = True
+            self._keyboard_motion_armed = False
         elif (
-            not self._keyboard_forward_previous
-            and self._keyboard_forward_ready
+            not self._keyboard_motion_previous
+            and self._keyboard_motion_ready
         ):
-            self._keyboard_forward_armed = True
-            self._keyboard_forward_ready = False
+            self._keyboard_motion_armed = True
+            self._keyboard_motion_ready = False
 
         self._keyboard_valid = True
         self._keyboard_mode = msg.mode
         self._keyboard_throttle = msg.throttle
         self._keyboard_steer = msg.steering
-        self._keyboard_forward_requested = forward
-        self._keyboard_forward_previous = forward
+        self._keyboard_motion_requested = motion
+        self._keyboard_motion_previous = motion
         self._keyboard_suppress_requested = suppress
         self._keyboard_suppress_previous = suppress
         if brake:
@@ -444,7 +444,7 @@ class TeleopNode(Node):
             self._controller_live
             and now - self._last_joy_at > self._controller_timeout
         ):
-            self._disarm_held_keyboard_forward()
+            self._disarm_held_keyboard_motion()
             self._controller_live = False
             self._manual_held = False
             self._fixed_throttle_held = False
@@ -502,8 +502,8 @@ class TeleopNode(Node):
             return
         elif (
             self._keyboard_valid
-            and self._keyboard_forward_requested
-            and self._keyboard_forward_armed
+            and self._keyboard_motion_requested
+            and self._keyboard_motion_armed
         ):
             mode = KEYBOARD_MOTION_MODE
             command = self._keyboard_throttle
@@ -512,7 +512,7 @@ class TeleopNode(Node):
             mode = (
                 KEYBOARD_DISARMED_MODE
                 if (
-                    self._keyboard_forward_requested
+                    self._keyboard_motion_requested
                     or self._keyboard_suppress_requested
                 )
                 else BRAKE_MODE

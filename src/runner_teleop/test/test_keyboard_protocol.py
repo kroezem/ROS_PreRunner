@@ -122,7 +122,7 @@ def test_absolute_navigation_mode_commands_encode_and_decode(command, name):
         packet(session=0),
         packet(throttle=math.nan),
         packet(throttle=math.inf),
-        packet(throttle=-0.01),
+        packet(throttle=-1.20),
         packet(throttle=1.20),
         packet(steering=math.nan),
         packet(steering=-1.01),
@@ -149,6 +149,21 @@ def test_valid_above_cap_is_capped_after_protocol_validation():
     assert accepted.packet.throttle == pytest.approx(0.80)
     assert accepted.throttle == pytest.approx(0.50)
     assert receiver.is_live(1.15)
+
+
+def test_valid_reverse_above_cap_is_capped_symmetrically():
+    receiver = KeyboardReceiver(speed_cap=0.50, timeout=0.15)
+
+    accepted, error, gap = receiver.accept(
+        packet(throttle=-0.80),
+        '100.64.0.2',
+        1.0,
+    )
+
+    assert error is None
+    assert gap is None
+    assert accepted.packet.throttle == pytest.approx(-0.80)
+    assert accepted.throttle == pytest.approx(-0.50)
 
 
 def test_invalid_packet_does_not_refresh_liveness():

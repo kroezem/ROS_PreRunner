@@ -27,8 +27,9 @@ toggle backtick off and on to explicitly re-arm. Override the lifetime with
 remains accepted.
 
 Space retains its original manual hold-to-run role. While Space is held, W
-requests the selected throttle, S requests full brake, and A/D request full
-steering. Releasing Space requests brake. Space does not clear the autonomy
+requests the selected forward throttle, S requests reverse at the same selected
+magnitude, and A/D request full steering. W+S cancel to exactly zero. Releasing
+Space requests brake. Space does not clear the autonomy
 latch. `=`/`-` change the throttle setpoint by 0.01 once per physical press.
 
 The navigation bridge and sender both start in WAYPOINT mode. F12 alternates
@@ -68,7 +69,7 @@ posture before Phase 2 racing speeds.
 
 `keyboard_bridge` listens on UDP port 49321 by default, validates the exact
 27-byte version-two packet, including additive absolute navigation commands
-8 and 9, applies the default 0.50 forward cap, and publishes
+8 and 9, applies the default 0.50 magnitude cap, and publishes
 `/teleop/keyboard_state` at 20 Hz. `valid` still reports 150 ms sender
 liveness, while `mode=MODE_SUPPRESS` reports an armed Pi latch even when
 `valid=false`. Armed keyboard autonomy publishes `teleop_suppress` continuously
@@ -84,8 +85,9 @@ reduces accidental collisions only: UDP is neither authenticated nor
 encrypted. Use a trusted LAN or Tailscale and do not treat source locking as
 authentication.
 
-Protocol-valid throttle is in `[0.0, 1.0]`; a valid request above the Pi cap is
-capped. Non-finite or out-of-range fields, malformed packets, unauthorized
+Protocol-valid throttle is in `[-1.0, 1.0]`; a valid request beyond the Pi
+magnitude cap is capped with its sign preserved. Non-finite or out-of-range
+fields, malformed packets, unauthorized
 sources, and live-session changes are rejected without refreshing liveness.
 Valid brake packets are applied before duplicate/old sequence filtering, so
 repeated identical emergency packets remain safe and idempotent. Other
