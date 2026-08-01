@@ -155,7 +155,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert typed_states[-1].steering_curvature_max > 0.0
         assert (
             typed_states[-1].integrator_freeze_reason
-            == AdapterState.INTEGRATOR_GAIN_DISABLED
+            == AdapterState.INTEGRATOR_OUTPUT_NOT_SELECTED
         )
         assert typed_states[-1].mode.startswith('forward;')
         assert 'active_mode_received=false' in typed_states[-1].mode

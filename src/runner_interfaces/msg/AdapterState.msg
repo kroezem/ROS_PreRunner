@@ -14,6 +14,13 @@ uint8 INTEGRATOR_INVALID_DT=9
 uint8 INTEGRATOR_ANTI_WINDUP=10
 uint8 INTEGRATOR_NO_COMMAND=11
 uint8 INTEGRATOR_INVALID_COMMAND=12
+# When conditions coincide, integrator_freeze_reason reports the first
+# applicable reason in this highest-to-lowest precedence:
+# NO_COMMAND, INVALID_COMMAND, ZERO_COMMAND, FEEDBACK_STALE, WHEELSPIN,
+# DIRECTION_UNAVAILABLE, DIRECTION_MISMATCH, ARBITRATION_UNAVAILABLE,
+# OUTPUT_NOT_SELECTED, INVALID_DT, ANTI_WINDUP, GAIN_DISABLED.
+# INTEGRATOR_ACTIVE applies only when none is applicable. GAIN_DISABLED is the
+# final fallback even when integral_gain is zero; Ki=0 does not mask telemetry.
 
 builtin_interfaces/Time stamp
 # Raw longitudinal SI request received from /cmd_vel_nav. This remains

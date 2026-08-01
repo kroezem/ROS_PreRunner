@@ -44,6 +44,24 @@ class IntegratorFreezeReason(IntEnum):
     INVALID_COMMAND = 12
 
 
+# Highest to lowest telemetry priority. NONE means integration was active and
+# is therefore intentionally absent; GAIN_DISABLED is always the last fallback.
+INTEGRATOR_FREEZE_PRECEDENCE = (
+    IntegratorFreezeReason.NO_COMMAND,
+    IntegratorFreezeReason.INVALID_COMMAND,
+    IntegratorFreezeReason.ZERO_COMMAND,
+    IntegratorFreezeReason.FEEDBACK_STALE,
+    IntegratorFreezeReason.WHEELSPIN,
+    IntegratorFreezeReason.DIRECTION_UNAVAILABLE,
+    IntegratorFreezeReason.DIRECTION_MISMATCH,
+    IntegratorFreezeReason.ARBITRATION_UNAVAILABLE,
+    IntegratorFreezeReason.OUTPUT_NOT_SELECTED,
+    IntegratorFreezeReason.INVALID_DT,
+    IntegratorFreezeReason.ANTI_WINDUP,
+    IntegratorFreezeReason.GAIN_DISABLED,
+)
+
+
 def linear_feedforward(
     speed: float,
     effort_per_speed: float,
@@ -487,6 +505,11 @@ class DriveAdapter:
                     freeze_reason = IntegratorFreezeReason.ANTI_WINDUP
                 else:
                     self._integrator = candidate
+        if (
+            freeze_reason == IntegratorFreezeReason.NONE
+            and self.config.integral_gain == 0.0
+        ):
+            freeze_reason = IntegratorFreezeReason.GAIN_DISABLED
 
         raw_output = feedforward + proportional + self._integrator
         saturation = self._saturation(raw_output)
@@ -552,8 +575,6 @@ class DriveAdapter:
         commanded_speed: float,
         wheelspin_guard: bool,
     ) -> IntegratorFreezeReason:
-        if self.config.integral_gain == 0.0:
-            return IntegratorFreezeReason.GAIN_DISABLED
         if commanded_speed == 0.0:
             return IntegratorFreezeReason.ZERO_COMMAND
         integration_timeout = 3.0 / self.config.publication_rate

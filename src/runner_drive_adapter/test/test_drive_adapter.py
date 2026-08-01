@@ -23,6 +23,7 @@ import pytest
 from runner_drive_adapter.drive_adapter import (
     AdapterConfig,
     DriveAdapter,
+    INTEGRATOR_FREEZE_PRECEDENCE,
     IntegratorFreezeReason,
     linear_feedforward,
 )
@@ -191,9 +192,10 @@ def test_parallel_integrator_uses_encoder_sample_dt_and_magnitude_error():
     assert second.integrator_freeze_reason == IntegratorFreezeReason.NONE
 
 
+@pytest.mark.parametrize('integral_gain', [0.0, 0.10])
 @pytest.mark.parametrize('bad_dt', [0.0, -0.1, 0.500001, math.nan])
-def test_invalid_sample_dt_skips_integration(bad_dt):
-    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+def test_invalid_sample_dt_skips_integration(bad_dt, integral_gain):
+    adapter = DriveAdapter(AdapterConfig(integral_gain=integral_gain))
     _set_selected(adapter, 0.0)
     _update(adapter, 0.0, sample_time=10.0)
     _set_selected(adapter, 0.1)
@@ -224,12 +226,13 @@ def test_integrator_is_bounded_to_configured_normalized_effort():
     ('speed', 'measured', 'expected_saturation'),
     [(0.60, 0.0, 'upper'), (0.29, 3.0, 'lower')],
 )
+@pytest.mark.parametrize('integral_gain', [0.0, 0.10])
 def test_conditional_anti_windup_rejects_farther_saturation(
-    speed, measured, expected_saturation
+    speed, measured, expected_saturation, integral_gain
 ):
     adapter = DriveAdapter(AdapterConfig(
         proportional_gain=0.60,
-        integral_gain=0.10,
+        integral_gain=integral_gain,
     ))
     _set_selected(adapter, 0.0)
     _update(adapter, 0.0, speed=speed, measured=measured, sample_time=30.0)
@@ -257,8 +260,10 @@ def test_conditional_anti_windup_rejects_farther_saturation(
         ('output_not_selected', IntegratorFreezeReason.OUTPUT_NOT_SELECTED),
     ],
 )
-def test_required_freeze_conditions_are_explicit(condition, expected):
-    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+def test_operational_freeze_conditions_are_reported_with_ki_zero(
+    condition, expected
+):
+    adapter = DriveAdapter(AdapterConfig())
     if condition != 'arbitration_unavailable':
         adapter.update_adapter_output(0.05, 0.0, 0.0)
         adapter.update_mux_output(
@@ -302,6 +307,75 @@ def test_required_freeze_conditions_are_explicit(condition, expected):
 
     assert decision.integrator_state == 0.0
     assert decision.integrator_freeze_reason == expected
+
+
+def test_command_state_freeze_conditions_are_reported_with_ki_zero():
+    no_command = DriveAdapter(AdapterConfig()).step(0.0)
+    invalid = _update(
+        DriveAdapter(AdapterConfig()), 0.0, speed=math.nan
+    )
+    stopped = _update(DriveAdapter(AdapterConfig()), 0.0, speed=0.0)
+
+    assert (
+        no_command.integrator_freeze_reason
+        == IntegratorFreezeReason.NO_COMMAND
+    )
+    assert (
+        invalid.integrator_freeze_reason
+        == IntegratorFreezeReason.INVALID_COMMAND
+    )
+    assert (
+        stopped.integrator_freeze_reason
+        == IntegratorFreezeReason.ZERO_COMMAND
+    )
+
+
+def test_gain_disabled_is_only_the_last_applicable_reason():
+    adapter = DriveAdapter(AdapterConfig())
+    _set_selected(adapter, 0.0)
+    first = _update(adapter, 0.0, measured=0.20, sample_time=45.0)
+    _set_selected(adapter, 0.1)
+    second = _update(adapter, 0.1, measured=0.20, sample_time=45.1)
+
+    assert first.integrator_freeze_reason == IntegratorFreezeReason.INVALID_DT
+    assert (
+        second.integrator_freeze_reason
+        == IntegratorFreezeReason.GAIN_DISABLED
+    )
+
+
+def test_simultaneous_conditions_follow_documented_precedence():
+    adapter = DriveAdapter(AdapterConfig())
+    adapter.update_command(0.29, 0.0, 0.0)
+    adapter.update_encoder(False, math.nan, 0, 0.0, None)
+    adapter.update_motion(0.0, 0.0)
+
+    decision = adapter.step(0.20)
+
+    assert (
+        decision.integrator_freeze_reason
+        == IntegratorFreezeReason.FEEDBACK_STALE
+    )
+
+
+def test_documented_freeze_precedence_is_complete_and_deterministic():
+    assert INTEGRATOR_FREEZE_PRECEDENCE == (
+        IntegratorFreezeReason.NO_COMMAND,
+        IntegratorFreezeReason.INVALID_COMMAND,
+        IntegratorFreezeReason.ZERO_COMMAND,
+        IntegratorFreezeReason.FEEDBACK_STALE,
+        IntegratorFreezeReason.WHEELSPIN,
+        IntegratorFreezeReason.DIRECTION_UNAVAILABLE,
+        IntegratorFreezeReason.DIRECTION_MISMATCH,
+        IntegratorFreezeReason.ARBITRATION_UNAVAILABLE,
+        IntegratorFreezeReason.OUTPUT_NOT_SELECTED,
+        IntegratorFreezeReason.INVALID_DT,
+        IntegratorFreezeReason.ANTI_WINDUP,
+        IntegratorFreezeReason.GAIN_DISABLED,
+    )
+    assert set(INTEGRATOR_FREEZE_PRECEDENCE) == (
+        set(IntegratorFreezeReason) - {IntegratorFreezeReason.NONE}
+    )
 
 
 def test_integrator_carries_across_stop_and_direction_rejection():

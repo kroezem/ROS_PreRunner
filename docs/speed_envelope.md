@@ -12,6 +12,17 @@ zero in the committed origin. Of the adapter parameters, only a successful
 live `integral_gain` write is currently applied; it resets integral state. The
 observer remains read-only.
 
+`integrator_freeze_reason` evaluates the existing conditions even while Ki is
+zero. If conditions coincide, its deterministic precedence from highest to
+lowest is `NO_COMMAND`, `INVALID_COMMAND`, `ZERO_COMMAND`, `FEEDBACK_STALE`,
+`WHEELSPIN`, `DIRECTION_UNAVAILABLE`, `DIRECTION_MISMATCH`,
+`ARBITRATION_UNAVAILABLE`, `OUTPUT_NOT_SELECTED`, `INVALID_DT`,
+`ANTI_WINDUP`, then `GAIN_DISABLED`. `INTEGRATOR_ACTIVE` is reported only when
+none applies. Thus validity and ownership failures already encountered by the
+control path outrank anti-windup, and disabled gain is only the final telemetry
+fallback. This ordering changes neither the integrator update nor output
+arithmetic.
+
 The committed longitudinal values are:
 
 - `maximum_commanded_speed: 0.60` m/s;
