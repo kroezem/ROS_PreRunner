@@ -65,6 +65,15 @@ def test_encoder_hardware_owner_is_absent_from_all_composites():
         assert "executable='encoder_node'" not in source
 
 
+def test_no_launch_retains_removed_esc_mode():
+    """The MD13S launch surface has no legacy hobby-ESC mode override."""
+    launch_files = list(PACKAGE.parent.rglob('*.launch.py'))
+
+    assert launch_files
+    for launch_file in launch_files:
+        assert 'esc_mode' not in launch_file.read_text()
+
+
 def test_command_chain_parameters_match_the_stage2_bench():
     """The integration does not alter Stage 2 behavior or output ownership."""
     autonomy = AUTONOMY_LAUNCH.read_text()
@@ -92,8 +101,15 @@ def test_command_chain_parameters_match_the_stage2_bench():
 
     assert "package='runner_motor'" not in autonomy
     assert "package='runner_motor'" not in bench
-    assert 'esc_mode' not in autonomy
-    assert 'esc_mode' not in bench
+
+
+def test_autonomy_owns_mux_but_not_persistent_hardware_nodes():
+    """Autonomy arbitrates commands without duplicating platform services."""
+    packages = _node_packages(AUTONOMY_LAUNCH)
+
+    assert packages.count('twist_mux') == 1
+    assert 'runner_motor' not in packages
+    assert 'runner_encoder' not in packages
 
 
 def test_composite_preserves_controller_and_mux_topic_ownership():

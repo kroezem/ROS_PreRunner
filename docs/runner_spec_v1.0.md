@@ -151,7 +151,10 @@ Nav2 costmaps consume raw `/scan`. Every new map is built through `/scan_slam`.
 
 ### 4.5 Static extrinsics
 
-`base_link` = rear axle, ground-projected (D-01). `base_link→base_laser`: x 0.132, y 0, z 0.1135, yaw 0. `base_link→imu_link`: x 0.082, y 0.0025, z 0.106, yaw π.
+`base_link` = rear axle, ground-projected (D-01). The D-76 post-rotation
+sled measurements are `base_link→base_laser`: x 0.0733, y 0, z 0.1135,
+yaw π; and `base_link→imu_link`: x 0.1233, y −0.0025, z 0.1060,
+yaw 0. The IMU y sign is intentionally negative.
 
 ### 4.6 Encoder
 
@@ -391,6 +394,15 @@ arbitration. The physical controller always preempts and clears the keyboard
 autonomy latch.
 Keyboard brake, disarmed, invalid, neutral, timeout, and inhibited states all
 publish zero; keyboard input never generates a negative motor command.
+
+**Production command-sign audit (D-73).** Nav2 publishes `/cmd_vel_nav` with
+RPP `allow_reversing: false`; an unexpected negative input is rejected by the
+adapter as a zero brake. The adapter publishes `/cmd_vel_auto` only in
+[0.0, 0.70]. Controller teleop publishes `/cmd_vel_teleop`; its sole negative
+path is a deliberate L2 reverse request, while every brake and release path is
+zero. The keyboard wire protocol accepts throttle only in [0.0, 1.0] and has no
+reverse command. `twist_mux` only arbitrates those inputs and publishes
+`/cmd_vel` without changing their sign.
 
 | Key | Behaviour |
 |---|---|
