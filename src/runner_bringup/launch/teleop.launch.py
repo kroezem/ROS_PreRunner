@@ -47,6 +47,7 @@ def generate_launch_description():
                 # DualSense X is buttons[0] on the standard hid-playstation map;
                 # confirm the index against /joy for the connected controller.
                 'deadman_button': 0,
+                'manual_trigger_expo': 0.50,
                 'fixed_throttle_initial_setpoint': 0.30,
                 'fixed_throttle_step': 0.01,
                 'fixed_throttle_max_setpoint': 0.50,

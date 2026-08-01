@@ -362,13 +362,22 @@ Priority **X > R1 > L1 > brake**. Releasing all buttons brakes within one public
 | Input | Behaviour |
 |---|---|
 | Nothing held | `linear.x = 0.0`, MD13S active brake |
-| **X** | manual — R2 proportional forward, L2 proportional reverse, neither is zero; stick steering |
+| **X** | manual — R2 shaped proportional forward, L2 shaped proportional reverse, neither is zero; stick steering |
 | **R1** | R2 applies the fixed forward setpoint (D-pad adjusts), L2 is proportional reverse, neither is zero; stick steering |
 | **L1** | `teleop_suppress` — publishes nothing, autonomy passes through |
 
 In code and docs L1 is **`teleop_suppress`**. "Autonomy enable" is operator-facing only; it is not an arming gate — the real gate is the mux and the watchdog.
 
 **X→R1 latch:** pressing X while R1 is held suppresses fixed throttle until R1 is released and re-pressed.
+
+Manual DualSense trigger magnitude uses the configurable linear/cubic blend
+`output = (1 - expo) × input + expo × input³` before publication, with
+`manual_trigger_expo = 0.50` by default. The default produces normalized
+outputs `0.133`, `0.313`, and `0.586` at 25%, 50%, and 75% trigger. Zero and
+full trigger remain exactly zero and full output, and the sign is applied after
+shaping. This curve applies to R2/L2 proportional DualSense commands only. R1
+fixed-throttle setpoints, keyboard teleop, and autonomy remain linear/unshaped;
+setting the parameter to `0.0` restores linear DualSense trigger response.
 
 Measured: R1 release-to-brake 5.065 ms; L1 41.350 ms; watchdog fires 171.464 ms after teleop loss.
 

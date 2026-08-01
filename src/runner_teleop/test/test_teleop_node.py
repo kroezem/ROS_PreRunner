@@ -9,7 +9,9 @@ from rclpy.node import Node
 
 from runner_interfaces.msg import KeyboardState
 from runner_teleop.teleop_node import _active_mode
+from runner_teleop.teleop_node import _shape_manual_command
 from runner_teleop.teleop_node import _validate_fixed_throttle_config
+from runner_teleop.teleop_node import _validate_manual_trigger_expo
 from runner_teleop.teleop_node import BRAKE_MODE
 from runner_teleop.teleop_node import DPAD_VERTICAL_AXIS_INDEX
 from runner_teleop.teleop_node import expected_race_esc_pulse_us
@@ -56,8 +58,10 @@ def make_node():
     node._axis_reverse = 2
     node._axis_throttle = 5
     node._deadman_button = X_BUTTON_INDEX
+    node._manual_trigger_expo = 0.50
     node._steer = 0.0
     node._manual_cmd = 0.0
+    node._throttle = 0.0
     node._reverse = 0.0
     node._manual_held = False
     node._fixed_throttle_held = False
@@ -168,13 +172,13 @@ def keyboard_cycle(node, message):
     'x,r1,l1,expected_mode,expected_command',
     [
         (False, False, False, BRAKE_MODE, 0.0),
-        (True, False, False, MANUAL_MODE, 0.75),
+        (True, False, False, MANUAL_MODE, 0.5859375),
         (False, True, False, FIXED_THROTTLE_MODE, 0.30),
         (False, False, True, TELEOP_SUPPRESS_MODE, None),
-        (True, True, False, MANUAL_MODE, 0.75),
-        (True, False, True, MANUAL_MODE, 0.75),
+        (True, True, False, MANUAL_MODE, 0.5859375),
+        (True, False, True, MANUAL_MODE, 0.5859375),
         (False, True, True, FIXED_THROTTLE_MODE, 0.30),
-        (True, True, True, MANUAL_MODE, 0.75),
+        (True, True, True, MANUAL_MODE, 0.5859375),
     ],
 )
 def test_priority_table_and_diagnostics(
@@ -200,7 +204,7 @@ def test_priority_table_and_diagnostics(
         assert command.angular.z == pytest.approx(0.2)
 
 
-def test_manual_r2_forward_l2_reverse_and_priority_are_unchanged():
+def test_manual_r2_forward_l2_reverse_and_priority_use_expo():
     node = make_node()
 
     throttle, mode, _ = cycle(
@@ -215,12 +219,62 @@ def test_manual_r2_forward_l2_reverse_and_priority_are_unchanged():
     deadman_released, _, _ = cycle(node, joy(throttle=-1.0))
 
     assert mode == MANUAL_MODE
-    assert throttle.linear.x == 0.25
+    assert throttle.linear.x == pytest.approx(0.1328125)
     assert throttle.angular.z == pytest.approx(-0.6)
-    assert brake.linear.x == -0.5
+    assert brake.linear.x == pytest.approx(-0.3125)
     assert brake.angular.z == pytest.approx(0.3)
     assert neutral.linear.x == 0.0
     assert deadman_released.linear.x == 0.0
+
+
+def test_manual_trigger_expo_endpoints_monotonicity_and_sign():
+    inputs = [index / 100.0 for index in range(101)]
+    forwards = [
+        _shape_manual_command(value, 0.50) for value in inputs
+    ]
+    reverses = [
+        _shape_manual_command(-value, 0.50) for value in inputs
+    ]
+
+    assert forwards[0] == 0.0
+    assert forwards[-1] == 1.0
+    assert reverses[0] == 0.0
+    assert reverses[-1] == -1.0
+    assert all(left < right for left, right in zip(forwards, forwards[1:]))
+    assert all(left > right for left, right in zip(reverses, reverses[1:]))
+    assert all(value > 0.0 for value in forwards[1:])
+    assert all(value < 0.0 for value in reverses[1:])
+
+
+@pytest.mark.parametrize(
+    'magnitude,expected',
+    [
+        (0.25, 0.1328125),
+        (0.50, 0.3125),
+        (0.75, 0.5859375),
+    ],
+)
+def test_default_manual_trigger_expo_examples(magnitude, expected):
+    assert _shape_manual_command(magnitude, 0.50) == pytest.approx(expected)
+
+
+def test_fixed_throttle_and_keyboard_bypass_manual_trigger_expo():
+    node = make_node()
+    node._manual_trigger_expo = 1.0
+
+    fixed, fixed_mode, _ = cycle(
+        node, joy(throttle=0.0, r1=True)
+    )
+    cycle(node, joy())
+    keyboard_cycle(node, keyboard_state())
+    keyboard, keyboard_mode = keyboard_cycle(
+        node, keyboard_state(throttle=0.30, sequence=2)
+    )
+
+    assert fixed_mode == FIXED_THROTTLE_MODE
+    assert fixed.linear.x == pytest.approx(0.30)
+    assert keyboard_mode == KEYBOARD_MOTION_MODE
+    assert keyboard.linear.x == pytest.approx(0.30)
 
 
 def test_fixed_throttle_requires_r2_and_keeps_l2_reverse_and_steering_live():
@@ -243,7 +297,7 @@ def test_fixed_throttle_requires_r2_and_keeps_l2_reverse_and_steering_live():
     assert released_r2.linear.x == 0.0
     assert pressed_r2.linear.x == pytest.approx(0.30)
     assert pressed_r2.angular.z == pytest.approx(0.6)
-    assert brake.linear.x == pytest.approx(-0.5)
+    assert brake.linear.x == pytest.approx(-0.3125)
     assert brake.angular.z == pytest.approx(0.2)
 
 
@@ -335,7 +389,7 @@ def test_x_to_r1_latch_requires_r1_release_and_repress():
     assert fixed_mode == FIXED_THROTTLE_MODE
     assert fixed.linear.x == pytest.approx(0.30)
     assert manual_mode == MANUAL_MODE
-    assert manual.linear.x == pytest.approx(0.50)
+    assert manual.linear.x == pytest.approx(0.3125)
     assert inhibited_mode == FIXED_THROTTLE_INHIBITED_MODE
     assert inhibited.linear.x == 0.0
     assert released_mode == BRAKE_MODE
@@ -364,7 +418,7 @@ def test_r1_released_first_clears_latch_while_x_stays_manual():
     fixed, fixed_mode, _ = cycle(node, joy(throttle=-1.0, r1=True))
 
     assert mode == MANUAL_MODE
-    assert command.linear.x == pytest.approx(0.25)
+    assert command.linear.x == pytest.approx(0.1328125)
     assert brake_mode == BRAKE_MODE
     assert brake.linear.x == 0.0
     assert fixed_mode == FIXED_THROTTLE_MODE
@@ -543,6 +597,16 @@ def test_invalid_fixed_throttle_parameters_are_rejected(
 
 def test_default_fixed_throttle_configuration_is_valid():
     _validate_fixed_throttle_config(0.30, 0.01, 0.00, 0.50)
+
+
+@pytest.mark.parametrize('expo', [-0.01, 1.01, math.nan, math.inf, 1])
+def test_invalid_manual_trigger_expo_is_rejected(expo):
+    with pytest.raises(ValueError):
+        _validate_manual_trigger_expo(expo)
+
+
+def test_default_manual_trigger_expo_is_valid():
+    _validate_manual_trigger_expo(0.50)
 
 
 def test_active_mode_values_are_explicit_and_stable():

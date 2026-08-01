@@ -37,6 +37,7 @@ KEYBOARD_SUPPRESS_MODE = TELEOP_SUPPRESS_MODE
 KEYBOARD_DISARMED_MODE = 'keyboard_disarmed'
 
 DEFAULT_INPUT_TIMEOUT = 0.15
+DEFAULT_MANUAL_TRIGGER_EXPO = 0.50
 
 NEUTRAL_US = 1500
 FWD_ONSET_US = 1550
@@ -48,6 +49,20 @@ FWD_MAX_US = 1750
 def _trigger(raw: float) -> float:
     """Normalise -1 pressed / +1 released to 1.0 pressed / 0.0 released."""
     return max(0.0, min(1.0, (1.0 - raw) / 2.0))
+
+
+def _shape_manual_command(command: float, expo: float) -> float:
+    """Apply a linear/cubic expo blend to a signed DualSense command."""
+    magnitude = max(0.0, min(1.0, abs(command)))
+    shaped = (1.0 - expo) * magnitude + expo * magnitude ** 3
+    return math.copysign(shaped, command) if magnitude else 0.0
+
+
+def _validate_manual_trigger_expo(expo: float):
+    if not isinstance(expo, float) or not math.isfinite(expo):
+        raise ValueError('manual_trigger_expo must be a finite float')
+    if not 0.0 <= expo <= 1.0:
+        raise ValueError('manual_trigger_expo must be between zero and one')
 
 
 def _button_held(msg: Joy, index: int) -> bool:
@@ -138,6 +153,9 @@ class TeleopNode(Node):
         self.declare_parameter('axis_brake', 2)
         self.declare_parameter('axis_throttle', 5)
         self.declare_parameter('deadman_button', X_BUTTON_INDEX)
+        self.declare_parameter(
+            'manual_trigger_expo', DEFAULT_MANUAL_TRIGGER_EXPO
+        )
         self.declare_parameter('fixed_throttle_initial_setpoint', 0.30)
         self.declare_parameter('fixed_throttle_step', 0.01)
         self.declare_parameter('fixed_throttle_max_setpoint', 0.50)
@@ -154,6 +172,9 @@ class TeleopNode(Node):
         self._axis_reverse = self.get_parameter('axis_brake').value
         self._axis_throttle = self.get_parameter('axis_throttle').value
         self._deadman_button = self.get_parameter('deadman_button').value
+        self._manual_trigger_expo = self.get_parameter(
+            'manual_trigger_expo'
+        ).value
         initial = self.get_parameter(
             'fixed_throttle_initial_setpoint'
         ).value
@@ -186,6 +207,7 @@ class TeleopNode(Node):
             raise ValueError(
                 'keyboard_state_timeout must be a positive float'
             )
+        _validate_manual_trigger_expo(self._manual_trigger_expo)
         try:
             _validate_fixed_throttle_config(
                 initial,
@@ -220,6 +242,7 @@ class TeleopNode(Node):
 
         self._steer = 0.0
         self._manual_cmd = 0.0
+        self._throttle = 0.0
         self._reverse = 0.0
         self._manual_held = False
         self._fixed_throttle_held = False
@@ -336,9 +359,13 @@ class TeleopNode(Node):
         )
         throttle = _trigger(throttle_raw)
         self._reverse = _trigger(reverse_raw)
-        self._manual_cmd = (
+        self._throttle = throttle
+        raw_manual_cmd = (
             -self._reverse if self._reverse > THROTTLE_DEADZONE
             else throttle
+        )
+        self._manual_cmd = _shape_manual_command(
+            raw_manual_cmd, self._manual_trigger_expo
         )
 
     def _disarm_held_keyboard_forward(self):
@@ -425,6 +452,7 @@ class TeleopNode(Node):
             self.fixed_throttle_inhibited_until_r1_release = False
             self._steer = 0.0
             self._manual_cmd = 0.0
+            self._throttle = 0.0
             self._reverse = 0.0
         if (
             self._keyboard_valid
@@ -448,8 +476,10 @@ class TeleopNode(Node):
             command = self._manual_cmd
         elif mode == FIXED_THROTTLE_MODE:
             if self._reverse > THROTTLE_DEADZONE:
-                command = -self._reverse
-            elif self._manual_cmd > THROTTLE_DEADZONE:
+                command = _shape_manual_command(
+                    -self._reverse, self._manual_trigger_expo
+                )
+            elif self._throttle > THROTTLE_DEADZONE:
                 command = self._fixed_throttle_setpoint
             else:
                 command = 0.0

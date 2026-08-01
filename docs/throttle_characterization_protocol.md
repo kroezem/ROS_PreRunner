@@ -9,15 +9,19 @@ drives manually. The analyzer only reads the resulting MCAP bag.
 `/cmd_vel_teleop.linear.x` and mux output `/cmd_vel.linear.x` are normalized
 motor commands, not metres per second.
 `runner_teleop/teleop_node.py` maps R2 to `0.0` through `+1.0` and L2 to
-`0.0` through `-1.0` while X is held. With neither trigger active, or when the
-dead-man is released, it publishes `0.0` for MD13S active brake.
+`0.0` through `-1.0` while X is held. Their manual DualSense magnitudes use
+the linear/cubic blend `output = (1 - expo) × input + expo × input³`; the
+default `manual_trigger_expo` of `0.50` yields `0.133`, `0.313`, and `0.586`
+at 25%, 50%, and 75% trigger. Endpoints and command sign are preserved. With
+neither trigger active, or when the dead-man is released, teleop publishes
+`0.0` for MD13S active brake.
 `runner_motor/motor_node.py` clamps finite input to `[-1.0, +1.0]`: sign
 selects the MD13S DIR output and absolute magnitude maps linearly to 20 kHz
 PWM duty. Zero maps to duty zero, the MD13S active-brake state. There is no
-software deadband, expo, or pulse conversion. Negative commands are intentional
-reverse only, and a DIR change waits for a post-request stationary encoder
-sample. Do not perform this protocol until that operator-control behavior has
-passed wheels-off-ground validation.
+motor-side software deadband, expo, or pulse conversion. Negative commands are
+intentional reverse only, and a DIR change waits for a post-request stationary
+encoder sample. Do not perform this protocol until that operator-control
+behavior has passed wheels-off-ground validation.
 
 ## Operator controls
 
@@ -58,6 +62,11 @@ the production launch explicitly overrides the initial parameter. Every R1
 press logs the selected setpoint and its legacy expected-ESC-pulse diagnostic.
 That diagnostic is not used by the MD13S motor mapping and is not measured
 feedback.
+
+R1 forward setpoints bypass the DualSense expo so characterization commands
+remain the exact selected values. Keyboard teleop and autonomy bypass it as
+well. L2 remains a manual proportional reverse input in R1 mode and therefore
+uses the same DualSense curve.
 
 `/teleop/fixed_throttle_setpoint` (`std_msgs/msg/Float32`) continuously
 publishes the selected setpoint. `/teleop/active_mode`

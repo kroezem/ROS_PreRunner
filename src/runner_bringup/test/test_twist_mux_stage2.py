@@ -83,6 +83,8 @@ def test_launches_remap_only_mux_output_to_normalized_motor_input():
     assert "package='runner_motor'" not in manual
     assert "('/cmd_vel_out', '/cmd_vel')" in manual
     assert "('/cmd_vel_nav', '/cmd_vel')" not in manual
+    assert "'manual_trigger_expo': 0.50" in bench
+    assert "'manual_trigger_expo': 0.50" in manual
 
 
 def _spin_for(executor, duration):

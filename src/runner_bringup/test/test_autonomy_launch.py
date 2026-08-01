@@ -72,6 +72,7 @@ def test_command_chain_parameters_match_the_stage2_bench():
     required_fragments = (
         "'autorepeat_rate': 20.0, 'deadzone': 0.05",
         "'deadman_button': 0",
+        "'manual_trigger_expo': 0.50",
         "'controller_timeout': 0.15",
         "'keyboard_state_timeout': 0.15",
         "'fixed_throttle_initial_setpoint': 0.30",
