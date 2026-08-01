@@ -63,7 +63,7 @@
     {
       "label": "Stop all launches",
       "type": "shell",
-      "command": "pkill -INT -f 'ros2 launch runner_bringup' || true; pkill -INT -f motor_node || true; sleep 1; sudo systemctl restart runner-pwm-setup.service || true",
+      "command": "pkill -INT -f 'ros2 launch runner_bringup' || true",
       "problemMatcher": []
     }
   ],
@@ -74,6 +74,7 @@
       "description": "Select the slam_toolbox map",
       "options": [
         "collingwood",
+        "lockehaven"
         // "house_good_v1",
         // "bedroom_phase_b_503",
         // "jai_test"
