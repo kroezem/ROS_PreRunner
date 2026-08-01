@@ -9,6 +9,7 @@
 
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclpy</depend>
   <depend>runner_interfaces</depend>
   <depend>std_msgs</depend>

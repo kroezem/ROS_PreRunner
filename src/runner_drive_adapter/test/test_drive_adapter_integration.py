@@ -22,6 +22,7 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from runner_drive_adapter.drive_adapter_node import DriveAdapterNode
 from runner_interfaces.msg import AdapterState, EncoderState
 from std_msgs.msg import String
@@ -76,6 +77,7 @@ def test_graph_ownership_staleness_and_diagnostics():
     active_mode_pub = probe.create_publisher(
         String, '/teleop/active_mode', 10
     )
+    mux_output_pub = probe.create_publisher(Twist, '/cmd_vel', 10)
 
     try:
         _spin_for(executor, 0.15)
@@ -96,6 +98,9 @@ def test_graph_ownership_staleness_and_diagnostics():
         active_mode_subscriptions = probe.get_subscriptions_info_by_topic(
             '/teleop/active_mode'
         )
+        mux_output_subscriptions = probe.get_subscriptions_info_by_topic(
+            '/cmd_vel'
+        )
         assert sum(
             endpoint.node_name == 'drive_adapter'
             for endpoint in nav_subscriptions
@@ -107,6 +112,10 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert sum(
             endpoint.node_name == 'drive_adapter'
             for endpoint in active_mode_subscriptions
+        ) == 1
+        assert sum(
+            endpoint.node_name == 'drive_adapter'
+            for endpoint in mux_output_subscriptions
         ) == 1
 
         encoder_pub.publish(EncoderState(
@@ -122,6 +131,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         command.linear.x = 0.20
         command.angular.z = 0.10
         nav_pub.publish(command)
+        mux_output_pub.publish(command)
         _spin_for(executor, 0.15)
         assert commands
         assert commands[-1].linear.x > 0.0
@@ -137,6 +147,10 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert typed_states[-1].measured_yaw_rate == 0.15
         assert typed_states[-1].steering_curvature_requested == 0.5
         assert typed_states[-1].steering_curvature_max > 0.0
+        assert (
+            typed_states[-1].integrator_freeze_reason
+            == AdapterState.INTEGRATOR_GAIN_DISABLED
+        )
         assert typed_states[-1].mode.startswith('forward;')
         assert 'active_mode_received=false' in typed_states[-1].mode
         assert probe.get_publishers_info_by_topic('/stall_assist/state') == []
@@ -194,6 +208,22 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert commands[-1].linear.x == 0.0
         assert commands[-1].angular.z == 0.0
         assert 'reason=explicit_stop' in states[-1].data
+
+        state_count = len(typed_states)
+        _spin_for(executor, 0.50)
+        published = len(typed_states) - state_count
+        assert 8 <= published <= 12
+
+        adapter.adapter._integrator = 0.004
+        result = adapter.set_parameters([
+            Parameter('integral_gain', Parameter.Type.DOUBLE, 0.01)
+        ])[0]
+        assert result.successful
+        assert adapter.adapter.integrator_state == 0.0
+        result = adapter.set_parameters([
+            Parameter('integral_gain', Parameter.Type.DOUBLE, 0.0)
+        ])[0]
+        assert result.successful
     finally:
         executor.remove_node(probe)
         executor.remove_node(adapter)

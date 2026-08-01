@@ -12,18 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deterministic tests for feedforward-plus-P speed control."""
+"""Deterministic tests for bounded parallel-PI speed control."""
 
 from dataclasses import replace
 import math
+import struct
 
 import pytest
 
 from runner_drive_adapter.drive_adapter import (
     AdapterConfig,
     DriveAdapter,
+    IntegratorFreezeReason,
     linear_inverse_feedforward,
 )
+from runner_interfaces.msg import AdapterState
 
 
 def _feedforward(speed):
@@ -46,6 +49,8 @@ def _update(
     encoder=True,
     motion=True,
     active_mode=None,
+    sample_time=None,
+    pending_direction=1,
 ):
     if active_mode is not None:
         adapter.update_active_mode(active_mode, now)
@@ -54,8 +59,9 @@ def _update(
         adapter.update_encoder(
             stationary,
             measured / adapter.config.encoder_metres_per_edge,
-            1,
+            pending_direction,
             now,
+            now if sample_time is None else sample_time,
         )
     if motion:
         adapter.update_motion(ekf, now)
@@ -144,9 +150,8 @@ def test_output_is_feedforward_plus_kp_005_correction_only(measured):
     assert decision.final_throttle == pytest.approx(expected_output)
 
 
-def test_stale_integrator_state_cannot_affect_output():
+def test_disabled_integrator_does_not_affect_output():
     adapter = DriveAdapter(AdapterConfig())
-    adapter._integrator = 0.16
     decision = _update(adapter, 0.0, speed=0.29, measured=0.20)
 
     expected = _feedforward(0.29) + 0.05 * (0.29 - 0.20)
@@ -156,6 +161,273 @@ def test_stale_integrator_state_cannot_affect_output():
     assert not decision.integrator_enabled
     assert not decision.stall_integral_gain_active
     assert not decision.integral_decay_active
+
+
+def _set_selected(adapter, now, linear=0.05, angular=0.0):
+    adapter.update_adapter_output(linear, angular, now)
+    adapter.update_mux_output(linear, angular, now)
+
+
+def test_parallel_integrator_uses_encoder_sample_dt_and_magnitude_error():
+    config = AdapterConfig(integral_gain=0.10)
+    adapter = DriveAdapter(config)
+    _set_selected(adapter, 0.0)
+    first = _update(
+        adapter, 0.0, speed=0.29, measured=-0.19, sample_time=10.0
+    )
+    _set_selected(adapter, 0.1)
+    second = _update(
+        adapter, 0.1, speed=0.29, measured=-0.19, sample_time=10.1
+    )
+
+    assert first.integrator_freeze_reason == IntegratorFreezeReason.INVALID_DT
+    assert first.integrator_state == 0.0
+    assert second.speed_error == pytest.approx(0.10)
+    assert second.integrator_state == pytest.approx(0.001)
+    assert second.pi_term == pytest.approx(0.05 * 0.10 + 0.001)
+    assert second.final_throttle == pytest.approx(
+        _feedforward(0.29) + 0.05 * 0.10 + 0.001
+    )
+    assert second.integrator_freeze_reason == IntegratorFreezeReason.NONE
+
+
+@pytest.mark.parametrize('bad_dt', [0.0, -0.1, 0.500001, math.nan])
+def test_invalid_sample_dt_skips_integration(bad_dt):
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    _set_selected(adapter, 0.0)
+    _update(adapter, 0.0, sample_time=10.0)
+    _set_selected(adapter, 0.1)
+    decision = _update(adapter, 0.1, sample_time=10.0 + bad_dt)
+
+    assert decision.integrator_state == 0.0
+    assert decision.integrator_freeze_reason == IntegratorFreezeReason.INVALID_DT
+
+
+def test_integrator_is_bounded_to_configured_normalized_effort():
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    for index in range(12):
+        now = index * 0.1
+        _set_selected(adapter, now)
+        decision = _update(
+            adapter,
+            now,
+            speed=0.29,
+            measured=0.0,
+            sample_time=20.0 + now,
+        )
+
+    assert adapter.config.integrator_bound == 0.005
+    assert decision.integrator_state == 0.005
+
+
+@pytest.mark.parametrize(
+    ('speed', 'measured', 'expected_saturation'),
+    [(0.60, 0.0, 'upper'), (0.29, 3.0, 'lower')],
+)
+def test_conditional_anti_windup_rejects_farther_saturation(
+    speed, measured, expected_saturation
+):
+    adapter = DriveAdapter(AdapterConfig(
+        proportional_gain=0.60,
+        integral_gain=0.10,
+    ))
+    _set_selected(adapter, 0.0)
+    _update(adapter, 0.0, speed=speed, measured=measured, sample_time=30.0)
+    _set_selected(adapter, 0.1)
+    decision = _update(
+        adapter, 0.1, speed=speed, measured=measured, sample_time=30.1
+    )
+
+    assert decision.saturation_state == expected_saturation
+    assert decision.integrator_state == 0.0
+    assert (
+        decision.integrator_freeze_reason
+        == IntegratorFreezeReason.ANTI_WINDUP
+    )
+
+
+@pytest.mark.parametrize(
+    ('condition', 'expected'),
+    [
+        ('feedback_stale', IntegratorFreezeReason.FEEDBACK_STALE),
+        ('wheelspin', IntegratorFreezeReason.WHEELSPIN),
+        ('direction_unavailable', IntegratorFreezeReason.DIRECTION_UNAVAILABLE),
+        ('direction_mismatch', IntegratorFreezeReason.DIRECTION_MISMATCH),
+        ('arbitration_unavailable', IntegratorFreezeReason.ARBITRATION_UNAVAILABLE),
+        ('output_not_selected', IntegratorFreezeReason.OUTPUT_NOT_SELECTED),
+    ],
+)
+def test_required_freeze_conditions_are_explicit(condition, expected):
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    if condition != 'arbitration_unavailable':
+        adapter.update_adapter_output(0.05, 0.0, 0.0)
+        adapter.update_mux_output(
+            0.04 if condition == 'output_not_selected' else 0.05,
+            0.0,
+            0.0,
+        )
+    pending_direction = 0 if condition == 'direction_unavailable' else 1
+    if condition == 'direction_mismatch':
+        pending_direction = -1
+    measured = 0.30 if condition == 'wheelspin' else 0.20
+    ekf = 0.10 if condition == 'wheelspin' else 0.20
+    _update(
+        adapter,
+        0.0,
+        measured=measured,
+        ekf=ekf,
+        pending_direction=pending_direction,
+        sample_time=40.0,
+    )
+
+    now = 0.20 if condition in ('feedback_stale', 'wheelspin') else 0.10
+    adapter.update_command(0.29, 0.0, now)
+    if condition != 'feedback_stale':
+        adapter.update_encoder(
+            False,
+            measured / adapter.config.encoder_metres_per_edge,
+            pending_direction,
+            now,
+            40.0 + now,
+        )
+    adapter.update_motion(ekf, now)
+    if condition != 'arbitration_unavailable':
+        adapter.update_adapter_output(0.05, 0.0, now)
+        adapter.update_mux_output(
+            0.04 if condition == 'output_not_selected' else 0.05,
+            0.0,
+            now,
+        )
+    decision = adapter.step(now)
+
+    assert decision.integrator_state == 0.0
+    assert decision.integrator_freeze_reason == expected
+
+
+def test_integrator_carries_across_stop_and_direction_rejection():
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    _set_selected(adapter, 0.0)
+    _update(adapter, 0.0, measured=0.20, sample_time=50.0)
+    _set_selected(adapter, 0.1)
+    moving = _update(adapter, 0.1, measured=0.20, sample_time=50.1)
+    held = moving.integrator_state
+
+    stopped = _update(adapter, 0.2, speed=0.0, sample_time=50.2)
+    rejected_reverse = _update(adapter, 0.3, speed=-0.1, sample_time=50.3)
+
+    assert held > 0.0
+    assert stopped.integrator_state == held
+    assert stopped.integrator_freeze_reason == IntegratorFreezeReason.ZERO_COMMAND
+    assert rejected_reverse.integrator_state == held
+
+
+def test_successful_live_integral_gain_change_is_the_only_state_reset():
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    adapter._integrator = 0.004
+
+    adapter.set_integral_gain(0.20)
+
+    assert adapter.config.integral_gain == 0.20
+    assert adapter.integrator_state == 0.0
+
+
+def test_freeze_enum_values_match_the_typed_adapter_state_interface():
+    assert int(IntegratorFreezeReason.NONE) == AdapterState.INTEGRATOR_ACTIVE
+    assert (
+        int(IntegratorFreezeReason.GAIN_DISABLED)
+        == AdapterState.INTEGRATOR_GAIN_DISABLED
+    )
+    assert (
+        int(IntegratorFreezeReason.OUTPUT_NOT_SELECTED)
+        == AdapterState.INTEGRATOR_OUTPUT_NOT_SELECTED
+    )
+    assert (
+        int(IntegratorFreezeReason.ANTI_WINDUP)
+        == AdapterState.INTEGRATOR_ANTI_WINDUP
+    )
+
+
+def test_mux_selection_comparison_uses_bounded_numeric_tolerance():
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    adapter.update_adapter_output(0.05, -0.10, 0.0)
+    adapter.update_mux_output(0.05 + 0.5e-9, -0.10, 0.0)
+    matching = _update(adapter, 0.0, sample_time=60.0)
+    adapter.update_adapter_output(0.05, -0.10, 0.1)
+    adapter.update_mux_output(0.05 + 2.0e-9, -0.10, 0.1)
+    different = _update(adapter, 0.1, sample_time=60.1)
+
+    assert matching.integrator_freeze_reason == IntegratorFreezeReason.INVALID_DT
+    assert (
+        different.integrator_freeze_reason
+        == IntegratorFreezeReason.OUTPUT_NOT_SELECTED
+    )
+
+
+def test_ki_zero_replay_is_bit_identical_to_legacy_output_arithmetic():
+    config = AdapterConfig()
+
+    def legacy_output(speed, measured, feedback_fresh=True, kp=0.05):
+        if speed <= 0.0 or speed < config.promotion_threshold:
+            return 0.0
+        commanded = min(speed, config.maximum_commanded_speed)
+        effective = max(commanded, config.minimum_moving_speed)
+        feedforward = _feedforward(effective)
+        below_floor = speed < config.minimum_moving_speed
+        proportional = (
+            kp * (commanded - abs(measured))
+            if feedback_fresh and not below_floor else 0.0
+        )
+        raw = feedforward + proportional
+        return max(config.output_min, min(config.output_max, raw))
+
+    cases = []
+    adapter = DriveAdapter(config)
+    cases.append(('normal', _update(
+        adapter, 0.0, speed=0.29, measured=0.20
+    ), legacy_output(0.29, 0.20)))
+    cases.append(('direction_mismatch', _update(
+        adapter, 0.1, speed=0.29, measured=0.20, pending_direction=-1
+    ), legacy_output(0.29, 0.20)))
+    adapter.update_adapter_output(0.05, 0.0, 0.2)
+    adapter.update_mux_output(0.04, 0.0, 0.2)
+    cases.append(('arbitration_loss', _update(
+        adapter, 0.2, speed=0.29, measured=0.20
+    ), legacy_output(0.29, 0.20)))
+    _update(adapter, 0.3, speed=0.40, measured=0.30, ekf=0.10)
+    cases.append(('wheelspin', _update(
+        adapter, 0.5, speed=0.40, measured=0.30, ekf=0.10
+    ), legacy_output(0.40, 0.30)))
+    cases.append(('zero', _update(
+        adapter, 0.51, speed=0.0
+    ), legacy_output(0.0, 0.0)))
+
+    stale = DriveAdapter(config)
+    stale.update_command(0.29, 0.0, 0.0)
+    stale.update_encoder(False, 1.0, 1, 0.0, 70.0)
+    stale.update_command(0.29, 0.0, 0.26)
+    cases.append((
+        'stale_feedback',
+        stale.step(0.26),
+        legacy_output(0.29, 0.0, feedback_fresh=False),
+    ))
+    saturated = DriveAdapter(replace(config, proportional_gain=0.60))
+    cases.append(('saturation', _update(
+        saturated, 0.0, speed=0.60, measured=0.0
+    ), legacy_output(0.60, 0.0, kp=0.60)))
+
+    assert {label for label, _, _ in cases} == {
+        'normal',
+        'direction_mismatch',
+        'arbitration_loss',
+        'wheelspin',
+        'zero',
+        'stale_feedback',
+        'saturation',
+    }
+    for _, decision, expected in cases:
+        assert struct.pack('!d', decision.final_throttle) == struct.pack(
+            '!d', expected
+        )
 
 
 def test_wheelspin_requires_ratio_excess_and_duration():
@@ -386,6 +658,7 @@ def test_diagnostics_contain_all_tuning_fields():
         'active_mode=',
         'preempted=',
         'integral_decay_active=',
+        'integrator_freeze_reason=',
     )
 
     assert all(field in text for field in required)
@@ -403,7 +676,8 @@ def test_diagnostics_contain_all_tuning_fields():
         {'feedforward_speed_per_command': 0.0},
         {'feedforward_speed_intercept': 1.0},
         {'proportional_gain': 0.0},
-        {'integral_gain': 0.01},
+        {'integral_gain': -0.01},
+        {'integrator_bound': 0.0},
         {'output_min': -0.01},
         {'output_min': 0.01},
         {'output_max': 0.09},

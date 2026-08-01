@@ -6,6 +6,12 @@ and `drive_adapter`. The consolidation intentionally preserves every prior
 numeric and boolean value; it does not validate the inherited ESC-era or
 provisional MD13S settings against hardware.
 
+The adapter's bounded parallel-form integrator uses the encoder sample stamps
+for `dt` and a symmetric `integrator_bound` in normalized effort. Ki remains
+zero in the committed origin. Of the adapter parameters, only a successful
+live `integral_gain` write is currently applied; it resets integral state. The
+observer remains read-only.
+
 The ordinary Nav2 and adapter parameter files retain unrelated behavior,
 geometry, and diagnostics. Launch composes those files with the shared origin:
 

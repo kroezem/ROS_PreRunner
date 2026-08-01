@@ -12,14 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure feedforward-plus-proportional conversion for Runner."""
+"""Bounded feedforward-plus-parallel-PI conversion for Runner."""
 
 from dataclasses import dataclass
+from enum import IntEnum
 import math
 from typing import Optional
 
 
 PROVISIONAL_OUTPUT_MAX = 0.12
+MAX_INTEGRATION_DT_SEC = 0.5
+SELECTION_ABS_TOLERANCE = 1e-9
+
+
+class IntegratorFreezeReason(IntEnum):
+    """Typed reasons why one cycle did not update integral state."""
+
+    NONE = 0
+    GAIN_DISABLED = 1
+    ZERO_COMMAND = 2
+    FEEDBACK_STALE = 3
+    WHEELSPIN = 4
+    DIRECTION_UNAVAILABLE = 5
+    DIRECTION_MISMATCH = 6
+    ARBITRATION_UNAVAILABLE = 7
+    OUTPUT_NOT_SELECTED = 8
+    INVALID_DT = 9
+    ANTI_WINDUP = 10
+    NO_COMMAND = 11
+    INVALID_COMMAND = 12
 
 
 def linear_inverse_feedforward(
@@ -45,6 +66,7 @@ class AdapterConfig:
     maximum_commanded_speed: float = 0.60
     proportional_gain: float = 0.05
     integral_gain: float = 0.0
+    integrator_bound: float = 0.005
     output_min: float = 0.0
     output_max: float = PROVISIONAL_OUTPUT_MAX
     encoder_metres_per_edge: float = 0.010282
@@ -71,6 +93,7 @@ class AdapterConfig:
             'minimum_moving_speed': self.minimum_moving_speed,
             'maximum_commanded_speed': self.maximum_commanded_speed,
             'proportional_gain': self.proportional_gain,
+            'integrator_bound': self.integrator_bound,
             'encoder_metres_per_edge': self.encoder_metres_per_edge,
             'wheelspin_speed_ratio': self.wheelspin_speed_ratio,
             'wheelspin_qualification_sec':
@@ -92,10 +115,8 @@ class AdapterConfig:
             raise ValueError(
                 'floor_promotion_min_ratio must be within (0, 1]'
             )
-        if self.integral_gain != 0.0:
-            raise ValueError(
-                'integral_gain must be zero for provisional MD13S tuning'
-            )
+        if self.integral_gain < 0.0:
+            raise ValueError('integral_gain must be nonnegative')
         if self.maximum_commanded_speed < self.minimum_moving_speed:
             raise ValueError(
                 'maximum_commanded_speed must reach minimum_moving_speed'
@@ -179,6 +200,9 @@ class AdapterDecision:
     active_mode: str = ''
     preempted: bool = False
     integral_decay_active: bool = False
+    integrator_freeze_reason: IntegratorFreezeReason = (
+        IntegratorFreezeReason.GAIN_DISABLED
+    )
 
     def diagnostic_text(self) -> str:
         """Serialize a stable, compact diagnostic record."""
@@ -205,6 +229,8 @@ class AdapterDecision:
             f'preempted={str(self.preempted).lower()};'
             f'integral_decay_active='
             f'{str(self.integral_decay_active).lower()};'
+            f'integrator_freeze_reason='
+            f'{self.integrator_freeze_reason.name.lower()};'
             f'final_throttle={self.final_throttle:.9f};'
             f'normalized_steering={self.normalized_steering:.9f};'
             f'steering_saturated='
@@ -213,7 +239,7 @@ class AdapterDecision:
 
 
 class DriveAdapter:
-    """Convert fresh Nav2 commands with bounded feedforward-plus-P control."""
+    """Convert fresh Nav2 commands with bounded feedforward-plus-PI control."""
 
     def __init__(self, config: AdapterConfig):
         self.config = config
@@ -223,9 +249,17 @@ class DriveAdapter:
         self._motion_time: Optional[float] = None
         self._encoder_edge_rate = 0.0
         self._encoder_time: Optional[float] = None
+        self._encoder_sample_time: Optional[float] = None
+        self._previous_encoder_sample_time: Optional[float] = None
+        self._pending_direction = 0
         self._wheelspin_since: Optional[float] = None
         self._active_mode: Optional[str] = None
         self._active_mode_time: Optional[float] = None
+        self._adapter_output: Optional[tuple[float, float]] = None
+        self._adapter_output_time: Optional[float] = None
+        self._mux_output: Optional[tuple[float, float]] = None
+        self._mux_output_time: Optional[float] = None
+        self._integrator = 0.0
 
     @property
     def latest_command(self) -> Optional[tuple[float, float]]:
@@ -234,8 +268,20 @@ class DriveAdapter:
 
     @property
     def integrator_state(self) -> float:
-        """Report the disabled integral contribution."""
-        return 0.0
+        """Report the bounded integral contribution in normalized effort."""
+        return self._integrator
+
+    def set_integral_gain(self, integral_gain: float) -> None:
+        """Apply a validated live Ki change and reset integral state."""
+        if isinstance(integral_gain, bool) or not isinstance(
+            integral_gain, float
+        ):
+            raise TypeError('integral_gain must be a double')
+        self.config = AdapterConfig(
+            **{**self.config.__dict__, 'integral_gain': integral_gain}
+        )
+        self._integrator = 0.0
+        self._previous_encoder_sample_time = None
 
     def update_command(
         self,
@@ -278,12 +324,34 @@ class DriveAdapter:
         edge_rate: float,
         pending_direction: int,
         now: float,
+        sample_time: Optional[float] = None,
     ) -> None:
         """Store encoder motion and freshness."""
-        del pending_direction
         del stationary
         self._encoder_edge_rate = edge_rate
         self._encoder_time = now
+        self._encoder_sample_time = sample_time
+        self._pending_direction = pending_direction
+
+    def update_adapter_output(
+        self,
+        linear: float,
+        angular: float,
+        now: float,
+    ) -> None:
+        """Store the adapter command most recently offered to the mux."""
+        self._adapter_output = (linear, angular)
+        self._adapter_output_time = now
+
+    def update_mux_output(
+        self,
+        linear: float,
+        angular: float,
+        now: float,
+    ) -> None:
+        """Observe the mux-owned output without affecting command publication."""
+        self._mux_output = (linear, angular)
+        self._mux_output_time = now
 
     def motion_is_stale(self, now: float) -> bool:
         """Return whether EKF velocity is unavailable, invalid, or old."""
@@ -304,9 +372,9 @@ class DriveAdapter:
         )
 
     def shutdown(self, now: float) -> None:
-        """Clear controller state without publishing another command."""
+        """Stop accepting commands without publishing another command."""
         del now
-        self._reset_controller()
+        self._reset_transient_state()
         self._command = None
         self._command_time = None
 
@@ -323,26 +391,50 @@ class DriveAdapter:
             'preempted': preempted,
         }
         if self._command is None or self._command_time is None:
-            self._reset_controller()
-            return self._silence('no_command', **preemption_fields)
+            self._reset_transient_state()
+            return self._silence(
+                'no_command',
+                IntegratorFreezeReason.NO_COMMAND,
+                **preemption_fields,
+            )
         if now - self._command_time > self.config.cmd_vel_nav_timeout:
-            self._reset_controller()
-            return self._silence('stale_command', **preemption_fields)
+            self._reset_transient_state()
+            return self._silence(
+                'stale_command',
+                IntegratorFreezeReason.NO_COMMAND,
+                **preemption_fields,
+            )
 
         speed, yaw_rate = self._command
         if not math.isfinite(speed) or not math.isfinite(yaw_rate):
-            return self._brake('nonfinite_input', **preemption_fields)
+            return self._brake(
+                'nonfinite_input',
+                IntegratorFreezeReason.INVALID_COMMAND,
+                **preemption_fields,
+            )
         if speed < 0.0:
-            return self._brake('negative_speed', **preemption_fields)
+            return self._brake(
+                'negative_speed',
+                IntegratorFreezeReason.INVALID_COMMAND,
+                **preemption_fields,
+            )
         if speed == 0.0:
-            return self._brake('explicit_stop', **preemption_fields)
+            return self._brake(
+                'explicit_stop',
+                IntegratorFreezeReason.ZERO_COMMAND,
+                **preemption_fields,
+            )
         if speed < self.config.steering_min_speed:
             return self._brake(
-                'below_steering_min_speed', **preemption_fields
+                'below_steering_min_speed',
+                IntegratorFreezeReason.INVALID_COMMAND,
+                **preemption_fields,
             )
         if speed < self.config.promotion_threshold:
             return self._brake(
-                'below_promotion_threshold', **preemption_fields
+                'below_promotion_threshold',
+                IntegratorFreezeReason.INVALID_COMMAND,
+                **preemption_fields,
             )
 
         requested_curvature = yaw_rate / speed
@@ -372,22 +464,51 @@ class DriveAdapter:
                 abs(self._encoder_edge_rate)
                 * self.config.encoder_metres_per_edge
             )
-        speed_error = commanded_speed - measured_speed
+        speed_error = abs(commanded_speed) - abs(measured_speed)
         below_floor = speed < self.config.minimum_moving_speed
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
 
         if below_floor:
             proportional = 0.0
-            raw_output = feedforward
-            saturation = self._saturation(raw_output)
         else:
             proportional = (
                 self.config.proportional_gain * speed_error
                 if feedback_fresh else 0.0
             )
-            raw_output = feedforward + proportional
-            saturation = self._saturation(raw_output)
+
+        dt = self._integration_dt()
+        freeze_reason = self._integrator_freeze_reason(
+            now,
+            speed,
+            wheelspin_guard,
+        )
+        if freeze_reason == IntegratorFreezeReason.NONE:
+            if dt is None:
+                freeze_reason = IntegratorFreezeReason.INVALID_DT
+            else:
+                candidate = max(
+                    -self.config.integrator_bound,
+                    min(
+                        self.config.integrator_bound,
+                        self._integrator
+                        + self.config.integral_gain * speed_error * dt,
+                    ),
+                )
+                candidate_raw = feedforward + proportional + candidate
+                candidate_saturation = self._saturation(candidate_raw)
+                drives_farther = (
+                    candidate_saturation == 'upper' and speed_error > 0.0
+                ) or (
+                    candidate_saturation == 'lower' and speed_error < 0.0
+                )
+                if drives_farther:
+                    freeze_reason = IntegratorFreezeReason.ANTI_WINDUP
+                else:
+                    self._integrator = candidate
+
+        raw_output = feedforward + proportional + self._integrator
+        saturation = self._saturation(raw_output)
         final = max(
             self.config.output_min,
             min(self.config.output_max, raw_output),
@@ -400,32 +521,102 @@ class DriveAdapter:
             reason = 'floor_promoted_feedforward'
         elif not feedback_fresh:
             reason = 'encoder_stale_feedforward'
-        pi_term = proportional
+        pi_term = proportional + self._integrator
         return AdapterDecision(
-            True,
-            'forward',
-            reason,
-            speed,
-            effective_speed,
-            measured_speed,
-            speed_error,
-            feedforward,
-            proportional,
-            0.0,
-            pi_term,
-            False,
-            saturation,
-            wheelspin_guard,
-            final,
-            steering,
-            steering_saturated,
-            0.0,
-            False,
-            active_mode_received,
-            active_mode_fresh,
-            active_mode,
-            preempted,
-            False,
+            publish_command=True,
+            mode='forward',
+            reason=reason,
+            commanded_speed=speed,
+            effective_speed=effective_speed,
+            measured_speed=measured_speed,
+            speed_error=speed_error,
+            feedforward_throttle=feedforward,
+            proportional_term=proportional,
+            integrator_state=self._integrator,
+            pi_term=pi_term,
+            integrator_enabled=(
+                self.config.integral_gain != 0.0
+                and freeze_reason == IntegratorFreezeReason.NONE
+            ),
+            saturation_state=saturation,
+            wheelspin_guard=wheelspin_guard,
+            final_throttle=final,
+            normalized_steering=steering,
+            steering_saturated=steering_saturated,
+            integral_gain=self.config.integral_gain,
+            stall_integral_gain_active=False,
+            active_mode_received=active_mode_received,
+            active_mode_fresh=active_mode_fresh,
+            active_mode=active_mode,
+            preempted=preempted,
+            integral_decay_active=False,
+            integrator_freeze_reason=freeze_reason,
+        )
+
+    def _integration_dt(self) -> Optional[float]:
+        sample_time = self._encoder_sample_time
+        previous = self._previous_encoder_sample_time
+        self._previous_encoder_sample_time = sample_time
+        if sample_time is None or previous is None:
+            return None
+        dt = sample_time - previous
+        if not math.isfinite(dt) or dt <= 0.0 or dt > MAX_INTEGRATION_DT_SEC:
+            return None
+        return dt
+
+    def _integrator_freeze_reason(
+        self,
+        now: float,
+        commanded_speed: float,
+        wheelspin_guard: bool,
+    ) -> IntegratorFreezeReason:
+        if self.config.integral_gain == 0.0:
+            return IntegratorFreezeReason.GAIN_DISABLED
+        if commanded_speed == 0.0:
+            return IntegratorFreezeReason.ZERO_COMMAND
+        integration_timeout = 3.0 / self.config.publication_rate
+        if (
+            self._encoder_time is None
+            or not math.isfinite(self._encoder_edge_rate)
+            or now - self._encoder_time > integration_timeout
+        ):
+            return IntegratorFreezeReason.FEEDBACK_STALE
+        if wheelspin_guard:
+            return IntegratorFreezeReason.WHEELSPIN
+        commanded_direction = 1 if commanded_speed > 0.0 else -1
+        if self._pending_direction not in (-1, 1):
+            return IntegratorFreezeReason.DIRECTION_UNAVAILABLE
+        if self._pending_direction != commanded_direction:
+            return IntegratorFreezeReason.DIRECTION_MISMATCH
+        if not self._arbitration_is_available(now):
+            return IntegratorFreezeReason.ARBITRATION_UNAVAILABLE
+        if not self._adapter_output_is_selected():
+            return IntegratorFreezeReason.OUTPUT_NOT_SELECTED
+        return IntegratorFreezeReason.NONE
+
+    def _arbitration_is_available(self, now: float) -> bool:
+        timeout = 3.0 / self.config.publication_rate
+        return (
+            self._adapter_output is not None
+            and self._adapter_output_time is not None
+            and self._mux_output is not None
+            and self._mux_output_time is not None
+            and now - self._adapter_output_time <= timeout
+            and now - self._mux_output_time <= timeout
+        )
+
+    def _adapter_output_is_selected(self) -> bool:
+        return all(
+            math.isclose(
+                adapter_value,
+                mux_value,
+                rel_tol=0.0,
+                abs_tol=SELECTION_ABS_TOLERANCE,
+            )
+            for adapter_value, mux_value in zip(
+                self._adapter_output,
+                self._mux_output,
+            )
         )
 
     def _wheelspin_guard(self, now: float, encoder_speed: float) -> bool:
@@ -459,12 +650,33 @@ class DriveAdapter:
             return 'lower'
         return 'none'
 
-    def _reset_controller(self) -> None:
+    def _reset_transient_state(self) -> None:
         self._wheelspin_since = None
 
-    def _brake(self, reason: str, **fields) -> AdapterDecision:
-        self._reset_controller()
-        return AdapterDecision(True, 'brake', reason, **fields)
+    def _controller_fields(self, freeze_reason) -> dict:
+        return {
+            'integrator_state': self._integrator,
+            'pi_term': self._integrator,
+            'integrator_enabled': False,
+            'integral_gain': self.config.integral_gain,
+            'integrator_freeze_reason': freeze_reason,
+        }
 
-    def _silence(self, reason: str, **fields) -> AdapterDecision:
-        return AdapterDecision(False, 'silence', reason, **fields)
+    def _brake(self, reason: str, freeze_reason, **fields) -> AdapterDecision:
+        self._reset_transient_state()
+        return AdapterDecision(
+            True,
+            'brake',
+            reason,
+            **self._controller_fields(freeze_reason),
+            **fields,
+        )
+
+    def _silence(self, reason: str, freeze_reason, **fields) -> AdapterDecision:
+        return AdapterDecision(
+            False,
+            'silence',
+            reason,
+            **self._controller_fields(freeze_reason),
+            **fields,
+        )

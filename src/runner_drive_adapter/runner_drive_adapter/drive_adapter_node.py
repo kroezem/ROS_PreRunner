@@ -25,6 +25,7 @@ import time
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -69,6 +70,7 @@ class DriveAdapterNode(Node):
             'maximum_commanded_speed',
             'proportional_gain',
             'integral_gain',
+            'integrator_bound',
             'output_min',
             'output_max',
             'encoder_metres_per_edge',
@@ -93,6 +95,7 @@ class DriveAdapterNode(Node):
 
         self.config = config
         self.adapter = DriveAdapter(config)
+        self.add_on_set_parameters_callback(self._on_parameters)
         self._warnings = WarningThrottle()
         self._shutdown_recorded = False
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto', 10)
@@ -118,6 +121,9 @@ class DriveAdapterNode(Node):
         self.create_subscription(
             String, '/teleop/active_mode', self._on_active_mode, 10
         )
+        self.create_subscription(
+            Twist, '/cmd_vel', self._on_mux_output, 10
+        )
         self.create_timer(1.0 / config.publication_rate, self._publish)
         self._log_startup()
 
@@ -136,15 +142,42 @@ class DriveAdapterNode(Node):
         )
 
     def _on_encoder(self, message: EncoderState) -> None:
+        sample_time = message.stamp.sec + message.stamp.nanosec * 1e-9
         self.adapter.update_encoder(
             message.stationary,
             message.edge_rate,
             message.pending_direction,
             time.monotonic(),
+            sample_time,
         )
 
     def _on_active_mode(self, message: String) -> None:
         self.adapter.update_active_mode(message.data, time.monotonic())
+
+    def _on_mux_output(self, message: Twist) -> None:
+        self.adapter.update_mux_output(
+            message.linear.x,
+            message.angular.z,
+            time.monotonic(),
+        )
+
+    def _on_parameters(self, parameters) -> SetParametersResult:
+        """Apply only Ki live, resetting its state after validation."""
+        changes = [
+            parameter for parameter in parameters
+            if parameter.name == 'integral_gain'
+        ]
+        if not changes:
+            return SetParametersResult(successful=True)
+        try:
+            self.adapter.set_integral_gain(changes[-1].value)
+        except (TypeError, ValueError) as error:
+            return SetParametersResult(
+                successful=False,
+                reason=str(error),
+            )
+        self.config = self.adapter.config
+        return SetParametersResult(successful=True)
 
     def _publish(self) -> None:
         now = time.monotonic()
@@ -158,6 +191,11 @@ class DriveAdapterNode(Node):
         output.linear.x = decision.final_throttle
         output.angular.z = decision.normalized_steering
         self._cmd_pub.publish(output)
+        self.adapter.update_adapter_output(
+            output.linear.x,
+            output.angular.z,
+            now,
+        )
 
     def _typed_state(self, decision) -> AdapterState:
         """Build the plot-friendly view of one adapter decision."""
@@ -190,6 +228,9 @@ class DriveAdapterNode(Node):
         message.integrator_enabled = decision.integrator_enabled
         message.steering_saturated = decision.steering_saturated
         message.wheelspin_guard = decision.wheelspin_guard
+        message.integrator_freeze_reason = int(
+            decision.integrator_freeze_reason
+        )
         message.mode = (
             f'{decision.mode};'
             f'active_mode_received='
@@ -268,11 +309,12 @@ class DriveAdapterNode(Node):
             f'maximum_commanded_speed={c.maximum_commanded_speed:.6f} m/s'
         )
         self.get_logger().info(
-            'Speed control: provisional feedforward_plus_p, '
+            'Speed control: bounded parallel PI, '
             'primary_feedback=encoder_edge_rate, '
             f'kp={c.proportional_gain:.6f}, '
             f'ki={c.integral_gain:.6f}, '
-            'integral_enabled=false, gain_switching=false, '
+            f'integrator_bound=+/-{c.integrator_bound:.6f}, '
+            'gain_switching=false, '
             f'output_bounds=[{c.output_min:.6f}, {c.output_max:.6f}], '
             f'wheelspin_ratio={c.wheelspin_speed_ratio:.6f}, '
             f'wheelspin_qualification='
