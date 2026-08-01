@@ -53,7 +53,7 @@ def test_origin_has_only_expected_consumers_and_flattened_keys():
         for origin in origins
     )
     assert any(
-        origin.parameter_name == 'integral_gain' and origin.value == 0.0
+        origin.parameter_name == 'integral_gain' and origin.value == 0.01
         for origin in origins
     )
     assert any(

@@ -27,7 +27,7 @@ drive_adapter:
     minimum_moving_speed: 0.25
     maximum_commanded_speed: 0.60
     proportional_gain: 0.05
-    integral_gain: 0.0
+    integral_gain: 0.01
     integrator_bound: 0.005
     output_min: 0.0
     output_max: 0.14

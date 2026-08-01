@@ -4,26 +4,27 @@
 configuration origin for longitudinal parameters shared by `controller_server`
 and `drive_adapter`. Stage 2B applies the characterized MD13S inverse, the
 0.25 m/s adapter command floor, the confirmed RPP floors, and the 0.14 safety
-authority bound through this origin. Hardware validation remains pending.
+authority bound through this origin. Floor-autonomy hardware validation
+remains pending.
 
 The adapter's bounded parallel-form integrator uses the encoder sample stamps
-for `dt` and a symmetric `integrator_bound` in normalized effort. Ki remains
-zero in the committed origin. Successful live `proportional_gain` and
+for `dt` and a symmetric `integrator_bound` in normalized effort. Ki is 0.01
+in the committed origin. Successful live `proportional_gain` and
 `integral_gain` writes are applied on the next adapter control cycle. A Kp write
 does not reset integral state; a successful Ki write retains its existing
 reset. No other adapter parameter is live-effective. The observer remains
 read-only.
 
-`integrator_freeze_reason` evaluates the existing conditions even while Ki is
-zero. If conditions coincide, its deterministic precedence from highest to
+`integrator_freeze_reason` evaluates the existing conditions independently of
+the configured Ki. If conditions coincide, its deterministic precedence from highest to
 lowest is `NO_COMMAND`, `INVALID_COMMAND`, `ZERO_COMMAND`, `FEEDBACK_STALE`,
 `WHEELSPIN`, `DIRECTION_UNAVAILABLE`, `DIRECTION_MISMATCH`,
 `ARBITRATION_UNAVAILABLE`, `OUTPUT_NOT_SELECTED`, `INVALID_DT`,
 `ANTI_WINDUP`, then `GAIN_DISABLED`. `INTEGRATOR_ACTIVE` is reported only when
 none applies. Thus validity and ownership failures already encountered by the
-control path outrank anti-windup, and disabled gain is only the final telemetry
-fallback. This ordering changes neither the integrator update nor output
-arithmetic.
+control path outrank anti-windup, and `GAIN_DISABLED` is only the final
+telemetry fallback when the runtime gain is zero. This ordering changes neither
+the integrator update nor output arithmetic.
 
 The committed longitudinal values are:
 
@@ -32,7 +33,7 @@ The committed longitudinal values are:
   `feedforward_effort_intercept: 0.0174` for
   `u_ff = 0.1188 * abs(effective_speed) + 0.0174`;
 - `minimum_moving_speed: 0.25` m/s, with zero-or-at-least-0.25 acceptance;
-- `proportional_gain: 0.05`, `integral_gain: 0.0`, and
+- `proportional_gain: 0.05`, `integral_gain: 0.01`, and
   `integrator_bound: 0.005`;
 - `output_max: 0.14`, a safety authority bound;
 - RPP `min_approach_linear_velocity: 0.25` m/s and
@@ -95,7 +96,7 @@ show only these exact node/parameter pairs:
 | `/controller_server` | `FollowPath.min_approach_linear_velocity` | `0.25` |
 | `/controller_server` | `FollowPath.regulated_linear_scaling_min_speed` | `0.30` |
 | `/drive_adapter` | `proportional_gain` | `0.05` |
-| `/drive_adapter` | `integral_gain` | `0.0` |
+| `/drive_adapter` | `integral_gain` | `0.01` |
 
 The three `FollowPath` values are protected by RPP's dynamic-parameter mutex.
 The two adapter values use one validated config swap in its parameter callback.
@@ -117,7 +118,7 @@ ros2 param set /controller_server FollowPath.desired_linear_vel 0.35
 ros2 param set /controller_server FollowPath.min_approach_linear_velocity 0.27
 ros2 param set /controller_server FollowPath.regulated_linear_scaling_min_speed 0.27
 ros2 param set /drive_adapter proportional_gain 0.03
-ros2 param set /drive_adapter integral_gain 0.01
+ros2 param set /drive_adapter integral_gain 0.005
 ros2 topic echo /speed_envelope/status --once
 ```
 
@@ -129,12 +130,12 @@ ros2 param set /controller_server FollowPath.desired_linear_vel 0.45
 ros2 param set /controller_server FollowPath.min_approach_linear_velocity 0.25
 ros2 param set /controller_server FollowPath.regulated_linear_scaling_min_speed 0.30
 ros2 param set /drive_adapter proportional_gain 0.05
-ros2 param set /drive_adapter integral_gain 0.0
+ros2 param set /drive_adapter integral_gain 0.01
 ros2 topic echo /speed_envelope/status --once
 ```
 
 The temporary speeds stay within the committed 0.25–0.60 m/s command envelope,
-Kp is reduced, Ki is small and bounded by the unchanged 0.005 integrator bound,
+Kp and Ki are reduced, and Ki remains bounded by the unchanged 0.005 integrator bound,
 and the unchanged 0.14 output authority remains the final ceiling. The hardware
 run must demonstrate a behavioral response within one control cycle for each
 write, recorded origin/live divergence, and reconciliation after restoration.

@@ -247,25 +247,26 @@ Nav2 → /cmd_vel_nav (SI) → drive_adapter → /cmd_vel_auto (normalized) → 
 |---|---|
 | Feedforward inverse | `u_ff = 0.1188 * abs(effective_speed) + 0.0174` |
 | Kp | **0.05** |
-| Ki | **0.00 (disabled)** |
+| Ki | **0.01** |
 | Gain switch | **none** |
 | Integrator bound | **±0.005 normalized effort** |
 | Output bounds | **0.00 … +0.14 safety authority** |
 | `maximum_commanded_speed` | 0.60 m/s |
 | Promoted command floor | 0.25 m/s |
 
-**Provisional MD13S feedback tuning (D-79, supersedes D-66 and D-72 for the
-compatibility controller).** Bag `rf2o_fix1_20260731_214809` has matching
-wheel/RF2O `vx` sign in 99.47% of 1139 moving samples, isolating the remaining
-chatter to a speed-loop limit cycle. With measured plant gain about 7.947 m/s
-per command, Kp 0.30 gave proportional loop gain about 2.38. Kp is reduced to
-0.05 and Ki is fixed at zero. The stall gain switch, integral accumulation,
-breakaway preload, and preemption decay paths are removed; legacy integral
-diagnostics remain present and always report zero/disabled.
+**Frozen MD13S longitudinal feedback (D-81, superseding D-79 and D-80 only for
+Ki).** Kp is 0.05 and Ki is 0.01 with the integrator bounded at ±0.005,
+`output_max` 0.14, and `maximum_commanded_speed` 0.60 m/s. Ki 0.01 was
+validated for 703 s in `pid0_20260801_112638`: zero saturation across 18 step
+transients, one clean large-step overshoot of 6.7%, steady-state error no more
+than 0.017 m/s, and integrator peak 0.0034. Stage 1 reverse hardware acceptance
+passed in `stage1_reverse_smoke_20260801_130128_0.mcap`; its live configuration
+had Ki zero, so `GAIN_DISABLED` and `integrator_state=0` throughout that run do
+not invalidate the earlier longitudinal validation.
 
 **Wheelspin guard** remains bag-observable when encoder speed materially exceeds
-EKF `vx`, but cannot alter feedback gain or output while integral action is
-disabled.
+EKF `vx`; it freezes integral accumulation without changing gain selection or
+the current output arithmetic.
 
 The adapter is forward-only: explicit stop and rejected inputs publish zero,
 and proportional correction clamps at zero rather than requesting reverse.
@@ -281,9 +282,9 @@ nonzero-command feedforward below 0.04. It is false throughout the configured
 nonzero command domain; assertion is evidence that the floor path was
 bypassed. Matti performs floor-autonomy hardware validation.
 
-**Teleop preemption** remains diagnostic. With integral action disabled it
-does not alter speed feedback. The adapter continues publishing
-`/cmd_vel_auto`; `twist_mux` remains the sole command arbiter.
+**Teleop preemption** freezes integral accumulation while the adapter output is
+not selected. The adapter continues publishing `/cmd_vel_auto`; `twist_mux`
+remains the sole command arbiter.
 
 **Stale `/cmd_vel_nav` produces silence, not brake.** Publishing brake would keep commands flowing and prevent the motor watchdog (D-09) from firing.
 
@@ -689,6 +690,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-78 | **Replace the stale hobby-ESC adapter lookup with a provisional MD13S linear inverse and cap autonomy output at 0.12.** | Bag `teleop_20260731_200955` fits `v = 7.947*cmd - 0.1436` with R2 0.9968 over command 0.05–0.25. Its inverse removes the hazardous ESC-era 0.340 minimum while the conservative cap bounds compatibility driving. This is smoke-checked scaffolding pending operator driving and controlled characterization, not a final plant model. |
 | D-79 | **Use provisional MD13S Kp 0.05 with Ki 0 and no feedback gain switching. Supersedes D-66 and D-72 for the compatibility controller.** | Bag `rf2o_fix1_20260731_214809` confirms wheel/RF2O `vx` sign agreement in 99.47% of 1139 moving samples. The remaining chatter is a speed-loop limit cycle: Kp 0.30 against measured plant gain 7.947 m/s per command gives loop gain about 2.38 and alternates low drive with active brake. Removing integral state, stall gain switching, breakaway preload, and preemption decay makes output feedforward plus only the provisional Kp correction. Operator driving must validate smoothness before characterization. |
 | D-80 | **Stage 2B applies the characterized MD13S inverse, zero-or-at-least-0.25 m/s adapter semantics, confirmed RPP floors, and a 0.14 safety authority bound while Ki remains disabled. Supersedes the calibration and floor values in D-64, D-78, and D-79.** | Direct effort-domain parameters preserve a clean shared origin. Raw and effective speeds are both typed so floor/ceiling intervention remains bag-visible. A non-clamping sub-0.04 diagnostic proves the configured floor path was used. Software tests cover the negative bypass case; Matti owns hardware floor-autonomy validation. |
+| D-81 | **Freeze the longitudinal controller at Kp 0.05, Ki 0.01, integrator bound ±0.005, `output_max` 0.14, and `maximum_commanded_speed` 0.60 m/s. Supersedes D-79 and D-80 only for Ki; feedforward, floors, bounds, and all other controller behavior remain unchanged.** | Ki 0.01 was validated over 703 s in `pid0_20260801_112638`: zero saturation across 18 step transients, one clean large-step overshoot of 6.7%, steady-state error ≤0.017 m/s, and integrator peak 0.0034. Stage 1 reverse hardware acceptance passed from `stage1_reverse_smoke_20260801_130128_0.mcap`; that run's live configuration had `integral_gain=0`, explaining `GAIN_DISABLED` and `integrator_state=0` throughout and providing no contrary Ki evidence. |
 
 ---
 
