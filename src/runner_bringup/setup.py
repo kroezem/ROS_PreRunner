@@ -43,6 +43,8 @@ setup(
             'scan_rebinner = runner_bringup.scan_rebinner:main',
             'foxglove_goal_bridge = '
             'runner_bringup.foxglove_goal_bridge:main',
+            'speed_envelope_observer = '
+            'runner_bringup.speed_envelope_observer:main',
         ],
     },
 )

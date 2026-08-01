@@ -41,6 +41,11 @@ def generate_launch_description():
         'config',
         'drive_adapter.yaml',
     )
+    speed_envelope = os.path.join(
+        adapter_share,
+        'config',
+        'speed_envelope.yaml',
+    )
 
     return LaunchDescription([
         Node(
@@ -89,7 +94,7 @@ def generate_launch_description():
             executable='drive_adapter',
             name='drive_adapter',
             output='screen',
-            parameters=[adapter_parameters],
+            parameters=[adapter_parameters, speed_envelope],
         ),
         Node(
             package='twist_mux',

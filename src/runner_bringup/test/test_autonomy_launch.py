@@ -48,6 +48,7 @@ def test_composite_adds_only_missing_command_chain_nodes():
         'runner_teleop',
         'runner_teleop',
         'runner_drive_adapter',
+        'runner_bringup',
         'twist_mux',
     ]
     assert 'runner_encoder' not in packages
@@ -89,7 +90,7 @@ def test_command_chain_parameters_match_the_stage2_bench():
         "'input_timeout': 0.15",
         "'speed_cap': 0.50",
         "package='runner_drive_adapter'",
-        'parameters=[adapter_parameters]',
+        'parameters=[adapter_parameters, speed_envelope]',
         "package='twist_mux'",
         'parameters=[mux_parameters]',
         "remappings=[('/cmd_vel_out', '/cmd_vel')]",
@@ -98,6 +99,9 @@ def test_command_chain_parameters_match_the_stage2_bench():
     for fragment in required_fragments:
         assert fragment in autonomy
         assert fragment in bench
+
+    assert "executable='speed_envelope_observer'" in autonomy
+    assert "executable='speed_envelope_observer'" not in bench
 
     assert "package='runner_motor'" not in autonomy
     assert "package='runner_motor'" not in bench
@@ -120,6 +124,19 @@ def test_composite_preserves_controller_and_mux_topic_ownership():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in nav2
     assert "remappings=[('/cmd_vel_out', '/cmd_vel')]" in autonomy
     assert "('/cmd_vel_nav', '/cmd_vel')" not in autonomy
+    assert "'/speed_envelope/status'" not in autonomy
+
+
+def test_shared_speed_origin_is_layered_only_on_its_consumers():
+    """The shared file reaches controller and adapter without other owners."""
+    autonomy = AUTONOMY_LAUNCH.read_text()
+    nav2 = NAV2_LAUNCH.read_text()
+
+    assert "'speed_envelope.yaml'" in autonomy
+    assert "'speed_envelope.yaml'" in nav2
+    assert 'parameters=[nav2_params, speed_envelope]' in nav2
+    assert 'parameters=[adapter_parameters, speed_envelope]' in autonomy
+    assert 'parameters=[mux_parameters, speed_envelope]' not in autonomy
 
 
 def test_vscode_adds_autonomy_without_changing_existing_tasks():
@@ -133,3 +150,11 @@ def test_vscode_adds_autonomy_without_changing_existing_tasks():
         'ros2 launch runner_bringup autonomy.launch.py '
         'map_name:=${input:runnerMap}'
     ) in tasks
+
+
+def test_committed_mcap_allowlist_includes_speed_envelope_status():
+    """The all-topics recorder explicitly documents observer coverage."""
+    tasks = TASKS.read_text()
+
+    assert '--all-topics' in tasks
+    assert 'includes /speed_envelope/status' in tasks

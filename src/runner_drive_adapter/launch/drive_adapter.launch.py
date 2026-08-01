@@ -24,10 +24,15 @@ from launch_ros.actions import Node
 def generate_launch_description():
     """Start exactly one adapter with its measured parameter set."""
     package_share = get_package_share_directory('runner_drive_adapter')
-    parameters = os.path.join(
+    adapter_parameters = os.path.join(
         package_share,
         'config',
         'drive_adapter.yaml',
+    )
+    speed_envelope = os.path.join(
+        package_share,
+        'config',
+        'speed_envelope.yaml',
     )
     return LaunchDescription([
         Node(
@@ -35,6 +40,6 @@ def generate_launch_description():
             executable='drive_adapter',
             name='drive_adapter',
             output='screen',
-            parameters=[parameters],
+            parameters=[adapter_parameters, speed_envelope],
         ),
     ])

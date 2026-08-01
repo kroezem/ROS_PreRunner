@@ -2,36 +2,10 @@ drive_adapter:
   ros__parameters:
     wheelbase: 0.178
     max_steering_angle: 0.3614
-    steering_min_speed: 0.05
-
-    # PROVISIONAL MD13S forward fit from bag teleop_20260731_200955:
-    # v = 7.947 * cmd - 0.1436, R2=0.9968, fitted over cmd 0.05-0.25.
-    # This is an initial compatibility inverse, not final characterization.
-    feedforward_speed_per_command: 7.947
-    feedforward_speed_intercept: -0.1436
-
-    minimum_moving_speed: 0.126
-    floor_promotion_min_ratio: 0.50
-    maximum_commanded_speed: 0.60
-
-    # PROVISIONAL pre-characterization feedback tuning. The MD13S plant gain
-    # makes the former ESC-era PI loop unstable at the compatibility cap.
-    proportional_gain: 0.05
-    integral_gain: 0.0
-    output_min: 0.0
-    # Conservative initial compatibility cap; operator driving validation is
-    # required before promotion.
-    output_max: 0.12
-
-    encoder_metres_per_edge: 0.010282
     wheelspin_speed_ratio: 1.50
     wheelspin_min_speed_excess: 0.10
     wheelspin_qualification_sec: 0.20
     motion_signal_timeout_sec: 0.25
-    encoder_state_timeout_sec: 0.25
-
-    cmd_vel_nav_timeout: 0.25
     # /teleop/active_mode publishes at 20 Hz. Four nominal periods tolerate
     # scheduler jitter; stale/absent state deliberately restores old behavior.
     active_mode_timeout_sec: 0.20
-    publication_rate: 20.0

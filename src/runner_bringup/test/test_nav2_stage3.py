@@ -12,6 +12,9 @@ PACKAGE = Path(__file__).parents[1]
 WORKSPACE = PACKAGE.parents[1]
 LAUNCH_PATH = PACKAGE / 'launch' / 'nav2.launch.py'
 PARAMS_PATH = PACKAGE / 'config' / 'nav2_params.yaml'
+SPEED_ENVELOPE_PATH = (
+    PACKAGE.parent / 'runner_drive_adapter' / 'config' / 'speed_envelope.yaml'
+)
 BT_PATH = (
     PACKAGE / 'behavior_trees' / 'navigate_to_pose_forward_only.xml'
 )
@@ -22,7 +25,16 @@ ROUTE_BT_PATH = (
 
 
 def _params():
-    return yaml.safe_load(PARAMS_PATH.read_text())
+    params = yaml.safe_load(PARAMS_PATH.read_text())
+    envelope = yaml.safe_load(SPEED_ENVELOPE_PATH.read_text())
+    controller = params['controller_server']['ros__parameters']
+    speed = envelope['controller_server']['ros__parameters']
+    for key, value in speed.items():
+        if key == 'FollowPath':
+            controller[key].update(value)
+        else:
+            controller[key] = value
+    return params
 
 
 def test_controller_is_launched_once_and_lifecycle_managed():

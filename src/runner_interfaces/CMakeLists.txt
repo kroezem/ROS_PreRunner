@@ -9,6 +9,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AdapterState.msg"
   "msg/EncoderState.msg"
   "msg/KeyboardState.msg"
+  "msg/SpeedEnvelopeEntry.msg"
+  "msg/SpeedEnvelopeStatus.msg"
   "msg/SystemTelemetry.msg"
   DEPENDENCIES builtin_interfaces
 )

@@ -43,6 +43,11 @@ def generate_launch_description():
         'config',
         'drive_adapter.yaml',
     )
+    speed_envelope = os.path.join(
+        adapter_share,
+        'config',
+        'speed_envelope.yaml',
+    )
     map_name = LaunchConfiguration('map_name')
 
     return LaunchDescription([
@@ -101,7 +106,17 @@ def generate_launch_description():
             executable='drive_adapter',
             name='drive_adapter',
             output='screen',
-            parameters=[adapter_parameters],
+            parameters=[adapter_parameters, speed_envelope],
+        ),
+        Node(
+            package='runner_bringup',
+            executable='speed_envelope_observer',
+            name='speed_envelope_observer',
+            output='screen',
+            parameters=[{
+                'origin_file': speed_envelope,
+                'request_timeout_sec': 0.25,
+            }],
         ),
         Node(
             package='twist_mux',

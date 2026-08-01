@@ -5,8 +5,8 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-import rclpy
 from geometry_msgs.msg import Twist
+import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 

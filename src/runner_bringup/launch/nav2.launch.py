@@ -81,6 +81,11 @@ def generate_launch_description():
     launch_dir = os.path.join(package_share, 'launch')
     include_dir = os.path.join(launch_dir, 'include')
     nav2_params = os.path.join(package_share, 'config', 'nav2_params.yaml')
+    speed_envelope = os.path.join(
+        get_package_share_directory('runner_drive_adapter'),
+        'config',
+        'speed_envelope.yaml',
+    )
     navigation_bt = os.path.join(
         package_share,
         'behavior_trees',
@@ -145,7 +150,7 @@ def generate_launch_description():
             executable='controller_server',
             name='controller_server',
             output='screen',
-            parameters=[nav2_params],
+            parameters=[nav2_params, speed_envelope],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
