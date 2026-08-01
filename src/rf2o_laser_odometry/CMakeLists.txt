@@ -64,6 +64,15 @@ add_library(${PROJECT_NAME} src/CLaserOdometry2D.cpp)
 ## Declare a cpp executable
 ament_target_dependencies(${PROJECT_NAME} ${DEPENDENCIES})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_base_frame_twist
+    test/test_base_frame_twist.cpp)
+  target_include_directories(test_base_frame_twist PRIVATE include)
+  target_link_libraries(test_base_frame_twist Eigen3::Eigen)
+endif()
+
 install(TARGETS ${EXECUTABLE_NAME}
   DESTINATION lib/${PROJECT_NAME})
 
@@ -72,4 +81,3 @@ install(
   DESTINATION share/${PROJECT_NAME})
 
 ament_package()
-

@@ -16,6 +16,7 @@
 ******************************************************************************************** */
 
 #include "rf2o_laser_odometry/CLaserOdometry2D.hpp"
+#include "rf2o_laser_odometry/BaseFrameMotion.hpp"
 
 #include <chrono>
 
@@ -1008,8 +1009,14 @@ void CLaserOdometry2D::PoseUpdate()
   double time_inc_sec = (current_scan_time - last_odom_time).seconds();
   last_dt_ = time_inc_sec;
   last_odom_time = current_scan_time;
-  lin_speed = acu_trans(0,2) / time_inc_sec;
-  //double lin_speed = sqrt( mrpt::math::square(robot_oldpose.x()-robot_pose.x()) + mrpt::math::square(robot_oldpose.y()-robot_pose.y()) )/time_inc_sec;
+
+  // Odometry twist is published with child_frame_id=base_link, so express its
+  // linear component in that frame. robot_pose_ already includes the
+  // TF-derived base_link->laser extrinsic; taking the relative base pose also
+  // handles arbitrary laser yaw without mounting-specific compensation.
+  const Pose3d base_increment = baseFrameIncrement(
+    laser_oldpose_, laser_pose_, laser_pose_on_robot_);
+  lin_speed = base_increment.translation()(0) / time_inc_sec;
 
   double ang_inc = rf2o::getYaw(robot_pose_.rotation()) -
       rf2o::getYaw(robot_oldpose_.rotation());
