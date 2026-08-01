@@ -476,9 +476,7 @@ class TeleopNode(Node):
             command = self._manual_cmd
         elif mode == FIXED_THROTTLE_MODE:
             if self._reverse > THROTTLE_DEADZONE:
-                command = _shape_manual_command(
-                    -self._reverse, self._manual_trigger_expo
-                )
+                command = -self._fixed_throttle_setpoint
             elif self._throttle > THROTTLE_DEADZONE:
                 command = self._fixed_throttle_setpoint
             else:

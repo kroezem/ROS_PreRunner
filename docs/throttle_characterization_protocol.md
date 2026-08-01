@@ -27,13 +27,15 @@ behavior has passed wheels-off-ground validation.
 
 - **X:** hold for normal manual drive. R2 supplies positive throttle.
 - **R1:** hold for fixed-throttle mode; R2 applies the selected positive
-  setpoint.
+  setpoint and L2 applies the selected negative setpoint. Trigger depth selects
+  direction without scaling the configured magnitude, and L2 overrides R2.
 - **L1:** `teleop_suppress`: teleop stops publishing `/cmd_vel_teleop` while
   L1 alone is held. L1 by itself is not an autonomy arming gate and does not
   make autonomy safe or active.
 - **D-pad up/down:** raise/lower the process-lifetime fixed-throttle setpoint
   by one configured step per press.
-- **L2:** proportional reverse in both X and R1 modes; it overrides R2.
+- **L2:** proportional reverse in X mode; fixed negative setpoint in R1 mode.
+  It overrides R2 in both modes.
 - **Left stick:** steering remains live in X and R1 modes.
 - **Release all motion buttons:** full brake within the next 50 ms publication
   cycle.
@@ -63,10 +65,10 @@ press logs the selected setpoint and its legacy expected-ESC-pulse diagnostic.
 That diagnostic is not used by the MD13S motor mapping and is not measured
 feedback.
 
-R1 forward setpoints bypass the DualSense expo so characterization commands
-remain the exact selected values. Keyboard teleop and autonomy bypass it as
-well. L2 remains a manual proportional reverse input in R1 mode and therefore
-uses the same DualSense curve.
+Both R1 directions bypass the DualSense expo so characterization commands
+remain the exact selected magnitude. Trigger depth only selects the direction
+once it crosses the deadzone. Keyboard teleop and autonomy bypass the expo as
+well; X-mode R2 and L2 remain proportional and shaped.
 
 `/teleop/fixed_throttle_setpoint` (`std_msgs/msg/Float32`) continuously
 publishes the selected setpoint. `/teleop/active_mode`

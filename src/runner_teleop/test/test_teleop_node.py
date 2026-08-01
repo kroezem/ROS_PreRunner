@@ -262,8 +262,11 @@ def test_fixed_throttle_and_keyboard_bypass_manual_trigger_expo():
     node = make_node()
     node._manual_trigger_expo = 1.0
 
-    fixed, fixed_mode, _ = cycle(
+    fixed_forward, fixed_mode, _ = cycle(
         node, joy(throttle=0.0, r1=True)
+    )
+    fixed_reverse, _, _ = cycle(
+        node, joy(brake=0.0, r1=True)
     )
     cycle(node, joy())
     keyboard_cycle(node, keyboard_state())
@@ -272,33 +275,49 @@ def test_fixed_throttle_and_keyboard_bypass_manual_trigger_expo():
     )
 
     assert fixed_mode == FIXED_THROTTLE_MODE
-    assert fixed.linear.x == pytest.approx(0.30)
+    assert fixed_forward.linear.x == pytest.approx(0.30)
+    assert fixed_reverse.linear.x == pytest.approx(-0.30)
     assert keyboard_mode == KEYBOARD_MOTION_MODE
     assert keyboard.linear.x == pytest.approx(0.30)
 
 
-def test_fixed_throttle_requires_r2_and_keeps_l2_reverse_and_steering_live():
+def test_fixed_throttle_is_symmetric_depth_independent_and_l2_has_priority():
     node = make_node()
 
-    released_r2, mode, _ = cycle(
+    released, mode, _ = cycle(
         node,
         joy(steer=-0.4, throttle=1.0, r1=True),
     )
-    pressed_r2, _, _ = cycle(
+    shallow_r2, _, _ = cycle(
+        node,
+        joy(steer=0.6, throttle=0.0, r1=True),
+    )
+    full_r2, _, _ = cycle(
         node,
         joy(steer=0.6, throttle=-1.0, r1=True),
     )
-    brake, _, _ = cycle(
+    shallow_l2, _, _ = cycle(
         node,
-        joy(steer=0.2, brake=0.0, throttle=-1.0, r1=True),
+        joy(steer=0.2, brake=0.0, r1=True),
+    )
+    full_l2, _, _ = cycle(
+        node,
+        joy(steer=0.2, brake=-1.0, r1=True),
+    )
+    both, _, _ = cycle(
+        node,
+        joy(brake=0.0, throttle=-1.0, r1=True),
     )
 
     assert mode == FIXED_THROTTLE_MODE
-    assert released_r2.linear.x == 0.0
-    assert pressed_r2.linear.x == pytest.approx(0.30)
-    assert pressed_r2.angular.z == pytest.approx(0.6)
-    assert brake.linear.x == pytest.approx(-0.3125)
-    assert brake.angular.z == pytest.approx(0.2)
+    assert released.linear.x == 0.0
+    assert shallow_r2.linear.x == pytest.approx(0.30)
+    assert full_r2.linear.x == pytest.approx(0.30)
+    assert shallow_r2.angular.z == pytest.approx(0.6)
+    assert shallow_l2.linear.x == pytest.approx(-0.30)
+    assert full_l2.linear.x == pytest.approx(-0.30)
+    assert shallow_l2.angular.z == pytest.approx(0.2)
+    assert both.linear.x == pytest.approx(-0.30)
 
 
 def test_controller_timeout_releases_deadman_to_zero():
@@ -468,6 +487,23 @@ def test_dpad_edges_examples_and_no_repeat_while_held():
 
     dpad_press(node, -1)
     assert node._fixed_throttle_setpoint == 0.34
+
+
+def test_dpad_adjusts_fixed_throttle_symmetrically():
+    node = make_node()
+    dpad_press(node, 1)
+
+    forward, _, forward_setpoint = cycle(
+        node, joy(throttle=-1.0, r1=True)
+    )
+    reverse, _, reverse_setpoint = cycle(
+        node, joy(brake=-1.0, r1=True)
+    )
+
+    assert forward_setpoint == pytest.approx(0.31)
+    assert reverse_setpoint == pytest.approx(0.31)
+    assert forward.linear.x == pytest.approx(0.31)
+    assert reverse.linear.x == pytest.approx(-0.31)
 
 
 def test_dpad_clamps_and_simultaneous_opposites_make_no_change():
