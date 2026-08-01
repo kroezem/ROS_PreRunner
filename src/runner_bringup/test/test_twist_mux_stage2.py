@@ -70,7 +70,7 @@ def test_launches_remap_only_mux_output_to_normalized_motor_input():
     assert bench.count("executable='keyboard_bridge'") == 1
     assert bench.count("package='runner_drive_adapter'") == 1
     assert "package='runner_motor'" not in bench
-    assert bench.count("package='runner_encoder'") == 1
+    assert "package='runner_encoder'" not in bench
     assert "('/cmd_vel_out', '/cmd_vel')" in bench
     assert "('/cmd_vel_nav', '/cmd_vel')" not in bench
     assert "package='nav2_controller'" not in bench

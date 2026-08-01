@@ -63,8 +63,9 @@ The Stage 2 bench launch is:
 ros2 launch runner_bringup autonomy_bench.launch.py
 ```
 
-It starts only `joy_node`, `runner_teleop`, `drive_adapter`, `twist_mux`, and
-`encoder_node`; the persistent `runner-motor.service` owns `motor_driver`.
+It starts only `joy_node`, `runner_teleop`, `drive_adapter`, and `twist_mux`;
+the persistent `runner-motor.service` owns `motor_driver`, and the persistent
+`runner-encoder.service` owns `encoder_node` and GPIO 22.
 A controlled publisher may supply
 `/cmd_vel_nav`; no planner, controller server, costmap, behavior-tree
 navigator, or autonomous goal is part of this launch.

@@ -40,7 +40,7 @@ def test_composite_includes_nav2_once_and_passes_map_name():
 
 
 def test_composite_adds_only_missing_command_chain_nodes():
-    """Nav2 supplies sensors and encoder; composite adds the command chain."""
+    """Nav2 supplies launched sensors; composite adds the command chain."""
     packages = _node_packages(AUTONOMY_LAUNCH)
 
     assert packages == [
@@ -53,6 +53,16 @@ def test_composite_adds_only_missing_command_chain_nodes():
     assert 'runner_encoder' not in packages
     assert 'robot_localization' not in packages
     assert not any(package.startswith('nav2_') for package in packages)
+
+
+def test_encoder_hardware_owner_is_absent_from_all_composites():
+    """The persistent encoder service is the only GPIO 22 owner."""
+    launch_files = list((PACKAGE / 'launch').rglob('*.launch.py'))
+
+    for launch_file in launch_files:
+        source = launch_file.read_text()
+        assert "package='runner_encoder'" not in source
+        assert "executable='encoder_node'" not in source
 
 
 def test_command_chain_parameters_match_the_stage2_bench():

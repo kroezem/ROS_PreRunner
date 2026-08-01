@@ -96,7 +96,7 @@ Traction voltage remains unobservable — `/battery` is the UPS fuel gauge only.
 | `runner_bringup` | `foxglove_goal_bridge` | Goal and route management (§4.16) |
 | `runner_imu` | `bno085_node` | BNO085 → `/imu/data` @ 50 Hz |
 | `runner_motor` | `motor_node` | `/cmd_vel` → MD13S sign-magnitude + steering PWM. Persistent systemd hardware owner (D-75, D-76) |
-| `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Sole GPIO 22 owner, libgpiod (D-54) |
+| `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Persistent systemd GPIO 22 owner, libgpiod (D-54, D-77) |
 | `runner_teleop` | `teleop_node` | `/joy` → `/cmd_vel_teleop`, three-state hold-to-run (D-48); keyboard bridge |
 | `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized), with PI speed control (§4.15) |
 | `nav2_regulated_pure_pursuit_controller` | controller plugin | Navigation2 1.3.12 overlay with Runner path-cost lookahead regulation (D-73) |
@@ -117,12 +117,13 @@ launch/
 ├── teleop.launch.py    = joy + teleop_node + twist_mux
 └── include/
     ├── sensors / estimation / slam_map / slam_localize
-    └── lidar / imu / encoder / tf_static / rf2o / ekf
+    └── lidar / imu / tf_static / rf2o / ekf
 ```
 
-`motor_node` is not part of the launch tree. `runner-motor.service` starts it at
-boot with no ESC-mode parameter. Composites own the complete application graph
-but depend on the persistent platform hardware service (D-75).
+`motor_node` and `encoder_node` are not part of the launch tree.
+`runner-motor.service` and `runner-encoder.service` start them at boot.
+Composites own the complete application graph but depend on these persistent
+platform hardware services (D-75, D-77).
 
 ### 4.3 Scan topology (D-37)
 
@@ -146,7 +147,7 @@ Nav2 costmaps consume raw `/scan`. Every new map is built through `/scan_slam`.
 | `/slam_map` | slam_toolbox (visualization only) |
 | `/cmd_vel` | `twist_mux` |
 | MD13S PWM/DIR + steering PWM | persistent `motor_node` systemd service |
-| GPIO 22 | `encoder_node` |
+| GPIO 22 | persistent `encoder_node` systemd service |
 
 ### 4.5 Static extrinsics
 
@@ -162,7 +163,10 @@ The prior fixed-window estimator quantized 0.3 m/s to exactly two values (0.206 
 
 **Magnet spacing is period-2**, from bipolar-latch switching asymmetry: ±1.5% in July, ±5.5% currently, structure unchanged. Cancelled entirely by depth ≥ 2. The magnitude change coincided with a measurement-method change and must be re-scoped on the signal line before any mechanical inspection.
 
-**Direction (D-42):** `/wheel/odom` signed by `pending_direction` — latest nonzero command, latched through zeros. Steady-state disagreement with `sign(EKF vx)`: 0.0% versus 27.6% for stop-gated `active_direction`. The MD13S motor owner publishes the direct signed command.
+**Direction (D-42):** `/wheel/odom` is signed by `pending_direction`, sourced
+from the motor owner's hardware-latched DIR and held through zero duty. While
+a reversal is gated, this remains the current physical direction rather than
+changing early to the request.
 
 **Magnitude is unreliable under wheelspin:** p90 wheel/EKF ratio 2.04. Not an EKF velocity source.
 
@@ -424,9 +428,10 @@ D-23).
 
 `runner-motor.service` starts at boot, requires the PWM setup service, and is
 not stopped with an application composite. Composite teardown stops command
-publication; D-09 writes duty zero and publishes direction zero after 200 ms
-while the hardware owner remains alive. Shutdown also writes duty zero before
-releasing GPIO23. The timer and steering command mapping are unchanged.
+publication; D-09 writes duty zero after 200 ms while the hardware owner
+remains alive. `/motor/direction` retains the hardware-latched DIR through that
+brake. Shutdown also writes duty zero before releasing GPIO23. The timer and
+steering command mapping are unchanged.
 
 **Breakaway is direction-dependent** (0.340–0.380 normalized). Floor slope, drivetrain warm-up, and sweep order were confounded and never separated. The adapter uses the worst case observed.
 
@@ -639,6 +644,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-74 | **Separate default WAYPOINT queue and persistent ROUTE workflows share `/runner/waypoint`; the bridge remains the sole Nav2 action owner.** WAYPOINT preserves the full supplied pose in a 20-item, in-memory-only FIFO executed sequentially with `NavigateToPose`; one failure retry is allowed before pausing with the front retained. ROUTE preserves full pose orientation, persistence, controls, and `NavigateThroughPoses`. Absolute idempotent mode commands clear and cancel the opposite collection on actual transitions only. | One Foxglove pose tool serves both operator workflows without a competing action owner or topic. Sequential queue execution intentionally accepts stop-and-go and repeated breakaway. A single generation arbiter prevents stale callbacks from reviving canceled work, while clearing `path` once at the start of both BTs forces fresh planning for identical queue retries, resumed goals, and route replays. Protocol-v2 values 8/9 carry repeated absolute F12 requests without changing the 27-byte layout. |
 | D-75 | **`motor_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** This amends D-29: runnable composites remain complete application graphs but may depend on persistent platform services. It supersedes the ownership portion of D-23: `runner-pwm-setup.service` temporarily prepares export and permissions, while `motor_node` continuously owns PWM12/13. D-09 remains the primary composite-stop path. | Launch teardown and hardware ownership have independent lifecycles. Keeping the motor owner alive lets command publication cease on composite teardown and permits the 200 ms watchdog to apply the existing stop output. `Restart=always` with a 0.1 s delay bounds recovery attempts after owner failure. This decision preserves current ESC behavior; MD13S behavior is not yet implemented or validated. |
 | D-76 | **Cytron MD13S replaces hobby-ESC pulse control.** GPIO12 is normal-polarity 20 kHz PWM, GPIO23 is exclusive DIR by `pinctrl-rp1` label, and normalized sign/magnitude map directly to DIR/duty. Duty zero is active brake. D-09 remains 200 ms. Supersedes D-08, D-34, D-46, and D-47 at the motor boundary. | Direct sign-magnitude control removes ESC arming, neutral/deadband/expo/pulse mappings and the ESC reverse FSM. The later stationary gate permits DIR changes only after post-request stop evidence. Safe startup writes duty zero, defines DIR, then enables motor PWM before subscribing. Direct sysfs access never implicitly unexports GPIO12/13 PWM. Traction-disconnected smoke check only; wheels-off-ground validation remains pending. |
+| D-77 | **`encoder_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** `runner-encoder.service` is the sole GPIO 22 owner and restarts on failure. The motor reversal gate remains fail-closed until it receives post-request stationary evidence; while pending, `/motor/direction` reports the hardware-latched DIR rather than the request. | Motor ownership already persists beyond composite lifetime, so its safety gate must not depend on an application launch to supply `/wheel/encoder_state`. Separating encoder hardware ownership prevents both zero-publisher braking and duplicate GPIO consumers. |
 
 ---
 

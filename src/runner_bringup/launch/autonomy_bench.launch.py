@@ -98,10 +98,4 @@ def generate_launch_description():
             parameters=[mux_parameters],
             remappings=[('/cmd_vel_out', '/cmd_vel')],
         ),
-        Node(
-            package='runner_encoder',
-            executable='encoder_node',
-            name='encoder_node',
-            output='screen',
-        ),
     ])

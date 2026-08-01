@@ -29,8 +29,4 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
             os.path.join(include_dir, 'imu.launch.py'))),
-        Node(
-            package='runner_encoder',
-            executable='encoder_node',
-        ),
     ])

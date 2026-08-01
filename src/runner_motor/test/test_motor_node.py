@@ -412,6 +412,24 @@ def test_opposite_command_brakes_while_encoder_reports_moving(motor_factory):
     assert node._pending_reversal == (motor_node.DIR_REVERSE, 25_000)
 
 
+def test_pending_reversal_warns_once_while_stationary_evidence_is_absent(
+    motor_factory,
+):
+    create, _line, _chip = motor_factory
+    node = create()
+    warnings = []
+    node.get_logger().warn = warnings.append
+
+    _command(node, -0.2)
+    _command(node, -0.7)
+
+    assert warnings == [
+        'motor reversal pending; duty=0 (active brake) while awaiting a '
+        'post-request stationary /wheel/encoder_state sample'
+    ]
+    assert node.motor.duty_cycle_ns == 0
+
+
 def test_only_post_request_stationary_sample_authorizes_reversal(motor_factory):
     create, line, _chip = motor_factory
     node = create()
@@ -444,7 +462,7 @@ def test_zero_cancels_pending_reversal(motor_factory):
     assert line.values == [motor_node.DIR_FORWARD]
     assert node._pending_reversal is None
     assert node.motor.duty_cycle_ns == 0
-    assert node._direction_latch == -1
+    assert node._direction_latch == 1
 
 
 def test_repeated_pending_commands_apply_latest_duty(motor_factory):
@@ -493,7 +511,7 @@ def test_same_hardware_direction_command_applies_immediately(motor_factory):
 
 @pytest.mark.parametrize(
     ('command', 'expected_direction', 'expected_duty'),
-    [(-1.0, -1, 0), (0.0, 0, 0), (0.5, 1, 25_000)],
+    [(-1.0, 1, 0), (0.0, 1, 0), (0.5, 1, 25_000)],
 )
 def test_command_publishes_direction(
     motor_factory, command, expected_direction, expected_duty
@@ -511,6 +529,25 @@ def test_command_publishes_direction(
     assert node.motor.duty_cycle_ns == expected_duty
 
 
+def test_pending_reversal_reports_hardware_latched_direction(motor_factory):
+    create, line, _chip = motor_factory
+    node = create()
+    direction_messages = []
+    node._direction_pub.publish = direction_messages.append
+
+    _command(node, -0.5)
+
+    assert line.values[-1] == motor_node.DIR_FORWARD
+    assert direction_messages[-1].data == 1
+    assert node.motor.duty_cycle_ns == 0
+
+    _stationary(node)
+
+    assert line.values[-1] == motor_node.DIR_REVERSE
+    assert direction_messages[-1].data == -1
+    assert node.motor.duty_cycle_ns == 25_000
+
+
 def test_direction_telemetry_stays_latched_through_zero_watchdog_and_shutdown(
     motor_factory,
 ):
@@ -520,8 +557,9 @@ def test_direction_telemetry_stays_latched_through_zero_watchdog_and_shutdown(
     node._direction_pub.publish = direction_messages.append
 
     _command(node, -0.5)
+    _stationary(node)
     _command(node, 0.0)
-    assert [message.data for message in direction_messages] == [-1, -1]
+    assert [message.data for message in direction_messages] == [1, -1, -1]
 
     node._last_cmd -= motor_node.CMD_TIMEOUT_S + 1.0
     warnings = []
