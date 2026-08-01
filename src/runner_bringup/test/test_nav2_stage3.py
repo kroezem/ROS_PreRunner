@@ -59,7 +59,7 @@ def test_controller_output_has_only_the_physical_nav_topic():
     assert "('/cmd_vel_nav', '/cmd_vel')" not in launch
 
 
-def test_rpp_is_forward_only_and_uses_measured_speed_limits():
+def test_rpp_allows_reversing_and_uses_measured_speed_limits():
     """RPP uses the Jazzy class and Runner's measured forward domain."""
     controller = _params()['controller_server']['ros__parameters']
     rpp = controller['FollowPath']
@@ -72,7 +72,7 @@ def test_rpp_is_forward_only_and_uses_measured_speed_limits():
     )
     assert rpp['desired_linear_vel'] == 0.45
     assert rpp['min_approach_linear_velocity'] == 0.25
-    assert rpp['allow_reversing'] is False
+    assert rpp['allow_reversing'] is True
     assert rpp['use_rotate_to_heading'] is False
     assert rpp['lookahead_dist'] == 0.40
     assert rpp['use_velocity_scaled_lookahead_dist'] is True

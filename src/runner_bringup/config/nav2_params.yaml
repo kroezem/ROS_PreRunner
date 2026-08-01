@@ -63,7 +63,7 @@ controller_server:
       max_lookahead_dist: 0.80
       lookahead_time: 1.0
       use_rotate_to_heading: false
-      allow_reversing: false
+      allow_reversing: true
       transform_tolerance: 0.3
       stateful: false
 
