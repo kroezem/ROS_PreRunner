@@ -222,6 +222,23 @@ def test_graph_ownership_staleness_and_diagnostics():
 
         adapter.adapter._integrator = 0.004
         result = adapter.set_parameters([
+            Parameter('proportional_gain', Parameter.Type.DOUBLE, 0.03)
+        ])[0]
+        assert result.successful
+        assert adapter.config.proportional_gain == 0.03
+        assert adapter.adapter.integrator_state == 0.004
+
+        result = adapter.set_parameters_atomically([
+            Parameter('proportional_gain', Parameter.Type.DOUBLE, 0.04),
+            Parameter('integral_gain', Parameter.Type.DOUBLE, -0.01),
+        ])
+        assert not result.successful
+        assert 'integral_gain must be nonnegative' in result.reason
+        assert adapter.config.proportional_gain == 0.03
+        assert adapter.config.integral_gain == 0.0
+        assert adapter.adapter.integrator_state == 0.004
+
+        result = adapter.set_parameters([
             Parameter('integral_gain', Parameter.Type.DOUBLE, 0.01)
         ])[0]
         assert result.successful

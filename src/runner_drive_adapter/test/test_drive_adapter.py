@@ -164,6 +164,16 @@ def test_disabled_integrator_does_not_affect_output():
     assert not decision.integral_decay_active
 
 
+def test_live_tuning_defaults_remain_committed_values_without_writes():
+    adapter = DriveAdapter(AdapterConfig())
+    decision = _update(adapter, 0.0, speed=0.29, measured=0.20)
+
+    assert adapter.config.proportional_gain == 0.05
+    assert adapter.config.integral_gain == 0.0
+    assert decision.proportional_term == pytest.approx(0.05 * 0.09)
+    assert decision.integrator_state == 0.0
+
+
 def _set_selected(adapter, now, linear=0.05, angular=0.0):
     adapter.update_adapter_output(linear, angular, now)
     adapter.update_mux_output(linear, angular, now)
@@ -403,6 +413,47 @@ def test_successful_live_integral_gain_change_is_the_only_state_reset():
 
     assert adapter.config.integral_gain == 0.20
     assert adapter.integrator_state == 0.0
+
+
+def test_live_proportional_gain_takes_effect_on_next_cycle_without_reset():
+    adapter = DriveAdapter(AdapterConfig())
+    first = _update(adapter, 0.0, speed=0.29, measured=0.20)
+    adapter._integrator = 0.004
+
+    adapter.set_proportional_gain(0.03)
+    second = _update(adapter, 0.1, speed=0.29, measured=0.20)
+
+    assert first.proportional_term == pytest.approx(0.05 * 0.09)
+    assert second.proportional_term == pytest.approx(0.03 * 0.09)
+    assert second.integrator_state == 0.004
+
+
+@pytest.mark.parametrize('value', [True, 0, 0.0, -0.01, math.nan])
+def test_rejected_proportional_gain_does_not_change_active_state(value):
+    adapter = DriveAdapter(AdapterConfig(integral_gain=0.10))
+    adapter._integrator = 0.004
+
+    with pytest.raises((TypeError, ValueError)):
+        adapter.set_proportional_gain(value)
+
+    assert adapter.config.proportional_gain == 0.05
+    assert adapter.config.integral_gain == 0.10
+    assert adapter.integrator_state == 0.004
+
+
+def test_combined_live_gain_update_is_atomic_on_rejection():
+    adapter = DriveAdapter(AdapterConfig())
+    adapter._integrator = 0.004
+
+    with pytest.raises(ValueError):
+        adapter.set_controller_gains(
+            proportional_gain=0.03,
+            integral_gain=-0.01,
+        )
+
+    assert adapter.config.proportional_gain == 0.05
+    assert adapter.config.integral_gain == 0.0
+    assert adapter.integrator_state == 0.004
 
 
 def test_freeze_enum_values_match_the_typed_adapter_state_interface():

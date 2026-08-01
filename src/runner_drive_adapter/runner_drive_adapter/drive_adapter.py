@@ -282,15 +282,35 @@ class DriveAdapter:
 
     def set_integral_gain(self, integral_gain: float) -> None:
         """Apply a validated live Ki change and reset integral state."""
-        if isinstance(integral_gain, bool) or not isinstance(
-            integral_gain, float
-        ):
-            raise TypeError('integral_gain must be a double')
-        self.config = AdapterConfig(
-            **{**self.config.__dict__, 'integral_gain': integral_gain}
+        self.set_controller_gains(integral_gain=integral_gain)
+
+    def set_proportional_gain(self, proportional_gain: float) -> None:
+        """Apply a validated live Kp change without resetting integral state."""
+        self.set_controller_gains(proportional_gain=proportional_gain)
+
+    def set_controller_gains(
+        self,
+        proportional_gain: Optional[float] = None,
+        integral_gain: Optional[float] = None,
+    ) -> None:
+        """Validate and atomically apply a live Kp/Ki update."""
+        updates = {
+            name: value for name, value in (
+                ('proportional_gain', proportional_gain),
+                ('integral_gain', integral_gain),
+            )
+            if value is not None
+        }
+        for name, value in updates.items():
+            if isinstance(value, bool) or not isinstance(value, float):
+                raise TypeError(f'{name} must be a double')
+        candidate = AdapterConfig(
+            **{**self.config.__dict__, **updates}
         )
-        self._integrator = 0.0
-        self._previous_encoder_sample_time = None
+        self.config = candidate
+        if integral_gain is not None:
+            self._integrator = 0.0
+            self._previous_encoder_sample_time = None
 
     def update_command(
         self,

@@ -34,6 +34,17 @@ def test_origin_has_only_expected_consumers_and_flattened_keys():
         for origin in origins
     )
     assert any(
+        origin.parameter_name == 'FollowPath.min_approach_linear_velocity'
+        and origin.value == 0.25
+        for origin in origins
+    )
+    assert any(
+        origin.parameter_name
+        == 'FollowPath.regulated_linear_scaling_min_speed'
+        and origin.value == 0.30
+        for origin in origins
+    )
+    assert any(
         origin.parameter_name == 'output_max' and origin.value == 0.14
         for origin in origins
     )
@@ -43,6 +54,11 @@ def test_origin_has_only_expected_consumers_and_flattened_keys():
     )
     assert any(
         origin.parameter_name == 'integral_gain' and origin.value == 0.0
+        for origin in origins
+    )
+    assert any(
+        origin.parameter_name == 'proportional_gain'
+        and origin.value == 0.05
         for origin in origins
     )
     assert any(
@@ -105,3 +121,31 @@ def test_stale_completion_cannot_overwrite_timeout_or_newer_attempt():
     assert not store.resolve(origin.key, old_token, value=9.0)
     assert store.resolve(origin.key, new_token, value=1.0)
     assert store.observations[origin.key].value == 1.0
+
+
+def test_live_override_diverges_from_origin_and_restoration_clears_it():
+    """A valid live Kp override is visible until its default is restored."""
+    origin = OriginValue(
+        'drive_adapter.proportional_gain',
+        '/drive_adapter',
+        'proportional_gain',
+        0.05,
+    )
+    store = ReconciliationStore([origin])
+
+    override = store.begin(origin.key, now=1.0, timeout=0.25)
+    assert store.resolve(origin.key, override, value=0.03)
+    divergent = build_entry(origin, store.observations[origin.key])
+
+    assert divergent.available
+    assert divergent.origin_double == 0.05
+    assert divergent.observed_double == 0.03
+    assert divergent.divergence == SpeedEnvelopeEntry.DIVERGENCE_DIFFERENT
+
+    restoration = store.begin(origin.key, now=2.0, timeout=0.25)
+    assert store.resolve(origin.key, restoration, value=0.05)
+    reconciled = build_entry(origin, store.observations[origin.key])
+
+    assert reconciled.available
+    assert reconciled.observed_double == 0.05
+    assert reconciled.divergence == SpeedEnvelopeEntry.DIVERGENCE_MATCH

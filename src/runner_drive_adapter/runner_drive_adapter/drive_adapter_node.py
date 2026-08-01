@@ -160,15 +160,16 @@ class DriveAdapterNode(Node):
         )
 
     def _on_parameters(self, parameters) -> SetParametersResult:
-        """Apply only Ki live, resetting its state after validation."""
-        changes = [
-            parameter for parameter in parameters
-            if parameter.name == 'integral_gain'
-        ]
+        """Atomically apply live Kp/Ki; only a Ki write resets state."""
+        changes = {
+            parameter.name: parameter.value
+            for parameter in parameters
+            if parameter.name in ('proportional_gain', 'integral_gain')
+        }
         if not changes:
             return SetParametersResult(successful=True)
         try:
-            self.adapter.set_integral_gain(changes[-1].value)
+            self.adapter.set_controller_gains(**changes)
         except (TypeError, ValueError) as error:
             return SetParametersResult(
                 successful=False,

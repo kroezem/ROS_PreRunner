@@ -8,9 +8,11 @@ authority bound through this origin. Hardware validation remains pending.
 
 The adapter's bounded parallel-form integrator uses the encoder sample stamps
 for `dt` and a symmetric `integrator_bound` in normalized effort. Ki remains
-zero in the committed origin. Of the adapter parameters, only a successful
-live `integral_gain` write is currently applied; it resets integral state. The
-observer remains read-only.
+zero in the committed origin. Successful live `proportional_gain` and
+`integral_gain` writes are applied on the next adapter control cycle. A Kp write
+does not reset integral state; a successful Ki write retains its existing
+reset. No other adapter parameter is live-effective. The observer remains
+read-only.
 
 `integrator_freeze_reason` evaluates the existing conditions even while Ki is
 zero. If conditions coincide, its deterministic precedence from highest to
@@ -81,3 +83,58 @@ control-path subscription or special QoS override.
 The old ESC pulse calculations and messages in DualSense teleop are adjacent
 cleanup only. They remain inert with respect to the published normalized effort
 and are deliberately outside this consolidation.
+
+## Five-parameter live tuning panel
+
+Create one Foxglove **Parameters** panel named `Speed loop — live subset` and
+show only these exact node/parameter pairs:
+
+| Node | Parameter | Committed default |
+|---|---|---:|
+| `/controller_server` | `FollowPath.desired_linear_vel` | `0.45` |
+| `/controller_server` | `FollowPath.min_approach_linear_velocity` | `0.25` |
+| `/controller_server` | `FollowPath.regulated_linear_scaling_min_speed` | `0.30` |
+| `/drive_adapter` | `proportional_gain` | `0.05` |
+| `/drive_adapter` | `integral_gain` | `0.0` |
+
+The three `FollowPath` values are protected by RPP's dynamic-parameter mutex.
+The two adapter values use one validated config swap in its parameter callback.
+All five are read back independently on `/speed_envelope/status`; an override
+sets that entry to `DIVERGENCE_DIFFERENT`, and restoring the value returns it to
+`DIVERGENCE_MATCH`. The panel must not include any other speed-envelope value,
+because no other adapter parameter is authorized for live application.
+
+## Active-route hardware verification
+
+Start the normal route and recorder exactly as for Stage 2B. Do not restart a
+node or perform a lifecycle transition. While the route is active, apply these
+temporary conservative values one at a time, allowing at least one controller
+cycle after each command and confirming the corresponding Parameters-panel and
+`/speed_envelope/status` entry:
+
+```bash
+ros2 param set /controller_server FollowPath.desired_linear_vel 0.35
+ros2 param set /controller_server FollowPath.min_approach_linear_velocity 0.27
+ros2 param set /controller_server FollowPath.regulated_linear_scaling_min_speed 0.27
+ros2 param set /drive_adapter proportional_gain 0.03
+ros2 param set /drive_adapter integral_gain 0.01
+ros2 topic echo /speed_envelope/status --once
+```
+
+Before stopping the route or recorder, restore every committed default and wait
+for the observer to report `DIVERGENCE_MATCH` for all five entries:
+
+```bash
+ros2 param set /controller_server FollowPath.desired_linear_vel 0.45
+ros2 param set /controller_server FollowPath.min_approach_linear_velocity 0.25
+ros2 param set /controller_server FollowPath.regulated_linear_scaling_min_speed 0.30
+ros2 param set /drive_adapter proportional_gain 0.05
+ros2 param set /drive_adapter integral_gain 0.0
+ros2 topic echo /speed_envelope/status --once
+```
+
+The temporary speeds stay within the committed 0.25–0.60 m/s command envelope,
+Kp is reduced, Ki is small and bounded by the unchanged 0.005 integrator bound,
+and the unchanged 0.14 output authority remains the final ceiling. The hardware
+run must demonstrate a behavioral response within one control cycle for each
+write, recorded origin/live divergence, and reconciliation after restoration.
