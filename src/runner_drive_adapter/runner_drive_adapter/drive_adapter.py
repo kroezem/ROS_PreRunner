@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure feedforward-plus-PI conversion for Runner."""
+"""Pure feedforward-plus-proportional conversion for Runner."""
 
 from dataclasses import dataclass
 import math
@@ -43,16 +43,10 @@ class AdapterConfig:
     minimum_moving_speed: float = 0.126
     floor_promotion_min_ratio: float = 0.50
     maximum_commanded_speed: float = 0.60
-    proportional_gain: float = 0.30
-    integral_gain: float = 0.06
-    stall_integral_gain: float = 0.30
-    stall_integral_gain_activation_ratio: float = 0.40
-    stall_integral_gain_hysteresis: float = 0.10
-    integrator_min: float = -0.25
-    integrator_max: float = 0.16
+    proportional_gain: float = 0.05
+    integral_gain: float = 0.0
     output_min: float = 0.0
     output_max: float = PROVISIONAL_OUTPUT_MAX
-    breakaway_integrator_preload: float = 0.04
     encoder_metres_per_edge: float = 0.010282
     wheelspin_speed_ratio: float = 1.50
     wheelspin_min_speed_excess: float = 0.10
@@ -61,7 +55,6 @@ class AdapterConfig:
     encoder_state_timeout_sec: float = 0.25
     cmd_vel_nav_timeout: float = 0.25
     active_mode_timeout_sec: float = 0.20
-    preemption_integrator_decay_rate: float = 0.0625
     publication_rate: float = 20.0
 
     def __post_init__(self) -> None:
@@ -78,8 +71,6 @@ class AdapterConfig:
             'minimum_moving_speed': self.minimum_moving_speed,
             'maximum_commanded_speed': self.maximum_commanded_speed,
             'proportional_gain': self.proportional_gain,
-            'integral_gain': self.integral_gain,
-            'stall_integral_gain': self.stall_integral_gain,
             'encoder_metres_per_edge': self.encoder_metres_per_edge,
             'wheelspin_speed_ratio': self.wheelspin_speed_ratio,
             'wheelspin_qualification_sec':
@@ -88,8 +79,6 @@ class AdapterConfig:
             'encoder_state_timeout_sec': self.encoder_state_timeout_sec,
             'cmd_vel_nav_timeout': self.cmd_vel_nav_timeout,
             'active_mode_timeout_sec': self.active_mode_timeout_sec,
-            'preemption_integrator_decay_rate':
-                self.preemption_integrator_decay_rate,
             'publication_rate': self.publication_rate,
         }
         for name, value in positive.items():
@@ -103,32 +92,14 @@ class AdapterConfig:
             raise ValueError(
                 'floor_promotion_min_ratio must be within (0, 1]'
             )
-        if self.stall_integral_gain <= self.integral_gain:
+        if self.integral_gain != 0.0:
             raise ValueError(
-                'stall_integral_gain must exceed integral_gain'
-            )
-        if not (
-            0.0 < self.stall_integral_gain_activation_ratio < 1.0
-        ):
-            raise ValueError(
-                'stall_integral_gain_activation_ratio must be within (0, 1)'
-            )
-        if not (
-            0.0 < self.stall_integral_gain_hysteresis
-            and self.stall_integral_gain_activation_ratio
-            + self.stall_integral_gain_hysteresis
-            <= 1.0
-        ):
-            raise ValueError(
-                'stall_integral_gain_hysteresis must be positive and its '
-                'exit ratio must not exceed one'
+                'integral_gain must be zero for provisional MD13S tuning'
             )
         if self.maximum_commanded_speed < self.minimum_moving_speed:
             raise ValueError(
                 'maximum_commanded_speed must reach minimum_moving_speed'
             )
-        if self.integrator_min >= self.integrator_max:
-            raise ValueError('integrator_min must be less than integrator_max')
         if self.output_min != 0.0:
             raise ValueError('output_min must be zero for forward-only output')
         if (
@@ -150,14 +121,6 @@ class AdapterConfig:
         if self.output_max < maximum_feedforward:
             raise ValueError(
                 'output_max must reach the maximum linear feedforward'
-            )
-        if not (
-            self.integrator_min
-            <= self.breakaway_integrator_preload
-            <= self.integrator_max
-        ):
-            raise ValueError(
-                'breakaway_integrator_preload must fit integrator bounds'
             )
         if self.wheelspin_speed_ratio <= 1.0:
             raise ValueError('wheelspin_speed_ratio must exceed one')
@@ -250,7 +213,7 @@ class AdapterDecision:
 
 
 class DriveAdapter:
-    """Convert fresh Nav2 commands with bounded feedforward-plus-PI control."""
+    """Convert fresh Nav2 commands with bounded feedforward-plus-P control."""
 
     def __init__(self, config: AdapterConfig):
         self.config = config
@@ -258,14 +221,9 @@ class DriveAdapter:
         self._command_time: Optional[float] = None
         self._motion_speed = 0.0
         self._motion_time: Optional[float] = None
-        self._encoder_stationary: Optional[bool] = None
         self._encoder_edge_rate = 0.0
         self._encoder_time: Optional[float] = None
-        self._stationary_transition_pending = False
-        self._integrator = 0.0
-        self._last_step_time: Optional[float] = None
         self._wheelspin_since: Optional[float] = None
-        self._stall_integral_gain_active = False
         self._active_mode: Optional[str] = None
         self._active_mode_time: Optional[float] = None
 
@@ -276,8 +234,8 @@ class DriveAdapter:
 
     @property
     def integrator_state(self) -> float:
-        """Return the current integral contribution."""
-        return self._integrator
+        """Report the disabled integral contribution."""
+        return 0.0
 
     def update_command(
         self,
@@ -323,10 +281,7 @@ class DriveAdapter:
     ) -> None:
         """Store encoder motion and freshness."""
         del pending_direction
-        stationary = bool(stationary)
-        if stationary and self._encoder_stationary is not True:
-            self._stationary_transition_pending = True
-        self._encoder_stationary = stationary
+        del stationary
         self._encoder_edge_rate = edge_rate
         self._encoder_time = now
 
@@ -367,11 +322,6 @@ class DriveAdapter:
             'active_mode': active_mode,
             'preempted': preempted,
         }
-        dt = 0.0
-        if self._last_step_time is not None:
-            dt = max(0.0, now - self._last_step_time)
-        self._last_step_time = now
-
         if self._command is None or self._command_time is None:
             self._reset_controller()
             return self._silence('no_command', **preemption_fields)
@@ -426,65 +376,17 @@ class DriveAdapter:
         below_floor = speed < self.config.minimum_moving_speed
         feedback_fresh = not self.encoder_is_stale(now)
         wheelspin_guard = self._wheelspin_guard(now, measured_speed)
-        base_integration_enabled = not below_floor and feedback_fresh
-        integral_gain = self._select_integral_gain(
-            measured_speed,
-            commanded_speed,
-            base_integration_enabled,
-        )
-        accumulation_enabled = (
-            base_integration_enabled
-            and not wheelspin_guard
-            and not preempted
-        )
-        integral_decay_active = False
 
         if below_floor:
-            self._integrator = 0.0
             proportional = 0.0
             raw_output = feedforward
             saturation = self._saturation(raw_output)
         else:
-            if (
-                base_integration_enabled
-                and not preempted
-                and self._stationary_transition_pending
-                and self._encoder_stationary
-            ):
-                self._integrator = max(
-                    self._integrator,
-                    self.config.breakaway_integrator_preload,
-                )
-                self._stationary_transition_pending = False
-
             proportional = (
                 self.config.proportional_gain * speed_error
                 if feedback_fresh else 0.0
             )
-            candidate = self._integrator
-            may_integrate = accumulation_enabled and dt > 0.0
-            if preempted and dt > 0.0 and self._integrator != 0.0:
-                decayed = self._decay_toward_zero(
-                    self._integrator,
-                    self.config.preemption_integrator_decay_rate * dt,
-                )
-                integral_decay_active = decayed != self._integrator
-                self._integrator = decayed
-                candidate = decayed
-            if may_integrate:
-                candidate = max(
-                    self.config.integrator_min,
-                    min(
-                        self.config.integrator_max,
-                        self._integrator
-                        + integral_gain * speed_error * dt,
-                    ),
-                )
-            candidate_raw = feedforward + proportional + candidate
-            candidate_saturation = self._saturation(candidate_raw)
-            if may_integrate and candidate_saturation == 'none':
-                self._integrator = candidate
-            raw_output = feedforward + proportional + self._integrator
+            raw_output = feedforward + proportional
             saturation = self._saturation(raw_output)
         final = max(
             self.config.output_min,
@@ -498,7 +400,7 @@ class DriveAdapter:
             reason = 'floor_promoted_feedforward'
         elif not feedback_fresh:
             reason = 'encoder_stale_feedforward'
-        pi_term = proportional + self._integrator
+        pi_term = proportional
         return AdapterDecision(
             True,
             'forward',
@@ -509,60 +411,22 @@ class DriveAdapter:
             speed_error,
             feedforward,
             proportional,
-            self._integrator,
+            0.0,
             pi_term,
-            accumulation_enabled,
+            False,
             saturation,
             wheelspin_guard,
             final,
             steering,
             steering_saturated,
-            integral_gain,
-            self._stall_integral_gain_active,
+            0.0,
+            False,
             active_mode_received,
             active_mode_fresh,
             active_mode,
             preempted,
-            integral_decay_active,
+            False,
         )
-
-    @staticmethod
-    def _decay_toward_zero(value: float, amount: float) -> float:
-        """Reduce magnitude by a bounded time-scaled amount without crossing."""
-        if value > 0.0:
-            return max(0.0, value - amount)
-        if value < 0.0:
-            return min(0.0, value + amount)
-        return 0.0
-
-    def _select_integral_gain(
-        self,
-        measured_speed: float,
-        commanded_speed: float,
-        integrator_enabled: bool,
-    ) -> float:
-        if not integrator_enabled:
-            self._stall_integral_gain_active = False
-            return self.config.integral_gain
-
-        speed_ratio = measured_speed / commanded_speed
-        low_activation = self.config.stall_integral_gain_activation_ratio
-        hysteresis = self.config.stall_integral_gain_hysteresis
-        low_release = low_activation + hysteresis
-        high_activation = 2.0 - low_activation
-        high_release = high_activation - hysteresis
-        if self._stall_integral_gain_active:
-            if low_release <= speed_ratio <= high_release:
-                self._stall_integral_gain_active = False
-        elif (
-            speed_ratio < low_activation
-            or speed_ratio > high_activation
-        ):
-            self._stall_integral_gain_active = True
-
-        if self._stall_integral_gain_active:
-            return self.config.stall_integral_gain
-        return self.config.integral_gain
 
     def _wheelspin_guard(self, now: float, encoder_speed: float) -> bool:
         sensors_fresh = (
@@ -596,9 +460,7 @@ class DriveAdapter:
         return 'none'
 
     def _reset_controller(self) -> None:
-        self._integrator = 0.0
         self._wheelspin_since = None
-        self._stall_integral_gain_active = False
 
     def _brake(self, reason: str, **fields) -> AdapterDecision:
         self._reset_controller()

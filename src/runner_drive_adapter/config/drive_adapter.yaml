@@ -14,18 +14,14 @@ drive_adapter:
     floor_promotion_min_ratio: 0.50
     maximum_commanded_speed: 0.60
 
-    proportional_gain: 0.30
-    integral_gain: 0.06
-    stall_integral_gain: 0.30
-    stall_integral_gain_activation_ratio: 0.40
-    stall_integral_gain_hysteresis: 0.10
-    integrator_min: -0.25
-    integrator_max: 0.16
+    # PROVISIONAL pre-characterization feedback tuning. The MD13S plant gain
+    # makes the former ESC-era PI loop unstable at the compatibility cap.
+    proportional_gain: 0.05
+    integral_gain: 0.0
     output_min: 0.0
     # Conservative initial compatibility cap; operator driving validation is
     # required before promotion.
     output_max: 0.12
-    breakaway_integrator_preload: 0.04
 
     encoder_metres_per_edge: 0.010282
     wheelspin_speed_ratio: 1.50
@@ -38,7 +34,4 @@ drive_adapter:
     # /teleop/active_mode publishes at 20 Hz. Four nominal periods tolerate
     # scheduler jitter; stale/absent state deliberately restores old behavior.
     active_mode_timeout_sec: 0.20
-    # Normalized integral contribution per second. The -0.25 bound reaches
-    # zero in 4.0 s; the +0.16 bound reaches zero in 2.56 s.
-    preemption_integrator_decay_rate: 0.0625
     publication_rate: 20.0

@@ -14,6 +14,7 @@
 
 """ROS graph integration tests for Stage 1 topic isolation."""
 
+import os
 import time
 
 from geometry_msgs.msg import Twist
@@ -33,6 +34,8 @@ def _spin_for(executor, duration):
 
 
 def test_graph_ownership_staleness_and_diagnostics():
+    previous_domain = os.environ.get('ROS_DOMAIN_ID')
+    os.environ['ROS_DOMAIN_ID'] = str(200 + os.getpid() % 30)
     rclpy.init()
     adapter = DriveAdapterNode()
     probe = Node('drive_adapter_test_probe')
@@ -138,6 +141,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         assert 'active_mode_received=false' in typed_states[-1].mode
         assert probe.get_publishers_info_by_topic('/stall_assist/state') == []
 
+        typed_state_start = len(typed_states)
         active_mode_pub.publish(String(data='manual'))
         nav_pub.publish(command)
         encoder_pub.publish(EncoderState(
@@ -148,15 +152,19 @@ def test_graph_ownership_staleness_and_diagnostics():
         motion_pub.publish(motion)
         _spin_for(executor, 0.10)
         assert commands
-        assert 'active_mode=manual' in typed_states[-1].mode
-        assert 'preempted=true' in typed_states[-1].mode
-        assert not typed_states[-1].integrator_enabled
-        assert any(
-            'active_mode=manual' in state.mode
-            and 'integral_decay_active=true' in state.mode
-            for state in typed_states
-        )
+        manual_states = [
+            state for state in typed_states[typed_state_start:]
+            if 'active_mode=manual' in state.mode
+        ]
+        assert manual_states
+        manual_state = manual_states[-1]
+        assert 'preempted=true' in manual_state.mode
+        assert 'integral_decay_active=false' in manual_state.mode
+        assert not manual_state.integrator_enabled
+        assert manual_state.integrator_state == 0.0
+        assert manual_state.pi_term == manual_state.proportional_term
 
+        typed_state_start = len(typed_states)
         active_mode_pub.publish(String(data='teleop_suppress'))
         nav_pub.publish(command)
         encoder_pub.publish(EncoderState(
@@ -166,8 +174,12 @@ def test_graph_ownership_staleness_and_diagnostics():
         ))
         motion_pub.publish(motion)
         _spin_for(executor, 0.10)
-        assert 'active_mode=teleop_suppress' in typed_states[-1].mode
-        assert 'preempted=false' in typed_states[-1].mode
+        suppress_states = [
+            state for state in typed_states[typed_state_start:]
+            if 'active_mode=teleop_suppress' in state.mode
+        ]
+        assert suppress_states
+        assert 'preempted=false' in suppress_states[-1].mode
 
         _spin_for(executor, 0.30)
         commands.clear()
@@ -177,7 +189,8 @@ def test_graph_ownership_staleness_and_diagnostics():
 
         stop = Twist()
         nav_pub.publish(stop)
-        _spin_for(executor, 0.10)
+        _spin_for(executor, 0.20)
+        assert commands
         assert commands[-1].linear.x == 0.0
         assert commands[-1].angular.z == 0.0
         assert 'reason=explicit_stop' in states[-1].data
@@ -188,3 +201,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         adapter.destroy_node()
         executor.shutdown()
         rclpy.shutdown()
+        if previous_domain is None:
+            os.environ.pop('ROS_DOMAIN_ID', None)
+        else:
+            os.environ['ROS_DOMAIN_ID'] = previous_domain

@@ -69,14 +69,8 @@ class DriveAdapterNode(Node):
             'maximum_commanded_speed',
             'proportional_gain',
             'integral_gain',
-            'stall_integral_gain',
-            'stall_integral_gain_activation_ratio',
-            'stall_integral_gain_hysteresis',
-            'integrator_min',
-            'integrator_max',
             'output_min',
             'output_max',
-            'breakaway_integrator_preload',
             'encoder_metres_per_edge',
             'wheelspin_speed_ratio',
             'wheelspin_min_speed_excess',
@@ -85,7 +79,6 @@ class DriveAdapterNode(Node):
             'encoder_state_timeout_sec',
             'cmd_vel_nav_timeout',
             'active_mode_timeout_sec',
-            'preemption_integrator_decay_rate',
             'publication_rate',
         )
         for name in names:
@@ -248,7 +241,7 @@ class DriveAdapterNode(Node):
         if decision.reason == 'encoder_stale_feedforward':
             self._warning(
                 'encoder_stale',
-                'Encoder state is stale; using feedforward with frozen PI',
+                'Encoder state is stale; using feedforward without P feedback',
                 now,
             )
 
@@ -262,12 +255,6 @@ class DriveAdapterNode(Node):
 
     def _log_startup(self) -> None:
         c = self.config
-        overspeed_enter_ratio = (
-            2.0 - c.stall_integral_gain_activation_ratio
-        )
-        overspeed_exit_ratio = (
-            overspeed_enter_ratio - c.stall_integral_gain_hysteresis
-        )
         self.get_logger().info(
             'drive_adapter ready: '
             f'wheelbase={c.wheelbase:.6f} m, '
@@ -281,25 +268,16 @@ class DriveAdapterNode(Node):
             f'maximum_commanded_speed={c.maximum_commanded_speed:.6f} m/s'
         )
         self.get_logger().info(
-            'Speed control: primary_feedback=encoder_edge_rate, '
+            'Speed control: provisional feedforward_plus_p, '
+            'primary_feedback=encoder_edge_rate, '
             f'kp={c.proportional_gain:.6f}, '
             f'ki={c.integral_gain:.6f}, '
-            f'stall_ki={c.stall_integral_gain:.6f}, '
-            f'stall_enter_ratio='
-            f'{c.stall_integral_gain_activation_ratio:.6f}, '
-            f'stall_exit_ratio='
-            f'{c.stall_integral_gain_activation_ratio + c.stall_integral_gain_hysteresis:.6f}, '
-            f'overspeed_enter_ratio='
-            f'{overspeed_enter_ratio:.6f}, '
-            f'overspeed_exit_ratio='
-            f'{overspeed_exit_ratio:.6f}, '
+            'integral_enabled=false, gain_switching=false, '
             f'output_bounds=[{c.output_min:.6f}, {c.output_max:.6f}], '
             f'wheelspin_ratio={c.wheelspin_speed_ratio:.6f}, '
             f'wheelspin_qualification='
             f'{c.wheelspin_qualification_sec:.6f} s, '
-            f'active_mode_timeout={c.active_mode_timeout_sec:.6f} s, '
-            f'preemption_integrator_decay_rate='
-            f'{c.preemption_integrator_decay_rate:.6f}/s'
+            f'active_mode_timeout={c.active_mode_timeout_sec:.6f} s'
         )
 
     def record_shutdown(self) -> None:

@@ -98,7 +98,7 @@ Traction voltage remains unobservable — `/battery` is the UPS fuel gauge only.
 | `runner_motor` | `motor_node` | `/cmd_vel` → MD13S sign-magnitude + steering PWM. Persistent systemd hardware owner (D-75, D-76) |
 | `runner_encoder` | `encoder_node` | Hall edges → `/wheel/odom`, `/wheel/encoder_state`. Persistent systemd GPIO 22 owner, libgpiod (D-54, D-77) |
 | `runner_teleop` | `teleop_node` | `/joy` → `/cmd_vel_teleop`, three-state hold-to-run (D-48); keyboard bridge |
-| `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized), with PI speed control (§4.15) |
+| `runner_drive_adapter` | `drive_adapter` | `/cmd_vel_nav` (SI) → `/cmd_vel_auto` (normalized), with provisional feedforward-plus-P speed control (§4.15) |
 | `nav2_regulated_pure_pursuit_controller` | controller plugin | Navigation2 1.3.12 overlay with Runner path-cost lookahead regulation (D-73) |
 | `runner_telemetry` | `telemetry_node` | SoC temperature and throttle bits, 1 Hz, standalone systemd |
 | `runner_interfaces` | — | `EncoderState`, `AdapterState`, `SystemTelemetry`, `KeyboardState` |
@@ -241,46 +241,47 @@ Nav2 → /cmd_vel_nav (SI) → drive_adapter → /cmd_vel_auto (normalized) → 
 
 **Steering infeasibility clamps; it does not brake (D-60, supersedes D-56).** When requested curvature exceeds 2.1236 m⁻¹, steering saturates at ±1.0 and speed is maintained, accepting understeer. Brake-on-infeasible was correct for bench validation and wrong in execution: Smac plans at `minimum_turning_radius`, so RPP must exceed path curvature to correct cross-track error, making infeasible requests structural rather than occasional. Measured: with the planner at its old 0.470 m limit, saturation reached **51.3%** of driving samples with requests up to 83% over the limit; with planner margin (D-59) it fell to **1.5%**.
 
-**Throttle:** provisional MD13S linear inverse plus bounded PI.
+**Throttle:** provisional MD13S linear inverse plus bounded proportional feedback.
 
 | Parameter | Value |
 |---|---|
 | Feedforward inverse | `cmd = (speed + 0.1436) / 7.947` |
 | Evidence | `teleop_20260731_200955`, R2 0.9968, command fit range 0.05–0.25; **provisional** |
-| Kp | 0.30 |
-| Ki normal / stall | **0.06 / 0.30** |
-| Gain switch | ratio < 0.40 or > 1.60, 0.10 hysteresis |
-| Integrator bounds | −0.25 … +0.16 |
+| Kp | **0.05 (provisional)** |
+| Ki | **0.00 (disabled)** |
+| Gain switch | **none** |
 | Output bounds | **0.00 … +0.12** |
 | `maximum_commanded_speed` | 0.60 m/s |
 | Provisional promoted floor | 0.126 m/s (unchanged; MD13S floor uncharacterized) |
 
-**Error-dependent integral gain (D-66).** At Ki = 0.06 with a 0.29 m/s error the integrator needs 18 s to traverse its range, against a 10 s progress-checker abort — too slow to break a stall. Measured during stalls: throttle peaked at 0.530 against a 0.70 ceiling and the integrator at 0.065 against +0.16, so **neither was saturated** and the ceiling was never the constraint. The high gain is symmetric so persistent overspeed unwinds at the same rate.
+**Provisional MD13S feedback tuning (D-79, supersedes D-66 and D-72 for the
+compatibility controller).** Bag `rf2o_fix1_20260731_214809` has matching
+wheel/RF2O `vx` sign in 99.47% of 1139 moving samples, isolating the remaining
+chatter to a speed-loop limit cycle. With measured plant gain about 7.947 m/s
+per command, Kp 0.30 gave proportional loop gain about 2.38. Kp is reduced to
+0.05 and Ki is fixed at zero. The stall gain switch, integral accumulation,
+breakaway preload, and preemption decay paths are removed; legacy integral
+diagnostics remain present and always report zero/disabled.
 
-**Wheelspin guard** freezes the integrator when encoder speed materially exceeds EKF `vx`.
+**Wheelspin guard** remains bag-observable when encoder speed materially exceeds
+EKF `vx`, but cannot alter feedback gain or output while integral action is
+disabled.
 
 The adapter is forward-only: explicit stop and rejected inputs publish zero,
-and PI correction clamps at zero rather than requesting reverse. Feedforward,
-PI gains, promotion thresholds, and integrator bounds remain provisional until
-Stage 2 validation; the output-floor correction does not retune them.
+and proportional correction clamps at zero rather than requesting reverse.
+Feedforward, Kp, and promotion thresholds remain provisional until controlled
+characterization.
 
 The inverse is an initial compatibility estimate, not final characterization;
 requested speeds whose inverse is below command 0.05 are extrapolations.
-Controlled follow-up should begin feedforward-only, then evaluate Kp 0.05–0.10
-and Ki 0.01–0.03 with integrator contribution near −0.03…+0.02. Breakaway
-preload should start at zero (at most 0.01 only after repeatable evidence), and
-floor promotion should be disabled with ratio 1.0 until a sustainable MD13S
-floor is measured. These recommendations are not applied here.
+Controlled follow-up should begin feedforward-only before changing Kp 0.05 or
+enabling any integral action. Breakaway preload should start at zero (at most
+0.01 only after repeatable evidence). Floor promotion remains unchanged and
+must be evaluated separately against a sustainable characterized MD13S floor.
 
-**Teleop preemption freezes and decays the integrator (D-72).** The adapter
-subscribes to `/teleop/active_mode`. A fresh value other than
-`teleop_suppress` confirms that `twist_mux` is discarding autonomy output, so
-PI accumulation freezes and the existing integral decays toward zero at
-0.0625 normalized throttle contribution per second. Missing or stale mode
-state preserves the previous behavior. The adapter continues publishing
+**Teleop preemption** remains diagnostic. With integral action disabled it
+does not alter speed feedback. The adapter continues publishing
 `/cmd_vel_auto`; `twist_mux` remains the sole command arbiter.
-
-**Breakaway** is gated on `/wheel/encoder_state.stationary` and re-arms on transition to moving, so a mid-path stall gets a fresh attempt.
 
 **Stale `/cmd_vel_nav` produces silence, not brake.** Publishing brake would keep commands flowing and prevent the motor watchdog (D-09) from firing.
 
@@ -615,7 +616,7 @@ Latest validated run:
 | Braking samples | **0** |
 | `NO_VALID_PATH` | **0** |
 
-**Zero braking samples** — minimum throttle +0.314. RPP regulates speed smoothly downward and the vehicle coasts to match; nothing requests deceleration. The adapter output floor is now zero, so PI correction cannot request reverse.
+**Zero braking samples** — minimum throttle +0.314. RPP regulates speed smoothly downward and the vehicle coasts to match; nothing requests deceleration. The adapter output floor is now zero, so proportional correction cannot request reverse.
 
 ---
 
@@ -680,6 +681,7 @@ Append-only. D-01…D-57 unchanged (v0.5–v0.9).
 | D-76 | **Cytron MD13S replaces hobby-ESC pulse control.** GPIO12 is normal-polarity 20 kHz PWM, GPIO23 is exclusive DIR by `pinctrl-rp1` label, and normalized sign/magnitude map directly to DIR/duty. Duty zero is active brake. D-09 remains 200 ms. Supersedes D-08, D-34, D-46, and D-47 at the motor boundary. | Direct sign-magnitude control removes ESC arming, neutral/deadband/expo/pulse mappings and the ESC reverse FSM. The later stationary gate permits DIR changes only after post-request stop evidence. Safe startup writes duty zero, defines DIR, then enables motor PWM before subscribing. Direct sysfs access never implicitly unexports GPIO12/13 PWM. Traction-disconnected smoke check only; wheels-off-ground validation remains pending. |
 | D-77 | **`encoder_node` is a boot-started persistent systemd hardware owner and is removed from every application composite.** `runner-encoder.service` is the sole GPIO 22 owner and restarts on failure. The motor reversal gate remains fail-closed until it receives post-request stationary evidence; while pending, `/motor/direction` reports the hardware-latched DIR rather than the request. | Motor ownership already persists beyond composite lifetime, so its safety gate must not depend on an application launch to supply `/wheel/encoder_state`. Separating encoder hardware ownership prevents both zero-publisher braking and duplicate GPIO consumers. |
 | D-78 | **Replace the stale hobby-ESC adapter lookup with a provisional MD13S linear inverse and cap autonomy output at 0.12.** | Bag `teleop_20260731_200955` fits `v = 7.947*cmd - 0.1436` with R2 0.9968 over command 0.05–0.25. Its inverse removes the hazardous ESC-era 0.340 minimum while the conservative cap bounds compatibility driving. This is smoke-checked scaffolding pending operator driving and controlled characterization, not a final plant model. |
+| D-79 | **Use provisional MD13S Kp 0.05 with Ki 0 and no feedback gain switching. Supersedes D-66 and D-72 for the compatibility controller.** | Bag `rf2o_fix1_20260731_214809` confirms wheel/RF2O `vx` sign agreement in 99.47% of 1139 moving samples. The remaining chatter is a speed-loop limit cycle: Kp 0.30 against measured plant gain 7.947 m/s per command gives loop gain about 2.38 and alternates low drive with active brake. Removing integral state, stall gain switching, breakaway preload, and preemption decay makes output feedforward plus only the provisional Kp correction. Operator driving must validate smoothness before characterization. |
 
 ---
 

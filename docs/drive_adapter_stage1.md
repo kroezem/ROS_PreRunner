@@ -17,7 +17,7 @@ the sole `/cmd_vel` publisher and `motor_node` remains the sole PWM owner.
 Stale `/cmd_vel_nav` still produces silence, explicit zero produces active
 brake, reverse remains rejected to zero, and infeasible steering is clamped.
 The published motor-command range is forward-only `[0.0, 0.12]`; provisional
-PI correction may reduce output to zero but cannot request reverse.
+proportional correction may reduce output to zero but cannot request reverse.
 
 Stage 1 used an encoder-triggered 0.380 breakaway kick. Stage 4 demonstrated
 that it added no torque at the maximum calibrated command because the
@@ -44,12 +44,28 @@ examples extrapolate below the fitted command range. Every published adapter
 output is nevertheless clamped to `[0.0, 0.12]`, and an explicit zero target
 still publishes zero.
 
-No tuning changes accompany the inverse. For a later controlled tuning pass,
-the recommendations are:
+Bag `rf2o_fix1_20260731_214809` confirms that wheel and RF2O velocity signs
+agree for 99.47% of 1139 moving samples. The remaining speed chatter is a
+feedback limit cycle: the MD13S plant gain is approximately 7.947 m/s per
+command, so the former Kp 0.30 produced a proportional loop gain near 2.38.
+The compatibility controller therefore uses provisional pre-characterization
+tuning of Kp 0.05 and Ki 0. Integral accumulation, breakaway preload,
+preemption decay, and error-dependent stall gain switching are bypassed. Every
+fresh-feedback output is exactly:
 
-- Start with Kp 0.05-0.10 and Ki 0.01-0.03 after verifying feedforward-only
-  tracking. The inverse plant slope is about 0.126 command per m/s; the current
-  Kp 0.30 and switched Ki 0.06/0.30 are likely too aggressive under this cap.
+```
+clamp(feedforward + 0.05 * (commanded_speed - measured_speed), 0.0, 0.12)
+```
+
+Stale encoder feedback and promoted-floor commands remain feedforward-only.
+The legacy integral diagnostic fields are retained for bag compatibility and
+truthfully remain zero/false. Operator driving is required to validate
+smoothness before controlled MD13S characterization.
+
+For a later controlled tuning pass:
+
+- Characterize feedforward-only tracking before changing Kp 0.05 or enabling
+  any integral action. The inverse plant slope is about 0.126 command per m/s.
 - Initially constrain the integrator contribution to approximately
   `[-0.03, +0.02]`; the +0.02 side fits within the roughly 0.026 command
   headroom at a 0.600 m/s target. Recalculate from characterized headroom.
@@ -60,9 +76,8 @@ the recommendations are:
   during characterization, then promote only to a repeatably sustainable
   measured floor. Do not infer that floor from the extrapolated fit.
 
-These are recommendations only; the configured PI gains, integrator bounds,
-breakaway preload, and floor-promotion settings remain unchanged in this
-compatibility change.
+The feedforward coefficients, output bounds, and floor-promotion settings are
+unchanged by this provisional feedback retune.
 
 ## Teleop preemption
 
@@ -72,17 +87,8 @@ confirms that the mux is discarding adapter output. The adapter still publishes
 `/cmd_vel_auto`; `twist_mux` remains the sole arbiter.
 
 Active mode is fresh for 0.20 seconds, four nominal periods of its 20 Hz
-publisher. Absent or stale state means not preempted and preserves the previous
-controller behavior. During confirmed preemption, integral accumulation is
-disabled and existing integral decays toward zero by 0.0625 normalized throttle
-contribution per second without crossing zero. This clears the configured
--0.25 bound in 4.0 seconds and +0.16 bound in 2.56 seconds.
-
-Preemption decay has priority over the wheelspin accumulation guard. The
-existing below-floor zero reset remains stronger than bounded decay. Neither
-condition changes feedforward, proportional output, stall-gain selection,
-breakaway preload policy, clamps, command processing, or publication.
+publisher. It remains diagnostic and does not change feedforward or
+proportional feedback now that integral action is disabled.
 `/drive_adapter/state_typed.mode` carries the drive mode plus active-mode
-received/fresh/value, preemption, and decay flags; its existing
-`integrator_enabled` and `integrator_state` fields report accumulation and
-integral value.
+received/fresh/value and preemption flags. Its legacy integral fields report
+disabled/zero and `integral_decay_active=false`.
