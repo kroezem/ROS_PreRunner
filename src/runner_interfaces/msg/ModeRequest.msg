@@ -7,3 +7,5 @@ builtin_interfaces/Time stamp
 uint64 request_id
 string lease_id
 uint8 requested_mode
+# Required map basename for AUTONOMY; ignored for IDLE and MAPPING.
+string autonomy_map

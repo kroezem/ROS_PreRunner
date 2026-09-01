@@ -100,7 +100,7 @@ class RosStateNode(Node):
         )
         self.create_subscription(Path, PLAN_TOPIC, self._on_plan, latest_qos)
         self.create_subscription(
-            ModeState, MODE_STATE_TOPIC, self._on_mode, latest_qos
+            ModeState, MODE_STATE_TOPIC, self._on_mode, map_qos
         )
         self.create_subscription(
             CommandAuthorityState,
@@ -162,8 +162,10 @@ class RosStateNode(Node):
             self._cache.update('mode', {
                 'stamp': _stamp(message.stamp),
                 'mode': int(message.mode),
+                'status': int(message.status),
                 'accepted_request_id': int(message.accepted_request_id),
                 'active_autonomy_map': message.active_autonomy_map,
+                'detail': message.detail,
             })
         except (TypeError, ValueError) as error:
             self.get_logger().warning(

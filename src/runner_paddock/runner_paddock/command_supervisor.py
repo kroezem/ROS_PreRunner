@@ -14,7 +14,7 @@
 
 """Clock-injected command supervision with no ROS dependencies."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 import math
 from typing import Optional, Tuple
@@ -186,6 +186,37 @@ class CommandSupervisor:
         """Expire time-bounded state and produce periodic brake intent."""
         expired = self._expire_lease(now)
         reason = 'LEASE_EXPIRED' if expired else self._reason(now)
+        return SupervisorResult(self._snapshot(now, reason))
+
+    def set_runtime_mode(
+        self,
+        mode: Mode,
+        active_autonomy_map: str,
+        now: float,
+        *,
+        runtime_stable: bool,
+    ) -> SupervisorResult:
+        """Follow authoritative runtime state and disarm across every change."""
+        self._expire_lease(now)
+        effective_mode = mode if runtime_stable else Mode.IDLE
+        changed = (
+            effective_mode != self.state.mode
+            or active_autonomy_map != self.state.active_autonomy_map
+            or not runtime_stable
+        )
+        self.state = replace(
+            self.state,
+            mode=effective_mode,
+            active_autonomy_map=active_autonomy_map,
+            run_held=False if changed else self.state.run_held,
+            run_blocked_until_release=(
+                False if changed else self.state.run_blocked_until_release
+            ),
+            manual_active=False if changed else self.state.manual_active,
+            goal=None if changed else self.state.goal,
+            navigation_active=False if changed else self.state.navigation_active,
+        )
+        reason = 'RUNTIME_MODE' if runtime_stable else 'RUNTIME_NOT_STABLE'
         return SupervisorResult(self._snapshot(now, reason))
 
     def _reason(self, now: float) -> str:

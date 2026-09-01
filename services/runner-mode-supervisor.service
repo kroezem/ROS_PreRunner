@@ -1,0 +1,27 @@
+[Unit]
+Description=Runner persistent Paddock mode supervisor
+After=network.target runner-command-authority.service runner-paddock-web.service
+Wants=runner-command-authority.service runner-paddock-web.service
+
+[Service]
+Type=simple
+# Root is limited to this small supervisor so it can control fixed system units.
+# Both application graphs still run unprivileged as matti.
+User=root
+Group=root
+WorkingDirectory=/home/matti/runner_ws
+RuntimeDirectory=runner-paddock
+RuntimeDirectoryMode=0755
+Environment=ROS_LOG_DIR=/run/runner-paddock
+Environment=PADDOCK_MAP_DIRECTORY=/home/matti/runner_ws/maps
+Environment=PADDOCK_AUTONOMY_MAP_FILE=/run/runner-paddock/autonomy-map
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_paddock mode_supervisor'
+Restart=always
+RestartSec=2
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

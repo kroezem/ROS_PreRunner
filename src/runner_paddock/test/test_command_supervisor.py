@@ -206,6 +206,23 @@ def test_restart_is_fail_closed_and_drops_transient_inputs():
     assert blocked.autonomy_command is None
 
 
+def test_unstable_runtime_revokes_mode_and_future_command_grant():
+    supervisor = autonomy_ready()
+
+    result = supervisor.set_runtime_mode(
+        Mode.AUTONOMY,
+        MAP,
+        0.020,
+        runtime_stable=False,
+    )
+
+    assert result.snapshot.state.mode == Mode.IDLE
+    assert not result.snapshot.state.run_held
+    assert not result.snapshot.state.navigation_active
+    assert result.snapshot.state.authority == Authority.NONE
+    assert result.snapshot.brake_intent
+
+
 @pytest.mark.parametrize(
     'wrong_owner',
     [

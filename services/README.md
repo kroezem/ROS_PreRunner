@@ -1,9 +1,68 @@
 # Runner system services
 
 These units run the Foxglove bridge, battery monitor, Raspberry Pi telemetry,
-motor hardware owner, wheel encoder hardware owner, and the Paddock read-only
-web backend independently of the application launch stacks. The battery,
-telemetry, motor, and encoder nodes are deliberately not added to composites.
+motor hardware owner, wheel encoder hardware owner, Paddock web backend, and
+the persistent Paddock mode supervisor independently of application modes. The
+battery, telemetry, motor, and encoder nodes are deliberately not added to
+mode composites.
+
+## Stage 4 application-mode supervision
+
+`runner-mode-supervisor.service` is the only owner of application-mode
+start/stop operations. It consumes the typed `/paddock/mode_request` interface
+and publishes authoritative, transient-local `/paddock/mode_state`. Its
+separate `status` field reports `STABLE`, `TRANSITIONING`, or `FAULT`; the UI
+mode remains exactly `IDLE`, `MAPPING`, or `AUTONOMY`.
+
+`runner-command-authority.service` keeps the existing Stage 2 lease and
+command-grant supervisor alive so only the current typed Paddock lease can
+request a mode. It now follows authoritative `ModeState`; `TRANSITIONING` and
+`FAULT` immediately reduce its effective mode to IDLE and revoke grants. It
+remains offline from the production mux: `/cmd_vel_paddock` and supervised
+autonomy are not added to `twist_mux.yaml`, and no command priority changes.
+
+The supervisor always publishes `TRANSITIONING`, stops both fixed mode units,
+waits for empty cgroups and a graph with no mode resources, then starts and
+checks the requested mode. A failed start is stopped through systemd and is
+reported as `IDLE/FAULT`. On restart it derives state from both units and the
+ROS graph. Conflicting, partial, failed, or unmanaged mode graphs fail closed
+instead of being guessed as a mode.
+
+The two application units have mutual `Conflicts=`, `KillMode=control-group`,
+and no `[Install]` section, so they cannot be enabled at boot:
+
+- `runner-mode-mapping.service`: `map.launch.py`, containing one sensor/static
+  TF tier, one estimation tier, mapping slam_toolbox, and the existing
+  keyboard/DualSense teleop plus twist_mux path.
+- `runner-mode-autonomy.service`: `autonomy.launch.py`, containing the same
+  common owners once, localization slam_toolbox remapped to `/slam_map`,
+  map_server as the sole `/map` publisher, Nav2, physical teleop, drive
+  adapter, and twist_mux.
+
+AUTONOMY requests carry `autonomy_map` in `ModeRequest`. Before starting, the
+supervisor rejects path-like names and verifies all four artifacts: `.data`,
+`.posegraph`, `.yaml`, and the occupancy image referenced by the YAML. The
+validated basename is atomically written to
+`/run/runner-paddock/autonomy-map`; the fixed autonomy unit validates it again
+before execing the launch. No shell interpolation is used for the basename.
+
+Install the Stage 4 units as authoritative symlinks, reload systemd, and enable
+only the supervisor:
+
+```sh
+sudo ln -s /home/matti/runner_ws/services/runner-mode-mapping.service /etc/systemd/system/runner-mode-mapping.service
+sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/systemd/system/runner-mode-autonomy.service
+sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
+sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
+sudo systemctl daemon-reload
+sudo systemctl disable runner-mode-mapping.service runner-mode-autonomy.service
+sudo systemctl enable --now runner-command-authority.service runner-mode-supervisor.service
+```
+
+Do not launch `map.launch.py`, `localize.launch.py`, `nav2.launch.py`, or
+`autonomy.launch.py` manually on a deployed robot. An unmanaged mode graph is
+intentionally reported as `IDLE/FAULT`; the supervisor will not use `pkill` or
+claim an unknown process tree.
 
 `runner-paddock-web.service` runs the Stage 3 Paddock backend
 (`ros2 run runner_paddock web`) as an application-tier, read-only observer: it
@@ -72,6 +131,10 @@ sudo ln -s /home/matti/runner_ws/services/runner-telemetry.service /etc/systemd/
 sudo ln -s /home/matti/runner_ws/services/runner-motor.service /etc/systemd/system/runner-motor.service
 sudo ln -s /home/matti/runner_ws/services/runner-encoder.service /etc/systemd/system/runner-encoder.service
 sudo ln -s /home/matti/runner_ws/services/runner-paddock-web.service /etc/systemd/system/runner-paddock-web.service
+sudo ln -s /home/matti/runner_ws/services/runner-mode-mapping.service /etc/systemd/system/runner-mode-mapping.service
+sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/systemd/system/runner-mode-autonomy.service
+sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
+sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
 sudo systemctl daemon-reload
 ```
 
@@ -99,6 +162,8 @@ sudo systemctl enable --now runner-battery.service
 sudo systemctl enable --now runner-telemetry.service
 sudo systemctl enable --now runner-encoder.service
 sudo systemctl enable --now runner-paddock-web.service
+sudo systemctl enable --now runner-command-authority.service
+sudo systemctl enable --now runner-mode-supervisor.service
 ```
 
 With traction power disconnected, enable and start the motor owner separately:

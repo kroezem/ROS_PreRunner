@@ -24,6 +24,8 @@ setup(
         'console_scripts': [
             'command_authority = '
             'runner_paddock.command_authority_node:main',
+            'mode_launcher = runner_paddock.mode_launcher:main',
+            'mode_supervisor = runner_paddock.mode_supervisor_node:main',
             'web = runner_paddock.web_app:main',
         ],
     },

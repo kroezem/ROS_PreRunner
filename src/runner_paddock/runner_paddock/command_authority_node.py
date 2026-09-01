@@ -21,8 +21,8 @@ from geometry_msgs.msg import Twist
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
-from runner_interfaces.msg import ModeRequest
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
@@ -39,7 +39,6 @@ RAW_AUTONOMY_TOPIC = '/cmd_vel_auto_raw'
 SUPERVISED_AUTONOMY_TOPIC = '/cmd_vel_auto'
 PADDOCK_OUTPUT_TOPIC = '/cmd_vel_paddock'
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
-MODE_REQUEST_TOPIC = '/paddock/mode_request'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 LEASE_STATE_TOPIC = '/paddock/control_lease'
@@ -166,9 +165,6 @@ class CommandAuthorityNode(Node):
         self._authority_pub = self.create_publisher(
             CommandAuthorityState, AUTHORITY_STATE_TOPIC, 10
         )
-        self._mode_pub = self.create_publisher(
-            ModeState, MODE_STATE_TOPIC, 10
-        )
         self._lease_pub = self.create_publisher(
             PaddockControlLease, LEASE_STATE_TOPIC, 10
         )
@@ -181,11 +177,11 @@ class CommandAuthorityNode(Node):
             self._on_control_event,
             10,
         )
+        mode_qos = QoSProfile(depth=1)
+        mode_qos.reliability = ReliabilityPolicy.RELIABLE
+        mode_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(
-            ModeRequest,
-            MODE_REQUEST_TOPIC,
-            self._on_mode_request,
-            10,
+            ModeState, MODE_STATE_TOPIC, self._on_mode, mode_qos
         )
         self.create_subscription(Joy, DUALSENSE_TOPIC, self._on_joy, 10)
         self.create_timer(supervision_period, self._on_supervision_timer)
@@ -223,22 +219,20 @@ class CommandAuthorityNode(Node):
             self.get_logger().warning(result.snapshot.reason)
         self._apply(result)
 
-    def _on_mode_request(self, message: ModeRequest) -> None:
+    def _on_mode(self, message: ModeState) -> None:
         try:
-            mode = Mode(message.requested_mode)
+            mode = Mode(message.mode)
         except ValueError:
             self.get_logger().warning(
-                f'Rejected unknown Paddock mode {message.requested_mode}'
+                f'Rejected unknown Paddock mode {message.mode}'
             )
             return
-        result = self._supervisor.request_mode(
+        result = self._supervisor.set_runtime_mode(
             mode=mode,
-            request_id=message.request_id,
-            lease_id=message.lease_id,
+            active_autonomy_map=message.active_autonomy_map,
             now=time.monotonic(),
+            runtime_stable=(message.status == ModeState.STATUS_STABLE),
         )
-        if not result.accepted:
-            self.get_logger().warning(result.snapshot.reason)
         self._apply(result)
 
     def _on_joy(self, message: Joy) -> None:
@@ -281,13 +275,6 @@ class CommandAuthorityNode(Node):
         stamp = self.get_clock().now().to_msg()
 
         self._authority_pub.publish(_authority_message(result, stamp))
-
-        mode = ModeState()
-        mode.stamp = stamp
-        mode.mode = int(state.mode)
-        mode.accepted_request_id = state.accepted_mode_request_id
-        mode.active_autonomy_map = state.active_autonomy_map
-        self._mode_pub.publish(mode)
 
         lease = PaddockControlLease()
         lease.stamp = stamp
