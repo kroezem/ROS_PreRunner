@@ -15,13 +15,13 @@ Project page: https://makro.ca/prerunner/
 | Wheel speed sensing                  | Working |
 | Teleoperation                        | Working |
 | SLAM                                 | Working |
-| Fixed-map localization               | Working |
-| Point-to-point navigation            | Working |
-| Multi-waypoint autonomous navigation | Working |
+| Fixed-map localization               | Awaiting regenerated map |
+| Point-to-point navigation            | Awaiting regenerated map |
+| Multi-waypoint autonomous navigation | Awaiting regenerated map |
 | Autonomous exploration               | Planned |
 | Higher-speed autonomous driving      | Planned |
 
-The vehicle currently performs SLAM and autonomous point-to-point navigation through indoor environments. The next development stage is autonomous exploration of previously unknown environments, followed by progressively increasing vehicle speed to investigate the limits imposed by localization, control, and tire traction.
+The vehicle has demonstrated SLAM and autonomous point-to-point navigation through indoor environments. No usable map bundle is currently committed; localization and autonomy require an explicit map name after a fresh map is generated.
 
 ## Hardware
 
@@ -111,7 +111,7 @@ The project follows a diagnostic-first workflow: changes are made after identify
 .
 |-- analysis/     Experimental analysis and reports
 |-- docs/         Architecture, design decisions and validation notes
-|-- maps/         SLAM maps used during development
+|-- maps/         Destination for regenerated SLAM map bundles (currently empty)
 |-- scripts/      Bring-up and map-management utilities
 |-- services/     Persistent hardware systemd services
 |-- src/          ROS 2 packages

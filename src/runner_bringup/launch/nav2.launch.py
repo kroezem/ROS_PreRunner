@@ -18,18 +18,16 @@ from launch_ros.actions import Node, SetRemap
 
 
 MAP_DIRECTORY = '/home/matti/runner_ws/maps'
-DEFAULT_MAP_NAME = 'collingwood'
 
 
 def _configure_map(context):
     map_name = LaunchConfiguration('map_name').perform(context)
 
-    if (
-        not map_name
-        or '..' in map_name
-        or '/' in map_name
-        or '\\' in map_name
-    ):
+    if not map_name:
+        raise RuntimeError(
+            'map_name is required; pass map_name:=<basename>'
+        )
+    if '..' in map_name or '/' in map_name or '\\' in map_name:
         raise RuntimeError(
             f"Invalid map_name '{map_name}': expected a map basename without "
             'path separators or ".."'
@@ -103,8 +101,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'map_name',
-            default_value=DEFAULT_MAP_NAME,
-            description='Basename of both map artifact sets in '
+            description='Required basename of both map artifact sets in '
             f'{MAP_DIRECTORY}',
         ),
         DeclareLaunchArgument(

@@ -76,16 +76,8 @@
   "inputs": [
     {
       "id": "runnerMap",
-      "type": "pickString",
-      "description": "Select the slam_toolbox map",
-      "options": [
-        "collingwood",
-        "lockehaven"
-        // "house_good_v1",
-        // "bedroom_phase_b_503",
-        // "jai_test"
-      ],
-      // "default": "house_good_v1"
+      "type": "promptString",
+      "description": "Complete map bundle basename (required)"
     },
     {
       "id": "mapSaveName",

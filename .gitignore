@@ -13,8 +13,8 @@
 *.mcap
 bags/
 
-# Saved maps (large binary files, regenerate per environment)
-maps/
+# Temporary root-level smoke captures
+/stage*_smoke_*/
 
 # Python build/cache output
 __pycache__/

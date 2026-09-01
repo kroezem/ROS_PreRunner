@@ -21,9 +21,6 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
-DEFAULT_MAP_NAME = 'house_good_v1'
-
-
 def generate_launch_description():
     """Combine Nav2 and the Stage 2 command chain without duplicate sensors."""
     bringup_share = get_package_share_directory('runner_bringup')
@@ -53,8 +50,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'map_name',
-            default_value=DEFAULT_MAP_NAME,
-            description='Map basename passed to the Nav2 composite',
+            description='Required map basename passed to the Nav2 composite',
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav2_launch),

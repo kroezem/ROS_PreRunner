@@ -9,8 +9,8 @@ import yaml
 
 
 PACKAGE = Path(__file__).parents[1]
-WORKSPACE = PACKAGE.parents[1]
 LAUNCH_PATH = PACKAGE / 'launch' / 'nav2.launch.py'
+LOCALIZE_LAUNCH_PATH = PACKAGE / 'launch' / 'localize.launch.py'
 PARAMS_PATH = PACKAGE / 'config' / 'nav2_params.yaml'
 SPEED_ENVELOPE_PATH = (
     PACKAGE.parent / 'runner_drive_adapter' / 'config' / 'speed_envelope.yaml'
@@ -120,19 +120,22 @@ def test_goal_checker_requires_position_and_loose_final_heading():
     assert checker['stateful'] is False
 
 
-def test_default_static_map_matches_global_costmap_resolution():
-    """Smac configures against the ratified static-map resolution."""
-    map_name = re.search(
-        r"DEFAULT_MAP_NAME = '([^']+)'", LAUNCH_PATH.read_text()
-    ).group(1)
-    map_yaml = yaml.safe_load(
-        (WORKSPACE / 'maps' / f'{map_name}.yaml').read_text()
-    )
-    global_costmap = _params()['global_costmap']['global_costmap'][
-        'ros__parameters'
-    ]
+def test_map_name_is_required_and_complete_bundle_is_validated():
+    """Localization and navigation have no implicit or partial map."""
+    for path in (LAUNCH_PATH, LOCALIZE_LAUNCH_PATH):
+        launch = path.read_text()
+        declaration = re.search(
+            r"DeclareLaunchArgument\(\s*'map_name',(.*?)\n\s*\),",
+            launch,
+            re.DOTALL,
+        ).group(1)
 
-    assert map_yaml['resolution'] == global_costmap['resolution']
+        assert 'DEFAULT_MAP_NAME' not in launch
+        assert 'default_value' not in declaration
+        assert "f'{map_file_name}.posegraph'" in launch
+        assert "f'{map_file_name}.data'" in launch
+        assert "static_yaml = f'{map_file_name}.yaml'" in launch
+        assert "startswith('image:')" in launch
 
 
 def test_local_costmap_uses_raw_scan_and_ratified_geometry():

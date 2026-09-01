@@ -36,6 +36,7 @@ def test_composite_includes_nav2_once_and_passes_map_name():
     assert source.count("'nav2.launch.py'") == 1
     assert source.count('IncludeLaunchDescription(') == 1
     assert "DeclareLaunchArgument(\n            'map_name'," in source
+    assert 'DEFAULT_MAP_NAME' not in source
     assert "launch_arguments={'map_name': map_name}.items()" in source
 
 

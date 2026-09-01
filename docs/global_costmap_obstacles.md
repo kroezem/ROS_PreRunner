@@ -25,12 +25,8 @@ other object entirely below that plane can be raytraced through. With
 Overwrite, such a feature would be cleared from the combined global costmap
 inside the observation bounds even if it were occupied in the static map.
 
-No such feature is believed to be encoded in the `collingwood` map. The map was
-generated from this same planar laser rather than manually annotated, so
-geometry entirely below the scan plane was not observable when the map was
-created. A physical kitchen-to-dining threshold and thin rugs are known to
-exist, but they are operating-surface hazards, not believed static-map
-obstacles. Reassess this conclusion if the map is manually edited or generated
+No usable map bundle is currently committed. Assess this hazard against every
+new map, especially if its occupancy image is manually edited or generated
 from a sensor at a different height.
 
 ## A/B measurement

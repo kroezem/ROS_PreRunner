@@ -20,7 +20,8 @@ slam_toolbox:
     # if you'd like to immediately start continuing a map at a given pose
     # or at the dock, but they are mutually exclusive, if pose is given
     # will use pose
-    map_file_name: /home/matti/runner_ws/maps/house_good_v1
+    # Required launch input; slam_localize.launch.py rewrites this value.
+    map_file_name: ''
     # Startup bootstrap required to deserialize the posegraph; /initialpose supplies the actual pose.
     map_start_pose: [0.0, 0.0, 0.0]
     map_start_at_dock: false

@@ -1,5 +1,9 @@
 # Runner map saving
 
+No usable map bundle is currently committed. Localization and autonomy require
+an explicit basename containing nonempty `.posegraph`, `.data`, `.yaml`, and
+the occupancy image referenced by that YAML.
+
 The `Runner: Save Map` VS Code task creates two different representations of
 the same map:
 
