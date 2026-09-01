@@ -65,3 +65,10 @@ def test_command_authority_remains_persistent_but_offline_from_mux():
     assert 'command_authority' in authority
     assert 'WantedBy=multi-user.target' in authority
     assert '/cmd_vel_paddock' not in mux
+
+
+def test_install_docs_do_not_disable_authoritative_static_links():
+    readme = (SERVICES / 'README.md').read_text(encoding='utf-8')
+
+    assert 'systemctl disable runner-mode-mapping' not in readme
+    assert 'lack of an `[Install]` section' in readme

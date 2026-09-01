@@ -55,9 +55,14 @@ sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/syst
 sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
 sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
 sudo systemctl daemon-reload
-sudo systemctl disable runner-mode-mapping.service runner-mode-autonomy.service
 sudo systemctl enable --now runner-command-authority.service runner-mode-supervisor.service
 ```
+
+Do not run `systemctl disable` on the two static mode units: because their
+authoritative files are manually linked into `/etc/systemd/system`, `disable`
+would remove those links. Their lack of an `[Install]` section means the
+`linked` state is already non-boot-enabled. Verify there are no mode-unit links
+under any target's `.wants/` or `.requires/` directory.
 
 Do not launch `map.launch.py`, `localize.launch.py`, `nav2.launch.py`, or
 `autonomy.launch.py` manually on a deployed robot. An unmanaged mode graph is
