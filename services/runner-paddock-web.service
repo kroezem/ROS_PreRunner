@@ -1,0 +1,19 @@
+[Unit]
+Description=Runner Paddock read-only web backend
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+Environment=PADDOCK_WEB_HOST=127.0.0.1
+Environment=PADDOCK_WEB_PORT=8000
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_paddock web'
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -32,6 +32,7 @@ class ClientConnection:
     def __init__(self) -> None:
         self._pending: dict[str, str] = {}
         self._available = asyncio.Event()
+        self._closed = False
         self.revisions = {'map': 0, 'plan': 0}
 
     @property
@@ -46,12 +47,19 @@ class ClientConnection:
         self._pending[kind] = frame
         self._available.set()
 
+    def close(self) -> None:
+        """Wake a parked reader so its sender task can unwind on shutdown."""
+        self._closed = True
+        self._available.set()
+
     async def next_frame(self) -> str:
         """Wait for and remove the oldest pending frame kind."""
         await self._available.wait()
+        if not self._pending:
+            raise RuntimeError('client connection closed')
         kind = next(iter(self._pending))
         frame = self._pending.pop(kind)
-        if not self._pending:
+        if not self._pending and not self._closed:
             self._available.clear()
         return frame
 
@@ -76,6 +84,11 @@ class ClientHub:
     def unregister(self, client: ClientConnection) -> None:
         """Forget a reader; unregistering twice is harmless."""
         self._clients.discard(client)
+
+    def close(self) -> None:
+        """Wake every registered reader so its sender task can exit."""
+        for client in self._clients:
+            client.close()
 
     def publish(self, cache: StateCache) -> None:
         """Offer one state tick and only unseen map/plan revisions."""

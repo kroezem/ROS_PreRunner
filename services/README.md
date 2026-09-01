@@ -1,9 +1,22 @@
 # Runner system services
 
 These units run the Foxglove bridge, battery monitor, Raspberry Pi telemetry,
-motor hardware owner, and wheel encoder hardware owner independently of the
-application launch stacks. The battery, telemetry, motor, and encoder nodes
-are deliberately not added to composites.
+motor hardware owner, wheel encoder hardware owner, and the Paddock read-only
+web backend independently of the application launch stacks. The battery,
+telemetry, motor, and encoder nodes are deliberately not added to composites.
+
+`runner-paddock-web.service` runs the Stage 3 Paddock backend
+(`ros2 run runner_paddock web`) as an application-tier, read-only observer: it
+subscribes to established robot state and serves a same-origin WebSocket, and
+publishes nothing to ROS. It runs unprivileged as `matti`, binds `127.0.0.1`
+only (`PADDOCK_WEB_HOST`/`PADDOCK_WEB_PORT` in the unit), runs one uvicorn
+worker with no reload, and has no `systemctl`/sudoers grant — it cannot touch
+the hardware tier or switch modes. `KillSignal=SIGINT` gives uvicorn the same
+graceful shutdown path as an interactive Ctrl-C, after which the
+`/runner_paddock_web_state` node leaves the graph. Runtime dependencies
+(`python3-fastapi python3-uvicorn python3-websockets`, declared in
+`package.xml`) are installed from the Ubuntu archive via apt/rosdep — there is
+no pip target or `PYTHONPATH` shim.
 
 `runner-motor.service` is the sole continuous owner of the motor and steering
 PWM channels. The existing `runner-pwm-setup.service` remains the temporary
@@ -28,8 +41,21 @@ sudo ln -s /home/matti/runner_ws/services/runner-battery.service /etc/systemd/sy
 sudo ln -s /home/matti/runner_ws/services/runner-telemetry.service /etc/systemd/system/runner-telemetry.service
 sudo ln -s /home/matti/runner_ws/services/runner-motor.service /etc/systemd/system/runner-motor.service
 sudo ln -s /home/matti/runner_ws/services/runner-encoder.service /etc/systemd/system/runner-encoder.service
+sudo ln -s /home/matti/runner_ws/services/runner-paddock-web.service /etc/systemd/system/runner-paddock-web.service
 sudo systemctl daemon-reload
 ```
+
+`runner-paddock-web.service` also needs its Python runtime dependencies
+present for `/usr/bin/python3` (one time, from the Ubuntu archive):
+
+```sh
+sudo apt-get install -y python3-fastapi python3-uvicorn python3-websockets
+```
+
+All three are stock Ubuntu 24.04 archive packages and are the exact rosdep
+keys declared in `src/runner_paddock/package.xml`; `rosdep install` resolves
+to the same apt packages once `rosdep` is initialized. `python3-httpx` is an
+archive package too and is only needed to run the package test suite.
 
 Before enabling any unit, verify that it sources both
 `/opt/ros/jazzy/setup.bash` and `/home/matti/runner_ws/install/setup.bash`, and
@@ -42,6 +68,7 @@ sudo systemctl enable --now runner-foxglove.service
 sudo systemctl enable --now runner-battery.service
 sudo systemctl enable --now runner-telemetry.service
 sudo systemctl enable --now runner-encoder.service
+sudo systemctl enable --now runner-paddock-web.service
 ```
 
 With traction power disconnected, enable and start the motor owner separately:

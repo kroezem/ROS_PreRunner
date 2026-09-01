@@ -15,6 +15,7 @@
 """FastAPI application and same-origin read-only WebSocket endpoint."""
 
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -50,6 +51,7 @@ def create_app(
             yield
         finally:
             await streamer.stop()
+            hub.close()
             ros_runtime.stop()
 
     app = FastAPI(title='Runner Paddock', lifespan=lifespan)
@@ -78,11 +80,11 @@ def create_app(
 
 
 def main() -> None:
-    """Run Paddock with the supported single-worker process model."""
+    """Run Paddock on loopback with the single-worker process model."""
     uvicorn.run(
         'runner_paddock.web_app:create_app',
         factory=True,
-        host='0.0.0.0',
-        port=8000,
+        host=os.environ.get('PADDOCK_WEB_HOST', '127.0.0.1'),
+        port=int(os.environ.get('PADDOCK_WEB_PORT', '8000')),
         workers=1,
     )
