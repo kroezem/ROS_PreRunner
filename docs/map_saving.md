@@ -14,6 +14,10 @@ the same map:
 
 The task refuses to run if any artifact already exists for the requested
 basename. It reports success only after all four files exist and are nonempty.
+A missing or incorrectly typed `/slam_toolbox/serialize_map` service fails
+before any export. The serialized files are verified before occupancy export,
+so a reported serialization success that produced no files cannot degrade into
+another PGM/YAML-only basename.
 A failed step may leave a partial basename in place; this is intentional so
 that potentially valuable map data is never removed automatically.
 

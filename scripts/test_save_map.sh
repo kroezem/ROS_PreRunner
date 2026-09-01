@@ -21,6 +21,14 @@ set -euo pipefail
 printf '%q ' "$@" >> "$MOCK_ROS2_LOG"
 printf '\n' >> "$MOCK_ROS2_LOG"
 
+if [[ ${1:-} == service && ${2:-} == type ]]; then
+  if [[ ${MOCK_SERVICE_AVAILABLE:-1} != 1 ]]; then
+    exit 1
+  fi
+  printf '%s\n' "${MOCK_SERVICE_TYPE:-slam_toolbox/srv/SerializePoseGraph}"
+  exit 0
+fi
+
 if [[ ${1:-} == service && ${2:-} == call ]]; then
   if [[ ${MOCK_SERIALIZE_CLI_STATUS:-0} != 0 ]]; then
     echo "mock serialize transport failure" >&2
@@ -85,11 +93,36 @@ run_save success > "$success_output" 2>&1
 for extension in posegraph data yaml pgm; do
   test -s "$map_dir/success.$extension"
 done
+test "$(find "$map_dir" -maxdepth 1 -type f -name 'success.*' | wc -l)" -eq 4
 rg -q "Saved and verified all map artifacts" "$success_output"
 
 assert_fails_without_success "$test_root/serialize-result.out" \
   run_save serialize_result_failure MOCK_SERIALIZE_RESULT=255
 rg -q "SerializePoseGraph returned result=255" "$test_root/serialize-result.out"
+
+before_calls=$(wc -l < "$mock_log")
+assert_fails_without_success "$test_root/service-unavailable.out" \
+  run_save service_unavailable MOCK_SERVICE_AVAILABLE=0
+after_calls=$(wc -l < "$mock_log")
+test "$((after_calls - before_calls))" -eq 1
+rg -q "Required slam_toolbox service is unavailable" \
+  "$test_root/service-unavailable.out"
+
+before_calls=$(wc -l < "$mock_log")
+assert_fails_without_success "$test_root/service-type.out" \
+  run_save service_type_mismatch MOCK_SERVICE_TYPE=example_interfaces/srv/AddTwoInts
+after_calls=$(wc -l < "$mock_log")
+test "$((after_calls - before_calls))" -eq 1
+rg -q "Unexpected type for /slam_toolbox/serialize_map" \
+  "$test_root/service-type.out"
+
+before_calls=$(wc -l < "$mock_log")
+assert_fails_without_success "$test_root/missing-serialized.out" \
+  run_save missing_serialized MOCK_CREATE_SERIALIZED=0
+after_calls=$(wc -l < "$mock_log")
+test "$((after_calls - before_calls))" -eq 2
+rg -q "Occupancy-grid export was not attempted" \
+  "$test_root/missing-serialized.out"
 
 assert_fails_without_success "$test_root/occupancy.out" \
   run_save occupancy_failure MOCK_OCCUPANCY_STATUS=1
@@ -108,5 +141,9 @@ rg -q "Refusing to overwrite existing map artifacts" "$test_root/overwrite.out"
 
 assert_fails_without_success "$test_root/invalid.out" run_save 'bad/name'
 rg -q "Invalid map name" "$test_root/invalid.out"
+assert_fails_without_success "$test_root/dotdot.out" run_save 'bad..name'
+rg -q "Invalid map name" "$test_root/dotdot.out"
+assert_fails_without_success "$test_root/leading-dot.out" run_save '.hidden'
+rg -q "Invalid map name" "$test_root/leading-dot.out"
 
 echo "save_map.sh tests passed"
