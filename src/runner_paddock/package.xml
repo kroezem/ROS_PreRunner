@@ -8,9 +8,15 @@
   <license>Apache-2.0</license>
 
   <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>rclpy</depend>
   <depend>runner_interfaces</depend>
   <depend>sensor_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>python3-fastapi</exec_depend>
+  <exec_depend>python3-uvicorn</exec_depend>
+  <exec_depend>python3-websockets</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

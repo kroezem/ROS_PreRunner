@@ -1,0 +1,8 @@
+{
+  "name": "Runner Paddock",
+  "short_name": "Paddock",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d130f",
+  "theme_color": "#152118"
+}

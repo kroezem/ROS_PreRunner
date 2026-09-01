@@ -1,0 +1,49 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0d130f;
+  color: #e5eee7;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  width: min(72rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0;
+}
+
+.eyebrow {
+  color: #91b79a;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0.25rem 0;
+}
+
+.status {
+  display: inline-block;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.35rem;
+}
+
+.connected {
+  background: #1d5630;
+}
+
+.waiting {
+  background: #654d18;
+}
+
+pre {
+  overflow: auto;
+  padding: 1rem;
+  border: 1px solid #304137;
+  border-radius: 0.5rem;
+  background: #111b15;
+  min-height: 16rem;
+}
