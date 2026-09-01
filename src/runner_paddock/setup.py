@@ -16,7 +16,13 @@ setup(
     zip_safe=True,
     maintainer='matti',
     maintainer_email='matti@todo.todo',
-    description='Pure Paddock mode and authority state machines',
+    description='Paddock mode and command-authority supervision',
     license='Apache-2.0',
     extras_require={'test': ['pytest']},
+    entry_points={
+        'console_scripts': [
+            'command_authority = '
+            'runner_paddock.command_authority_node:main',
+        ],
+    },
 )

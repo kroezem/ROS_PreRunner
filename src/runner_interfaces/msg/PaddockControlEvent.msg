@@ -8,6 +8,7 @@ uint8 EVENT_GOAL_SELECTED=5
 uint8 EVENT_LEASE_ACQUIRED=6
 uint8 EVENT_LEASE_RELEASED=7
 uint8 EVENT_LEASE_LOST=8
+uint8 EVENT_HEARTBEAT=9
 
 builtin_interfaces/Time stamp
 uint64 sequence

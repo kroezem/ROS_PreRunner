@@ -3,9 +3,14 @@
 <package format="3">
   <name>runner_paddock</name>
   <version>0.0.0</version>
-  <description>Pure Paddock mode and command-authority state machines</description>
+  <description>Paddock mode and command-authority supervision</description>
   <maintainer email="matti@todo.todo">matti</maintainer>
   <license>Apache-2.0</license>
+
+  <depend>geometry_msgs</depend>
+  <depend>rclpy</depend>
+  <depend>runner_interfaces</depend>
+  <depend>sensor_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
