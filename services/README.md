@@ -18,6 +18,36 @@ graceful shutdown path as an interactive Ctrl-C, after which the
 `package.xml`) are installed from the Ubuntu archive via apt/rosdep — there is
 no pip target or `PYTHONPATH` shim.
 
+**Reaching Paddock: Tailscale Serve, not a LAN port (Stage 3C).** The backend
+only ever binds `127.0.0.1:8000`; it is not reachable from the LAN or from
+the tailnet IP directly. The network-facing boundary is Tailscale Serve,
+configured tailnet-only (no Funnel — never public internet):
+
+```sh
+tailscale serve --bg --https=443 http://127.0.0.1:8000
+```
+
+**Operator URL:** `https://makro-runner.taila47bfc.ts.net/` — same-origin
+HTTP and the `/ws` WebSocket (as `wss://`) both work through the proxy.
+Reaching it requires being on the tailnet; MagicDNS and HTTPS certificates
+must be enabled for the tailnet in the admin console
+(https://login.tailscale.com/admin/dns) before `tailscale serve` will accept
+`--https`.
+
+`--bg` persists the config in `tailscaled`'s own state and is restored
+automatically across `tailscaled` restarts and reboots — it is independent
+of `runner-paddock-web.service` and does not need to be re-run after a
+Paddock service restart. Recovery / check commands:
+
+```sh
+tailscale serve status               # human-readable: proxy target, tailnet-only vs funnel
+tailscale serve status --json        # machine-readable, confirms no Funnel/AllowFunnel key
+curl -s -o /dev/null -w '%{http_code}\n' https://makro-runner.taila47bfc.ts.net/
+sudo tailscale cert makro-runner.taila47bfc.ts.net   # force a cert refresh if HTTPS breaks
+tailscale serve --bg --https=443 http://127.0.0.1:8000   # idempotent re-apply if config is lost
+tailscale serve --https=443 off      # tear down the proxy entirely
+```
+
 `runner-motor.service` is the sole continuous owner of the motor and steering
 PWM channels. The existing `runner-pwm-setup.service` remains the temporary
 boot-time exporter and permission preparer; systemd requires it to complete
