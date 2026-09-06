@@ -6,6 +6,13 @@ The project is an experimental platform for autonomous navigation, localization,
 
 Project page: https://makro.ca/prerunner/
 
+## Current implementation contract
+
+[Runner v1.3](docs/runner_spec_v1.3.md) is the ratified Paddock-first target.
+[Decision amendments](docs/decision_v1.3_paddock_first.md) qualify historical
+decisions by version and title. Implementation is staged; this link does not
+claim backend acceptance. Earlier specifications remain historical references.
+
 ## Current Status
 
 | Capability                           | Status  |
@@ -15,13 +22,13 @@ Project page: https://makro.ca/prerunner/
 | Wheel speed sensing                  | Working |
 | Teleoperation                        | Working |
 | SLAM                                 | Working |
-| Fixed-map localization               | Awaiting regenerated map |
-| Point-to-point navigation            | Awaiting regenerated map |
-| Multi-waypoint autonomous navigation | Awaiting regenerated map |
+| Fixed-map localization               | Map committed; validation pending |
+| Point-to-point navigation            | Map committed; validation pending |
+| Multi-waypoint autonomous navigation | Map committed; validation pending |
 | Autonomous exploration               | Planned |
 | Higher-speed autonomous driving      | Planned |
 
-The vehicle has demonstrated SLAM and autonomous point-to-point navigation through indoor environments. No usable map bundle is currently committed; localization and autonomy require an explicit map name after a fresh map is generated.
+The vehicle has demonstrated SLAM and autonomous point-to-point navigation through indoor environments. The studio map bundle is committed; localization and autonomy require an explicit map name. Current physical localization quality still requires validation.
 
 ## Hardware
 
@@ -111,7 +118,7 @@ The project follows a diagnostic-first workflow: changes are made after identify
 .
 |-- analysis/     Experimental analysis and reports
 |-- docs/         Architecture, design decisions and validation notes
-|-- maps/         Destination for regenerated SLAM map bundles (currently empty)
+|-- maps/         SLAM map bundles, including studio
 |-- scripts/      Bring-up and map-management utilities
 |-- services/     Persistent hardware systemd services
 |-- src/          ROS 2 packages

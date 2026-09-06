@@ -25,7 +25,7 @@ other object entirely below that plane can be raytraced through. With
 Overwrite, such a feature would be cleared from the combined global costmap
 inside the observation bounds even if it were occupied in the static map.
 
-No usable map bundle is currently committed. Assess this hazard against every
+The studio bundle is committed (6a7c961); artifact presence does not certify physical localization quality. Assess this hazard against every
 new map, especially if its occupancy image is manually edited or generated
 from a sensor at a different height.
 

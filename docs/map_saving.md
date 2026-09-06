@@ -1,6 +1,6 @@
 # Runner map saving
 
-No usable map bundle is currently committed. Localization and autonomy require
+The studio bundle is committed (6a7c961); artifact presence does not certify physical localization quality. Localization and autonomy require
 an explicit basename containing nonempty `.posegraph`, `.data`, `.yaml`, and
 the occupancy image referenced by that YAML.
 
