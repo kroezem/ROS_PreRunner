@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Offline ROS plumbing for the Paddock command-authority supervisor."""
+"""Private transitional authority scaffold; outputs must not feed production mux."""
 
 import math
 import time
@@ -36,8 +36,8 @@ from sensor_msgs.msg import Joy
 
 
 RAW_AUTONOMY_TOPIC = '/cmd_vel_auto_raw'
-SUPERVISED_AUTONOMY_TOPIC = '/cmd_vel_auto'
-PADDOCK_OUTPUT_TOPIC = '/cmd_vel_paddock'
+SUPERVISED_AUTONOMY_TOPIC = '/paddock/private/cmd_vel_auto'
+PADDOCK_OUTPUT_TOPIC = '/paddock/private/cmd_vel_paddock'
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MODE_STATE_TOPIC = '/paddock/mode_state'

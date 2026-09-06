@@ -32,8 +32,8 @@ from runner_paddock.command_supervisor import SupervisorResult
 
 def test_topic_contract_never_names_live_cmd_vel_as_an_output():
     assert RAW_AUTONOMY_TOPIC == '/cmd_vel_auto_raw'
-    assert SUPERVISED_AUTONOMY_TOPIC == '/cmd_vel_auto'
-    assert PADDOCK_OUTPUT_TOPIC == '/cmd_vel_paddock'
+    assert SUPERVISED_AUTONOMY_TOPIC == '/paddock/private/cmd_vel_auto'
+    assert PADDOCK_OUTPUT_TOPIC == '/paddock/private/cmd_vel_paddock'
     assert '/cmd_vel' not in {
         SUPERVISED_AUTONOMY_TOPIC,
         PADDOCK_OUTPUT_TOPIC,
