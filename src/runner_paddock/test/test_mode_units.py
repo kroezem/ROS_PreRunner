@@ -55,7 +55,7 @@ def test_only_supervisor_is_boot_enabled_and_controls_fixed_system_units():
     assert '[Install]' in supervisor
     assert 'WantedBy=multi-user.target' in supervisor
     assert 'mode_supervisor' in supervisor
-    assert 'User=root' in supervisor
+    assert 'User=matti' in supervisor
 
 
 def test_command_authority_remains_persistent_but_offline_from_mux():

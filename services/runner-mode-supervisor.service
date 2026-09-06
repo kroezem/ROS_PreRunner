@@ -5,10 +5,11 @@ Wants=runner-command-authority.service runner-paddock-web.service
 
 [Service]
 Type=simple
-# Root is limited to this small supervisor so it can control fixed system units.
-# Both application graphs still run unprivileged as matti.
-User=root
-Group=root
+# Runs unprivileged as matti; a narrow polkit rule (see
+# /etc/polkit-1/rules.d/49-runner-mode-units.rules) grants matti the systemd
+# manage-units start/stop verbs for only the two fixed mode units below.
+User=matti
+Group=matti
 WorkingDirectory=/home/matti/runner_ws
 RuntimeDirectory=runner-paddock
 RuntimeDirectoryMode=0755

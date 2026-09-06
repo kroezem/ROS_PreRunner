@@ -20,11 +20,20 @@ from enum import IntEnum
 import os
 from pathlib import Path
 import re
-import subprocess
 import time
 from typing import Callable, Mapping
 
+import dbus
+
 from runner_paddock.state_machine import Mode
+
+
+SYSTEMD_BUS_NAME = 'org.freedesktop.systemd1'
+SYSTEMD_OBJECT_PATH = '/org/freedesktop/systemd1'
+SYSTEMD_MANAGER_IFACE = 'org.freedesktop.systemd1.Manager'
+SYSTEMD_UNIT_IFACE = 'org.freedesktop.systemd1.Unit'
+SYSTEMD_SERVICE_IFACE = 'org.freedesktop.systemd1.Service'
+DBUS_PROPERTIES_IFACE = 'org.freedesktop.DBus.Properties'
 
 
 MAPPING_UNIT = 'runner-mode-mapping.service'
@@ -114,56 +123,50 @@ class RuntimeState:
 
 
 class SystemdManager:
-    """Minimal systemctl adapter; systemd performs all process teardown."""
+    """Minimal systemd D-Bus adapter; systemd performs all process teardown."""
 
-    def _run(self, *arguments: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ('systemctl', *arguments),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30.0,
-        )
+    def __init__(self) -> None:
+        self._bus = dbus.SystemBus()
+        systemd = self._bus.get_object(SYSTEMD_BUS_NAME, SYSTEMD_OBJECT_PATH)
+        self._manager = dbus.Interface(systemd, SYSTEMD_MANAGER_IFACE)
+
+    def _unit_properties(self, unit: str) -> dbus.Interface:
+        path = self._manager.LoadUnit(unit)
+        proxy = self._bus.get_object(SYSTEMD_BUS_NAME, path)
+        return dbus.Interface(proxy, DBUS_PROPERTIES_IFACE)
 
     def state(self, unit: str) -> UnitState:
         """Read state without treating inactive units as command failures."""
-        result = self._run(
-            'show', unit,
-            '--property=ActiveState,SubState,MainPID,ControlGroup',
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise RuntimeError(f'cannot inspect {unit}: {detail}')
-        values = dict(
-            line.split('=', 1)
-            for line in result.stdout.splitlines()
-            if '=' in line
-        )
-        if not all(
-            key in values
-            for key in ('ActiveState', 'SubState', 'MainPID', 'ControlGroup')
-        ):
-            raise RuntimeError(f'incomplete systemd state for {unit}')
+        try:
+            properties = self._unit_properties(unit)
+            active_state = str(properties.Get(SYSTEMD_UNIT_IFACE, 'ActiveState'))
+            sub_state = str(properties.Get(SYSTEMD_UNIT_IFACE, 'SubState'))
+            main_pid = int(properties.Get(SYSTEMD_SERVICE_IFACE, 'MainPID'))
+            control_group = str(
+                properties.Get(SYSTEMD_SERVICE_IFACE, 'ControlGroup')
+            )
+        except dbus.exceptions.DBusException as error:
+            raise RuntimeError(f'cannot inspect {unit}: {error}') from error
         return UnitState(
-            active_state=values['ActiveState'],
-            sub_state=values['SubState'],
-            main_pid=int(values['MainPID'] or '0'),
-            control_group=values['ControlGroup'],
+            active_state=active_state,
+            sub_state=sub_state,
+            main_pid=main_pid,
+            control_group=control_group,
         )
 
     def start(self, unit: str) -> None:
-        """Start one fixed mode unit and wait for systemd's start job."""
-        result = self._run('start', unit)
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise RuntimeError(f'cannot start {unit}: {detail}')
+        """Start one fixed mode unit; systemd polkit-authorizes the call."""
+        try:
+            self._manager.StartUnit(unit, 'replace')
+        except dbus.exceptions.DBusException as error:
+            raise RuntimeError(f'cannot start {unit}: {error}') from error
 
     def stop(self, unit: str) -> None:
         """Stop a unit; KillMode=control-group owns descendant teardown."""
-        result = self._run('stop', unit)
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise RuntimeError(f'cannot stop {unit}: {detail}')
+        try:
+            self._manager.StopUnit(unit, 'replace')
+        except dbus.exceptions.DBusException as error:
+            raise RuntimeError(f'cannot stop {unit}: {error}') from error
 
 
 def validate_map_bundle(

@@ -14,6 +14,19 @@ and publishes authoritative, transient-local `/paddock/mode_state`. Its
 separate `status` field reports `STABLE`, `TRANSITIONING`, or `FAULT`; the UI
 mode remains exactly `IDLE`, `MAPPING`, or `AUTONOMY`.
 
+The supervisor runs unprivileged as `User=matti`, like the rest of ROS/DDS,
+and manages the two fixed mode units over the systemd D-Bus API
+(`org.freedesktop.systemd1.Manager` `StartUnit`/`StopUnit`) rather than a
+setuid or sudo path. Authorization comes from a narrow polkit rule,
+`/etc/polkit-1/rules.d/49-runner-mode-units.rules`, that grants
+`subject.user == "matti"` the `org.freedesktop.systemd1.manage-units` action
+only when `unit` is `runner-mode-mapping.service` or
+`runner-mode-autonomy.service` and `verb` is `start` or `stop`; no other verb
+(`restart`, `reload`, `enable`, `disable`, ...), unit, or subject is granted,
+so matti cannot manage an unrelated system unit this way and still needs an
+interactive admin password for anything outside this pair. The rule does not
+touch PWM/motor/hardware privilege services.
+
 `runner-command-authority.service` keeps the existing Stage 2 lease and
 command-grant supervisor alive so only the current typed Paddock lease can
 request a mode. It now follows authoritative `ModeState`; `TRANSITIONING` and
@@ -45,6 +58,17 @@ supervisor rejects path-like names and verifies all four artifacts: `.data`,
 validated basename is atomically written to
 `/run/runner-paddock/autonomy-map`; the fixed autonomy unit validates it again
 before execing the launch. No shell interpolation is used for the basename.
+
+Install the Stage 4 polkit rule before enabling the supervisor, since it runs
+as matti and needs it to start/stop the two fixed mode units:
+
+```sh
+sudo install -m 0644 -o root -g root \
+  /home/matti/runner_ws/services/49-runner-mode-units.rules \
+  /etc/polkit-1/rules.d/49-runner-mode-units.rules
+sudo systemctl restart polkit.service
+sudo apt-get install -y python3-dbus
+```
 
 Install the Stage 4 units as authoritative symlinks, reload systemd, and enable
 only the supervisor:

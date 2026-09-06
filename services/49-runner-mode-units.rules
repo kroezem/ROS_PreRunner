@@ -1,0 +1,19 @@
+// Grant matti the systemd manage-units action only for start/stop of the two
+// Paddock application-mode units. No other verb, unit, or subject is granted.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (subject.user != "matti") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    var allowedUnit = (unit == "runner-mode-mapping.service" ||
+                        unit == "runner-mode-autonomy.service");
+    var allowedVerb = (verb == "start" || verb == "stop");
+    if (allowedUnit && allowedVerb) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});
