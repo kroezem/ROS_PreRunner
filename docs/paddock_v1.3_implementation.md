@@ -23,3 +23,17 @@ unit with studio, then stopped it. Live publisher counts:
 
 Observed final Twist was all zero; traction duty_cycle 0 ns (steering 1500000 ns).
 No mission dispatched or traction connected. Application stopped after smoke check.
+
+## Stage 2 — acceptance gate not passed; prototype not deployed
+
+See [the detailed gate report](paddock_v1.3_stage2_gate_report.md).
+Temporary STOP tests observed 3.293 ms request-to-final-zero and a worst
+142.026 ms stale nonzero interval after executor death. Rapid restart also
+produced a service timeout and three discovered STOP publisher endpoints.
+The probe's printed PASS did not assert that count and is not acceptance.
+
+The prototype was removed, not installed as a persistent service. A clean
+runner_interfaces/runner_paddock rebuild passed and the four plumbing tests
+passed again. Both application units are inactive, /cmd_vel has zero publishers,
+and traction PWM is 0 ns (steering 1500000 ns). Backend DoD is incomplete;
+frontend was not started. No physical traction validation was performed.
