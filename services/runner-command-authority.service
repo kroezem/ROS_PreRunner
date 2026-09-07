@@ -1,6 +1,6 @@
 [Unit]
 Description=Runner offline Paddock command-authority supervisor
-After=network.target
+After=network.target runner-stop-enforcer.service
 
 [Service]
 Type=simple

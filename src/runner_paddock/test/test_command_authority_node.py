@@ -63,6 +63,7 @@ def test_control_event_enum_matches_generated_interface():
     assert int(ControlEvent.LEASE_ACQUIRED) == PaddockControlEvent.EVENT_LEASE_ACQUIRED
     assert int(ControlEvent.LEASE_RELEASED) == PaddockControlEvent.EVENT_LEASE_RELEASED
     assert int(ControlEvent.HEARTBEAT) == PaddockControlEvent.EVENT_HEARTBEAT
+    assert int(ControlEvent.CLEAR_STOP) == PaddockControlEvent.EVENT_CLEAR_STOP
 
 
 def test_authority_message_exposes_monotonic_ages_and_brake_state():

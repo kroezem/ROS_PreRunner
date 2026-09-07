@@ -11,3 +11,12 @@ twist_mux:
         topic: /cmd_vel_teleop
         timeout: 0.15
         priority: 100
+      global_stop:
+        topic: /cmd_vel_stop
+        timeout: 0.10
+        priority: 255
+    locks:
+      global_stop:
+        topic: /paddock/stop_lock
+        timeout: 0.15
+        priority: 200

@@ -46,6 +46,7 @@ class ControlEvent(IntEnum):
     LEASE_RELEASED = 7
     LEASE_LOST = 8
     HEARTBEAT = 9
+    CLEAR_STOP = 10
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,10 @@ class CommandSupervisor:
             ControlEvent.MANUAL_INACTIVE: Event.MANUAL_INACTIVE,
             ControlEvent.LEASE_RELEASED: Event.RELEASE_LEASE,
         }
-        supported = event == ControlEvent.HEARTBEAT or (
+        supported = event in (
+            ControlEvent.HEARTBEAT,
+            ControlEvent.CLEAR_STOP,
+        ) or (
             event == ControlEvent.GOAL_SELECTED or event in event_map
         )
         if not supported:
@@ -312,6 +316,16 @@ class CommandSupervisor:
         self.last_control_sequence = sequence
         if event == ControlEvent.HEARTBEAT:
             return SupervisorResult(self._snapshot(now, self._reason(now)))
+        if event == ControlEvent.CLEAR_STOP:
+            # Executor acknowledgement is the authority for STOP state. This
+            # event only validates fresh lease ownership/order and disarms all
+            # normal grants before the clear request is sent.
+            self.state = transition(
+                self.state,
+                Event.STOP,
+                lease_id=lease_id,
+            ).state
+            return SupervisorResult(self._snapshot(now, 'CLEAR_STOP_REQUESTED'))
         if event == ControlEvent.GOAL_SELECTED:
             goal = GoalIntent(
                 map_name=self.state.active_autonomy_map,

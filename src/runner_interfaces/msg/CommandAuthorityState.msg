@@ -20,3 +20,10 @@ bool raw_autonomy_fresh
 float32 raw_autonomy_age_sec
 uint64 last_control_sequence
 string reason
+bool stop_state_fresh
+bool stop_healthy
+bool stop_applied
+bool stop_clear
+string stop_boot_id
+uint64 stop_generation
+string stop_reason

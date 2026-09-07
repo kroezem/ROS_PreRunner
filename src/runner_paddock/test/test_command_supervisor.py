@@ -95,6 +95,20 @@ def test_stop_closes_and_disarms_autonomy():
     assert blocked.autonomy_command is None
 
 
+def test_clear_stop_requires_current_lease_and_order_and_stays_disarmed():
+    supervisor = autonomy_ready()
+
+    accepted = control(supervisor, ControlEvent.CLEAR_STOP, 4, 0.020)
+    replay = control(supervisor, ControlEvent.CLEAR_STOP, 4, 0.021)
+
+    assert accepted.accepted
+    assert accepted.snapshot.reason == 'CLEAR_STOP_REQUESTED'
+    assert not accepted.snapshot.state.run_held
+    assert accepted.snapshot.brake_intent
+    assert not replay.accepted
+    assert replay.snapshot.reason == 'STALE_EVENT_REJECTED'
+
+
 def test_every_non_running_mode_state_maintains_brake_intent():
     supervisor = CommandSupervisor(active_autonomy_map=MAP)
     assert supervisor.tick(0.0).snapshot.brake_intent

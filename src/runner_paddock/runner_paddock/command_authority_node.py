@@ -16,9 +16,11 @@
 
 import math
 import time
+import uuid
 
 from geometry_msgs.msg import Twist
 import rclpy
+from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -26,6 +28,8 @@ from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
+from runner_interfaces.msg import StopRequest
+from runner_interfaces.msg import StopState
 
 from runner_paddock.command_supervisor import CommandSupervisor
 from runner_paddock.command_supervisor import ControlEvent
@@ -45,6 +49,9 @@ LEASE_STATE_TOPIC = '/paddock/control_lease'
 DUALSENSE_TOPIC = '/joy'
 DEFAULT_SUPERVISION_PERIOD_SEC = 0.010
 DEFAULT_DUALSENSE_TIMEOUT_SEC = 0.200
+DEFAULT_STOP_STATE_TIMEOUT_SEC = 0.150
+STOP_REQUEST_TOPIC = '/paddock/internal/stop_request'
+STOP_STATE_TOPIC = '/paddock/stop_state'
 X_BUTTON_INDEX = 0
 R1_BUTTON_INDEX = 5
 
@@ -75,7 +82,13 @@ def _to_twist(command: VelocityCommand) -> Twist:
     return message
 
 
-def _authority_message(result: SupervisorResult, stamp) -> CommandAuthorityState:
+def _authority_message(
+    result: SupervisorResult,
+    stamp,
+    stop_state: StopState | None = None,
+    *,
+    stop_fresh: bool = False,
+) -> CommandAuthorityState:
     """Convert one pure snapshot to its typed authority interface."""
     snapshot = result.snapshot
     state = snapshot.state
@@ -106,6 +119,18 @@ def _authority_message(result: SupervisorResult, stamp) -> CommandAuthorityState
         else snapshot.last_control_sequence
     )
     message.reason = snapshot.reason
+    message.stop_state_fresh = stop_fresh
+    message.stop_healthy = bool(stop_fresh and stop_state.healthy)
+    message.stop_applied = bool(stop_fresh and stop_state.applied)
+    message.stop_clear = bool(
+        stop_fresh and stop_state.healthy
+        and not stop_state.stopped and not stop_state.locked
+    )
+    message.stop_boot_id = stop_state.boot_id if stop_fresh else ''
+    message.stop_generation = stop_state.generation if stop_fresh else 0
+    message.stop_reason = (
+        stop_state.reason if stop_fresh else 'STOP_STATE_STALE'
+    )
     return message
 
 
@@ -156,6 +181,13 @@ class CommandAuthorityNode(Node):
         )
         self._last_joy_at = None
         self._dualsense_active = False
+        self._requester_id = str(uuid.uuid4())
+        self._stop_request_id = 0
+        self._pending_stop_request = None
+        self._last_stop_request_at = None
+        self._stop_state = None
+        self._stop_state_at = None
+        self._stop_state_timeout = DEFAULT_STOP_STATE_TIMEOUT_SEC
         self._auto_pub = self.create_publisher(
             Twist, SUPERVISED_AUTONOMY_TOPIC, 10
         )
@@ -167,6 +199,12 @@ class CommandAuthorityNode(Node):
         )
         self._lease_pub = self.create_publisher(
             PaddockControlLease, LEASE_STATE_TOPIC, 10
+        )
+        stop_qos = QoSProfile(depth=1)
+        stop_qos.reliability = ReliabilityPolicy.RELIABLE
+        stop_qos.lifespan = Duration(seconds=0.10)
+        self._stop_request_pub = self.create_publisher(
+            StopRequest, STOP_REQUEST_TOPIC, stop_qos
         )
         self.create_subscription(
             Twist, RAW_AUTONOMY_TOPIC, self._on_raw_autonomy, 10
@@ -184,6 +222,12 @@ class CommandAuthorityNode(Node):
             ModeState, MODE_STATE_TOPIC, self._on_mode, mode_qos
         )
         self.create_subscription(Joy, DUALSENSE_TOPIC, self._on_joy, 10)
+        self.create_subscription(
+            StopState,
+            STOP_STATE_TOPIC,
+            self._on_stop_state,
+            QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
+        )
         self.create_timer(supervision_period, self._on_supervision_timer)
 
         self._apply(self._supervisor.restart(time.monotonic()))
@@ -217,7 +261,72 @@ class CommandAuthorityNode(Node):
         )
         if not result.accepted:
             self.get_logger().warning(result.snapshot.reason)
+        elif event == ControlEvent.STOP:
+            self._request_stop(True)
+        elif event == ControlEvent.CLEAR_STOP:
+            if not self._stop_is_fresh(time.monotonic()):
+                self.get_logger().warning('CLEAR_STOP_STATE_STALE')
+            elif not self._stop_state.healthy:
+                self.get_logger().warning('CLEAR_STOP_ENFORCER_UNHEALTHY')
+            elif not self._stop_state.stopped or not self._stop_state.applied:
+                self.get_logger().warning('CLEAR_STOP_NOT_APPLIED')
+            else:
+                self._request_stop(False)
         self._apply(result)
+
+    def _stop_is_fresh(self, now: float) -> bool:
+        return (
+            self._stop_state is not None
+            and self._stop_state_at is not None
+            and now - self._stop_state_at <= self._stop_state_timeout
+        )
+
+    def _stop_clear(self, now: float) -> bool:
+        return (
+            self._stop_is_fresh(now)
+            and self._stop_state.healthy
+            and not self._stop_state.stopped
+            and not self._stop_state.locked
+        )
+
+    def _request_stop(self, stopped: bool) -> None:
+        self._stop_request_id += 1
+        request = StopRequest()
+        request.requester_id = self._requester_id
+        request.request_id = self._stop_request_id
+        request.stopped = stopped
+        if not stopped:
+            request.expected_boot_id = self._stop_state.boot_id
+            request.expected_generation = self._stop_state.generation
+        self._pending_stop_request = request
+        self._publish_stop_request(time.monotonic())
+
+    def _publish_stop_request(self, now: float) -> None:
+        self._stop_request_pub.publish(self._pending_stop_request)
+        self._last_stop_request_at = now
+
+    def _on_stop_state(self, message: StopState) -> None:
+        self._stop_state = message
+        self._stop_state_at = time.monotonic()
+        request = self._pending_stop_request
+        if (
+            request is None
+            or message.last_requester_id != request.requester_id
+            or message.last_request_id != request.request_id
+        ):
+            return
+        if not message.last_request_accepted:
+            self.get_logger().warning(message.last_request_reason)
+            self._pending_stop_request = None
+        elif request.stopped and message.applied:
+            self._pending_stop_request = None
+        elif (
+            not request.stopped
+            and message.healthy
+            and not message.stopped
+            and not message.locked
+        ):
+            self._pending_stop_request = None
 
     def _on_mode(self, message: ModeState) -> None:
         try:
@@ -250,6 +359,14 @@ class CommandAuthorityNode(Node):
     def _on_supervision_timer(self) -> None:
         now = time.monotonic()
         if (
+            self._pending_stop_request is not None
+            and (
+                self._last_stop_request_at is None
+                or now - self._last_stop_request_at >= 0.05
+            )
+        ):
+            self._publish_stop_request(now)
+        if (
             self._dualsense_active
             and self._last_joy_at is not None
             and now - self._last_joy_at > self._dualsense_timeout
@@ -261,7 +378,7 @@ class CommandAuthorityNode(Node):
         self._apply(self._supervisor.tick(now))
 
     def _apply(self, result: SupervisorResult) -> None:
-        if result.autonomy_command is not None:
+        if result.autonomy_command is not None and self._stop_clear(time.monotonic()):
             self._auto_pub.publish(_to_twist(result.autonomy_command))
         if result.snapshot.brake_intent:
             brake = Twist()
@@ -274,7 +391,13 @@ class CommandAuthorityNode(Node):
         state = snapshot.state
         stamp = self.get_clock().now().to_msg()
 
-        self._authority_pub.publish(_authority_message(result, stamp))
+        now = time.monotonic()
+        self._authority_pub.publish(_authority_message(
+            result,
+            stamp,
+            self._stop_state,
+            stop_fresh=self._stop_is_fresh(now),
+        ))
 
         lease = PaddockControlLease()
         lease.stamp = stamp

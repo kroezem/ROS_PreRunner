@@ -6,6 +6,8 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/StopRequest.msg"
+  "msg/StopState.msg"
   "msg/AdapterState.msg"
   "msg/EncoderState.msg"
   "msg/KeyboardState.msg"

@@ -1,0 +1,19 @@
+[Unit]
+Description=Runner persistent global STOP executor
+After=network.target runner-motor.service
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_paddock stop_enforcer'
+Restart=always
+RestartSec=0.2
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

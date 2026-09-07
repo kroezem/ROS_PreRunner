@@ -22,6 +22,7 @@ setup(
     extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
+            'stop_enforcer = runner_paddock.stop_enforcer:main',
             'command_authority = '
             'runner_paddock.command_authority_node:main',
             'mode_launcher = runner_paddock.mode_launcher:main',
