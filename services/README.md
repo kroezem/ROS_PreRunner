@@ -2,9 +2,18 @@
 
 These units run the Foxglove bridge, battery monitor, Raspberry Pi telemetry,
 motor hardware owner, wheel encoder hardware owner, Paddock web backend, and
-the persistent Paddock mode supervisor independently of application modes. The
+the persistent Paddock mode supervisor and local-control tier independently of application modes. The
 battery, telemetry, motor, and encoder nodes are deliberately not added to
 mode composites.
+
+## Stage 3 persistent local control
+
+`runner-local-control.service` owns exactly one `joy_node`, keyboard bridge,
+`runner_teleop`, and the existing `twist_mux` in IDLE, MAPPING, and AUTONOMY.
+The STOP executor remains its separate persistent service. Application launches
+contain no local-control or mux nodes. Inactive teleop publishes status but no
+velocity; release emits a bounded brake before becoming silent. The legacy
+autonomy input is absent from the mux until the later supervised cutover.
 
 ## Stage 4 application-mode supervision
 
@@ -45,12 +54,10 @@ The two application units have mutual `Conflicts=`, `KillMode=control-group`,
 and no `[Install]` section, so they cannot be enabled at boot:
 
 - `runner-mode-mapping.service`: `map.launch.py`, containing one sensor/static
-  TF tier, one estimation tier, mapping slam_toolbox, and the existing
-  keyboard/DualSense teleop plus twist_mux path.
+  TF tier, one estimation tier, and mapping slam_toolbox.
 - `runner-mode-autonomy.service`: `autonomy.launch.py`, containing the same
   common owners once, localization slam_toolbox remapped to `/slam_map`,
-  map_server as the sole `/map` publisher, Nav2, physical teleop, drive
-  adapter, and twist_mux.
+  map_server as the sole `/map` publisher, Nav2, and the drive adapter.
 
 AUTONOMY requests carry `autonomy_map` in `ModeRequest`. Before starting, the
 supervisor rejects path-like names and verifies all four artifacts: `.data`,
@@ -77,9 +84,10 @@ only the supervisor:
 sudo ln -s /home/matti/runner_ws/services/runner-mode-mapping.service /etc/systemd/system/runner-mode-mapping.service
 sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/systemd/system/runner-mode-autonomy.service
 sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
+sudo ln -s /home/matti/runner_ws/services/runner-local-control.service /etc/systemd/system/runner-local-control.service
 sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now runner-command-authority.service runner-mode-supervisor.service
+sudo systemctl enable --now runner-command-authority.service runner-local-control.service runner-mode-supervisor.service
 ```
 
 Do not run `systemctl disable` on the two static mode units: because their
@@ -163,6 +171,7 @@ sudo ln -s /home/matti/runner_ws/services/runner-paddock-web.service /etc/system
 sudo ln -s /home/matti/runner_ws/services/runner-mode-mapping.service /etc/systemd/system/runner-mode-mapping.service
 sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/systemd/system/runner-mode-autonomy.service
 sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
+sudo ln -s /home/matti/runner_ws/services/runner-local-control.service /etc/systemd/system/runner-local-control.service
 sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
 sudo systemctl daemon-reload
 ```
@@ -192,6 +201,7 @@ sudo systemctl enable --now runner-telemetry.service
 sudo systemctl enable --now runner-encoder.service
 sudo systemctl enable --now runner-paddock-web.service
 sudo systemctl enable --now runner-command-authority.service
+sudo systemctl enable --now runner-local-control.service
 sudo systemctl enable --now runner-mode-supervisor.service
 ```
 

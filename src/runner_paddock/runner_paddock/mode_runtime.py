@@ -57,10 +57,13 @@ COMMON_NODES = frozenset({
     '/rf2o_scan_canonicalizer',
     '/scan_rebinner',
     '/slam_toolbox',
+})
+PERSISTENT_LOCAL_NODES = frozenset({
     '/joy_node',
     '/keyboard_bridge',
     '/runner_teleop',
     '/twist_mux',
+    '/runner_stop_enforcer',
 })
 AUTONOMY_ONLY_NODES = frozenset({
     '/map_server',
@@ -266,6 +269,10 @@ class ModeRuntime:
         forbidden = AUTONOMY_ONLY_NODES if mode == Mode.MAPPING else frozenset()
         return (
             all(counts.get(node, 0) == 1 for node in required)
+            and all(
+                counts.get(node, 0) == 1
+                for node in PERSISTENT_LOCAL_NODES
+            )
             and all(counts.get(node, 0) == 1 for node in (
                 AUTONOMY_ONLY_NODES if mode == Mode.AUTONOMY else frozenset()
             ))

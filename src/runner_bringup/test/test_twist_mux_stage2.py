@@ -25,6 +25,7 @@ import pytest
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from std_msgs.msg import Bool
 import yaml
 
 
@@ -39,26 +40,30 @@ def _parameters():
     return document['twist_mux']['ros__parameters']
 
 
-def test_mux_configuration_is_explicit_and_uses_only_stage2_inputs():
+def test_mux_configuration_has_only_persistent_local_and_stop_inputs():
     parameters = _parameters()
 
     assert parameters['use_stamped'] is False
-    assert set(parameters['topics']) == {'teleop', 'autonomy'}
+    assert set(parameters['topics']) == {'teleop', 'global_stop'}
     assert parameters['topics']['teleop'] == {
         'topic': '/cmd_vel_teleop',
         'timeout': 0.15,
         'priority': 100,
     }
-    assert parameters['topics']['autonomy'] == {
-        'topic': '/cmd_vel_auto',
-        'timeout': 0.30,
-        'priority': 50,
+    assert parameters['topics']['global_stop'] == {
+        'topic': '/cmd_vel_stop',
+        'timeout': 0.10,
+        'priority': 255,
     }
     assert (
         parameters['topics']['teleop']['priority']
-        > parameters['topics']['autonomy']['priority']
+        < parameters['topics']['global_stop']['priority']
     )
-    assert 'locks' not in parameters
+    assert parameters['locks']['global_stop'] == {
+        'topic': '/paddock/stop_lock',
+        'timeout': 0.15,
+        'priority': 200,
+    }
 
 
 def test_launches_remap_only_mux_output_to_normalized_motor_input():
@@ -113,9 +118,7 @@ def _publish_for(executor, publisher, message, duration, period=0.02):
         executor.spin_once(timeout_sec=0.002)
 
 
-def test_runtime_arbitration_preemption_fallthrough_and_stale_silence(
-    monkeypatch,
-):
+def test_runtime_local_release_cannot_expose_legacy_autonomy(monkeypatch):
     domain_id = str(random.randint(120, 220))
     monkeypatch.setenv('ROS_DOMAIN_ID', domain_id)
     environment = os.environ.copy()
@@ -135,111 +138,59 @@ def test_runtime_arbitration_preemption_fallthrough_and_stale_silence(
     )
 
     rclpy.init()
-    probe = Node('stage2_mux_test_probe')
+    probe = Node('stage3_mux_test_probe')
     executor = SingleThreadedExecutor()
     executor.add_node(probe)
     outputs = []
-    output_times = []
-
-    def on_output(message):
-        outputs.append(message)
-        output_times.append(time.monotonic())
-
-    probe.create_subscription(Twist, '/cmd_vel', on_output, 10)
-    teleop_pub = probe.create_publisher(
-        Twist, '/cmd_vel_teleop', 10
-    )
-    auto_pub = probe.create_publisher(Twist, '/cmd_vel_auto', 10)
+    probe.create_subscription(Twist, '/cmd_vel', outputs.append, 10)
+    teleop_pub = probe.create_publisher(Twist, '/cmd_vel_teleop', 10)
+    legacy_auto_pub = probe.create_publisher(Twist, '/cmd_vel_auto', 10)
+    lock_pub = probe.create_publisher(Bool, '/paddock/stop_lock', 10)
     teleop = Twist()
     teleop.linear.x = 0.63
-    auto = Twist()
-    auto.linear.x = 0.21
+    legacy = Twist()
+    legacy.linear.x = 0.21
     brake = Twist()
-    brake.linear.x = 0.0
+
+    def publish(publisher, message, duration):
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            lock_pub.publish(Bool(data=False))
+            publisher.publish(message)
+            executor.spin_once(timeout_sec=0.01)
 
     try:
         assert _spin_until(
             executor,
-            lambda: len(
-                probe.get_subscriptions_info_by_topic('/cmd_vel_teleop')
-            ) == 1,
+            lambda: (
+                len(probe.get_subscriptions_info_by_topic(
+                    '/cmd_vel_teleop')) == 1
+                and len(probe.get_publishers_info_by_topic('/cmd_vel')) == 1
+            ),
             3.0,
         )
-        assert len(
-            probe.get_subscriptions_info_by_topic('/cmd_vel_auto')
-        ) == 1
+        assert probe.get_subscriptions_info_by_topic('/cmd_vel_auto') == []
         assert len(probe.get_publishers_info_by_topic('/cmd_vel')) == 1
-        assert probe.get_publishers_info_by_topic('/cmd_vel_nav') == []
-        assert all(
-            endpoint.topic_type == 'geometry_msgs/msg/Twist'
-            for endpoint in (
-                probe.get_subscriptions_info_by_topic('/cmd_vel_teleop')
-                + probe.get_subscriptions_info_by_topic('/cmd_vel_auto')
-                + probe.get_publishers_info_by_topic('/cmd_vel')
-            )
-        )
-        _spin_for(executor, 0.25)
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not outputs:
+            lock_pub.publish(Bool(data=False))
+            teleop_pub.publish(teleop)
+            executor.spin_once(timeout_sec=0.01)
+        assert outputs and outputs[-1].linear.x == pytest.approx(0.63)
 
         outputs.clear()
-        _publish_for(executor, auto_pub, auto, 0.15)
+        deadline = time.monotonic() + 0.35
+        while time.monotonic() < deadline:
+            lock_pub.publish(Bool(data=False))
+            teleop_pub.publish(brake)
+            legacy_auto_pub.publish(legacy)
+            executor.spin_once(timeout_sec=0.01)
         assert outputs
-        assert outputs[-1].linear.x == pytest.approx(0.21)
-
-        last_teleop = time.monotonic()
-        teleop_pub.publish(teleop)
-        assert _spin_until(
-            executor,
-            lambda: outputs and outputs[-1].linear.x == 0.63,
-            0.10,
-        )
-        output_count = len(outputs)
-        _publish_for(executor, auto_pub, auto, 0.10)
-        assert len(outputs) == output_count
-
-        first_fallthrough = None
-        deadline = last_teleop + 0.35
-        while time.monotonic() < deadline and first_fallthrough is None:
-            auto_pub.publish(auto)
-            before = len(outputs)
-            _spin_for(executor, 0.01)
-            for index in range(before, len(outputs)):
-                if outputs[index].linear.x == pytest.approx(0.21):
-                    first_fallthrough = output_times[index]
-                    break
-        assert first_fallthrough is not None
-        assert 0.15 <= first_fallthrough - last_teleop <= 0.22
-
-        published_at = time.monotonic()
-        teleop_pub.publish(teleop)
-        previous_count = len(outputs)
-        assert _spin_until(
-            executor,
-            lambda: len(outputs) > previous_count,
-            0.10,
-        )
-        assert outputs[-1].linear.x == pytest.approx(0.63)
-        assert output_times[-1] - published_at < 0.05
-
-        published_at = time.monotonic()
-        teleop_pub.publish(brake)
-        previous_count = len(outputs)
-        assert _spin_until(
-            executor,
-            lambda: len(outputs) > previous_count,
-            0.10,
-        )
-        assert outputs[-1].linear.x == 0.0
-        assert output_times[-1] - published_at < 0.05
+        assert all(message.linear.x == 0.0 for message in outputs)
 
         outputs.clear()
-        output_times.clear()
-        _spin_for(executor, 0.45)
-        assert outputs == []
-
-        auto_pub.publish(auto)
-        assert _spin_until(executor, lambda: bool(outputs), 0.10)
-        outputs.clear()
-        _spin_for(executor, 0.40)
+        publish(legacy_auto_pub, legacy, 0.40)
         assert outputs == []
     finally:
         executor.remove_node(probe)

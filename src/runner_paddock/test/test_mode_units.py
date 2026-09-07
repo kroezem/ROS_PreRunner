@@ -58,6 +58,28 @@ def test_only_supervisor_is_boot_enabled_and_controls_fixed_system_units():
     assert 'User=matti' in supervisor
 
 
+def test_persistent_local_control_is_boot_enabled_and_mode_independent():
+    local = source('runner-local-control.service')
+    mapping = (ROOT / 'src/runner_bringup/launch/map.launch.py').read_text()
+    autonomy = (
+        ROOT / 'src/runner_bringup/launch/autonomy.launch.py'
+    ).read_text()
+    local_launch = (
+        ROOT / 'src/runner_bringup/launch/teleop.launch.py'
+    ).read_text()
+
+    assert 'WantedBy=multi-user.target' in local
+    assert 'teleop.launch.py' in local
+    assert "package='joy'" in local_launch
+    assert "executable='teleop_node'" in local_launch
+    assert "package='twist_mux'" in local_launch
+    for application in (mapping, autonomy):
+        assert "package='joy'" not in application
+        assert "executable='teleop_node'" not in application
+        assert "package='twist_mux'" not in application
+        assert 'teleop.launch.py' not in application
+
+
 def test_command_authority_remains_persistent_but_offline_from_mux():
     authority = source('runner-command-authority.service')
     mux = (ROOT / 'src/runner_bringup/config/twist_mux.yaml').read_text()

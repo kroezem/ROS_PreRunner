@@ -1,0 +1,20 @@
+[Unit]
+Description=Runner persistent local control and sole command mux
+After=network.target runner-motor.service runner-stop-enforcer.service
+Wants=runner-stop-enforcer.service
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 launch runner_bringup teleop.launch.py'
+Restart=always
+RestartSec=1
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

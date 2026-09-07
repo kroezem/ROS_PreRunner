@@ -8,6 +8,7 @@ PACKAGE = Path(__file__).parents[1]
 AUTONOMY_LAUNCH = PACKAGE / 'launch' / 'autonomy.launch.py'
 NAV2_LAUNCH = PACKAGE / 'launch' / 'nav2.launch.py'
 BENCH_LAUNCH = PACKAGE / 'launch' / 'autonomy_bench.launch.py'
+LOCAL_CONTROL_LAUNCH = PACKAGE / 'launch' / 'teleop.launch.py'
 TASKS = PACKAGE.parents[1] / '.vscode' / 'tasks.json'
 
 
@@ -40,18 +41,11 @@ def test_composite_includes_nav2_once_and_passes_map_name():
     assert "launch_arguments={'map_name': map_name}.items()" in source
 
 
-def test_composite_adds_only_missing_command_chain_nodes():
-    """Nav2 supplies launched sensors; composite adds the command chain."""
+def test_composite_has_application_nodes_only():
+    """Persistent local control is absent from the AUTONOMY application."""
     packages = _node_packages(AUTONOMY_LAUNCH)
 
-    assert packages == [
-        'joy',
-        'runner_teleop',
-        'runner_teleop',
-        'runner_drive_adapter',
-        'runner_bringup',
-        'twist_mux',
-    ]
+    assert packages == ['runner_drive_adapter', 'runner_bringup']
     assert 'runner_encoder' not in packages
     assert 'robot_localization' not in packages
     assert not any(package.startswith('nav2_') for package in packages)
@@ -76,9 +70,10 @@ def test_no_launch_retains_removed_esc_mode():
         assert 'esc_mode' not in launch_file.read_text()
 
 
-def test_command_chain_parameters_match_the_stage2_bench():
-    """The integration does not alter Stage 2 behavior or output ownership."""
+def test_local_control_parameters_live_only_in_persistent_launch():
+    """DualSense, keyboard bridge, and mux share one persistent launch."""
     autonomy = AUTONOMY_LAUNCH.read_text()
+    local = LOCAL_CONTROL_LAUNCH.read_text()
     bench = BENCH_LAUNCH.read_text()
     required_fragments = (
         "'autorepeat_rate': 20.0, 'deadzone': 0.05",
@@ -90,16 +85,17 @@ def test_command_chain_parameters_match_the_stage2_bench():
         "executable='keyboard_bridge'",
         "'input_timeout': 0.15",
         "'speed_cap': 0.50",
-        "package='runner_drive_adapter'",
-        'parameters=[adapter_parameters, speed_envelope]',
         "package='twist_mux'",
         'parameters=[mux_parameters]',
         "remappings=[('/cmd_vel_out', '/cmd_vel')]",
     )
 
     for fragment in required_fragments:
-        assert fragment in autonomy
+        assert fragment in local
         assert fragment in bench
+
+    assert "package='runner_drive_adapter'" in autonomy
+    assert 'parameters=[adapter_parameters, speed_envelope]' in autonomy
 
     assert "executable='speed_envelope_observer'" in autonomy
     assert "executable='speed_envelope_observer'" not in bench
@@ -108,22 +104,24 @@ def test_command_chain_parameters_match_the_stage2_bench():
     assert "package='runner_motor'" not in bench
 
 
-def test_autonomy_owns_mux_but_not_persistent_hardware_nodes():
-    """Autonomy arbitrates commands without duplicating platform services."""
+def test_autonomy_does_not_own_mux_or_persistent_hardware_nodes():
+    """AUTONOMY contains no persistent owner."""
     packages = _node_packages(AUTONOMY_LAUNCH)
 
-    assert packages.count('twist_mux') == 1
+    assert packages.count('twist_mux') == 0
     assert 'runner_motor' not in packages
     assert 'runner_encoder' not in packages
 
 
-def test_composite_preserves_controller_and_mux_topic_ownership():
-    """Only the controller and mux retain their established output remaps."""
+def test_persistent_launch_owns_mux_output():
+    """Only the persistent launch remaps the existing mux output."""
     autonomy = AUTONOMY_LAUNCH.read_text()
+    local = LOCAL_CONTROL_LAUNCH.read_text()
     nav2 = NAV2_LAUNCH.read_text()
 
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in nav2
-    assert "remappings=[('/cmd_vel_out', '/cmd_vel')]" in autonomy
+    assert "remappings=[('/cmd_vel_out', '/cmd_vel')]" in local
+    assert "remappings=[('/cmd_vel_out', '/cmd_vel')]" not in autonomy
     assert "('/cmd_vel_nav', '/cmd_vel')" not in autonomy
     assert "'/speed_envelope/status'" not in autonomy
 

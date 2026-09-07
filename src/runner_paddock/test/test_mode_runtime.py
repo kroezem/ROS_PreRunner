@@ -25,6 +25,7 @@ from runner_paddock.mode_runtime import COMMON_NODES
 from runner_paddock.mode_runtime import Lifecycle
 from runner_paddock.mode_runtime import MAPPING_UNIT
 from runner_paddock.mode_runtime import ModeRuntime
+from runner_paddock.mode_runtime import PERSISTENT_LOCAL_NODES
 from runner_paddock.mode_runtime import UnitState
 from runner_paddock.mode_runtime import validate_map_bundle
 from runner_paddock.state_machine import Mode
@@ -50,7 +51,8 @@ class FakeSystemd:
         was_active = self.units[unit].active
         self.units[unit] = UnitState('inactive', 'dead')
         if was_active and all(not state.active for state in self.units.values()):
-            self.graph.clear()
+            for name in COMMON_NODES | AUTONOMY_ONLY_NODES:
+                self.graph.pop(name, None)
 
     def start(self, unit):
         self.operations.append(('start', unit))
@@ -76,7 +78,10 @@ def complete_map(directory: Path, name='studio'):
 
 def runtime(tmp_path, graph=None):
     """Build a fast runtime and collect every published lifecycle state."""
-    graph = Counter() if graph is None else graph
+    graph = (
+        Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
+        if graph is None else graph
+    )
     systemd = FakeSystemd(graph)
     published = []
     value = ModeRuntime(
@@ -120,7 +125,7 @@ def test_mapping_idle_autonomy_idle_is_serial_and_exclusive(tmp_path):
     assert autonomy.active_autonomy_map == 'studio'
     assert final == value.state
     assert final.mode == Mode.IDLE
-    assert not graph
+    assert graph == Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
     assert all(not state.active for state in systemd.units.values())
     assert [state.lifecycle for state in published] == [
         Lifecycle.TRANSITIONING, Lifecycle.STABLE,
@@ -139,7 +144,7 @@ def test_start_failure_cleans_partial_graph_and_faults_idle(tmp_path):
     assert result.mode == Mode.IDLE
     assert result.lifecycle == Lifecycle.FAULT
     assert 'injected start failure' in result.detail
-    assert not graph
+    assert graph == Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
     assert all(not state.active for state in systemd.units.values())
 
 
@@ -201,7 +206,7 @@ def test_reconcile_conflict_stops_both_and_faults(tmp_path):
 
     assert result.mode == Mode.IDLE
     assert result.lifecycle == Lifecycle.FAULT
-    assert not graph
+    assert graph == Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
     assert all(not state.active for state in systemd.units.values())
 
 

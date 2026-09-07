@@ -1,6 +1,8 @@
 import math
+import random
 import time
 
+from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
 import pytest
 import rclpy
@@ -20,10 +22,10 @@ from runner_teleop.teleop_node import FIXED_THROTTLE_MODE
 from runner_teleop.teleop_node import KEYBOARD_BRAKE_MODE
 from runner_teleop.teleop_node import KEYBOARD_DISARMED_MODE
 from runner_teleop.teleop_node import KEYBOARD_MOTION_MODE
-from runner_teleop.teleop_node import KEYBOARD_SUPPRESS_MODE
 from runner_teleop.teleop_node import L1_BUTTON_INDEX
 from runner_teleop.teleop_node import MANUAL_MODE
 from runner_teleop.teleop_node import R1_BUTTON_INDEX
+from runner_teleop.teleop_node import RELEASE_BRAKE_MODE
 from runner_teleop.teleop_node import TELEOP_SUPPRESS_MODE
 from runner_teleop.teleop_node import TeleopNode
 from runner_teleop.teleop_node import X_BUTTON_INDEX
@@ -47,13 +49,24 @@ class Logger:
         self.info_messages.append(message)
 
 
+class Clock:
+    class Now:
+        def to_msg(self):
+            return Time()
+
+    def now(self):
+        return self.Now()
+
+
 def make_node():
     node = TeleopNode.__new__(TeleopNode)
     node.pub = Publisher()
     node._setpoint_pub = Publisher()
     node._active_mode_pub = Publisher()
+    node._control_state_pub = Publisher()
     node._logger = Logger()
     node.get_logger = lambda: node._logger
+    node.get_clock = lambda: Clock()
     node._axis_steer = 0
     node._axis_reverse = 2
     node._axis_throttle = 5
@@ -74,6 +87,7 @@ def make_node():
     node._dpad_press_active = False
     node._controller_timeout = 0.15
     node._keyboard_state_timeout = 0.15
+    node._release_brake_duration = 0.35
     node._last_joy_at = None
     node._controller_live = False
     node._last_keyboard_state_at = None
@@ -90,6 +104,11 @@ def make_node():
     node._keyboard_suppress_ready = False
     node._keyboard_suppress_armed = False
     node._keyboard_suppress_rearm_ready = True
+    node._process_epoch = 'test-process'
+    node._takeover_epoch = 0
+    node._takeover_active = False
+    node._command_selected = False
+    node._release_brake_until = None
     return node
 
 
@@ -171,7 +190,7 @@ def keyboard_cycle(node, message):
 @pytest.mark.parametrize(
     'x,r1,l1,expected_mode,expected_command',
     [
-        (False, False, False, BRAKE_MODE, 0.0),
+        (False, False, False, BRAKE_MODE, None),
         (True, False, False, MANUAL_MODE, 0.5859375),
         (False, True, False, FIXED_THROTTLE_MODE, 0.30),
         (False, False, True, TELEOP_SUPPRESS_MODE, None),
@@ -329,8 +348,39 @@ def test_controller_timeout_releases_deadman_to_zero():
     node._last_joy_at -= node._controller_timeout + 0.01
     node.publish_cmd()
 
-    assert node._active_mode_pub.messages[-1].data == BRAKE_MODE
+    assert node._active_mode_pub.messages[-1].data == RELEASE_BRAKE_MODE
     assert node.pub.messages[-1].linear.x == 0.0
+
+
+def test_release_brake_is_bounded_then_inactive_source_is_silent(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(
+        'runner_teleop.teleop_node.time.monotonic',
+        lambda: now[0],
+    )
+    node = make_node()
+    cycle(node, joy(throttle=-1.0, x=True))
+    released, mode, _ = cycle(node, joy())
+
+    assert mode == RELEASE_BRAKE_MODE
+    assert released.linear.x == 0.0
+    count = len(node.pub.messages)
+    now[0] += node._release_brake_duration + 0.001
+    node.publish_cmd()
+
+    assert len(node.pub.messages) == count
+    assert node._active_mode_pub.messages[-1].data == BRAKE_MODE
+
+
+def test_takeover_epoch_retains_a_short_engagement_after_release():
+    node = make_node()
+    cycle(node, joy(x=True))
+    cycle(node, joy())
+
+    state = node._control_state_pub.messages[-1]
+    assert state.takeover_epoch == 1
+    assert not state.active
+    assert state.released
 
 
 def test_r1_release_with_l1_held_enters_suppression_next_cycle():
@@ -339,8 +389,8 @@ def test_r1_release_with_l1_held_enters_suppression_next_cycle():
 
     command, mode, _ = cycle(node, joy(l1=True))
 
-    assert mode == TELEOP_SUPPRESS_MODE
-    assert command is None
+    assert mode == RELEASE_BRAKE_MODE
+    assert command.linear.x == 0.0
 
 
 def test_l1_release_resumes_zero_brake_next_cycle():
@@ -350,25 +400,20 @@ def test_l1_release_resumes_zero_brake_next_cycle():
     command, mode, _ = cycle(node, joy(steer=-0.25))
 
     assert mode == BRAKE_MODE
-    assert command.linear.x == 0.0
-    assert command.angular.z == pytest.approx(-0.25)
+    assert command is None
 
 
-def test_brake_state_republishes_zero_and_diagnostics_each_cycle():
+def test_inactive_state_is_silent_but_republishes_diagnostics_each_cycle():
     node = make_node()
     node.on_joy(joy(steer=0.1))
 
     for _ in range(5):
         node.publish_cmd()
 
-    assert len(node.pub.messages) == 5
+    assert node.pub.messages == []
     assert len(node._setpoint_pub.messages) == 5
     assert len(node._active_mode_pub.messages) == 5
-    assert all(message.linear.x == 0.0 for message in node.pub.messages)
-    assert all(
-        message.angular.z == pytest.approx(0.1)
-        for message in node.pub.messages
-    )
+    assert len(node._control_state_pub.messages) == 5
     assert all(
         message.data == BRAKE_MODE
         for message in node._active_mode_pub.messages
@@ -411,7 +456,7 @@ def test_x_to_r1_latch_requires_r1_release_and_repress():
     assert manual.linear.x == pytest.approx(0.3125)
     assert inhibited_mode == FIXED_THROTTLE_INHIBITED_MODE
     assert inhibited.linear.x == 0.0
-    assert released_mode == BRAKE_MODE
+    assert released_mode == RELEASE_BRAKE_MODE
     assert released.linear.x == 0.0
     assert fixed_again_mode == FIXED_THROTTLE_MODE
     assert fixed_again.linear.x == pytest.approx(0.30)
@@ -438,7 +483,7 @@ def test_r1_released_first_clears_latch_while_x_stays_manual():
 
     assert mode == MANUAL_MODE
     assert command.linear.x == pytest.approx(0.1328125)
-    assert brake_mode == BRAKE_MODE
+    assert brake_mode == RELEASE_BRAKE_MODE
     assert brake.linear.x == 0.0
     assert fixed_mode == FIXED_THROTTLE_MODE
     assert fixed.linear.x == pytest.approx(0.30)
@@ -461,7 +506,7 @@ def test_create_share_no_longer_controls_teleop_suppression():
     command, mode, _ = cycle(node, joy(create=True))
 
     assert mode == BRAKE_MODE
-    assert command.linear.x == 0.0
+    assert command is None
 
 
 def dpad_press(node, direction, **buttons):
@@ -544,7 +589,9 @@ def test_dpad_works_in_every_mode_without_directly_commanding_motion(
 
     assert mode == expected_mode
     assert setpoint == pytest.approx(0.31)
-    if not buttons or buttons.get('r1'):
+    if not buttons:
+        assert command is None
+    elif buttons.get('r1'):
         assert command.linear.x == 0.0
     elif buttons.get('l1'):
         assert command is None
@@ -698,8 +745,8 @@ def test_keyboard_motion_brake_steering_and_suppression_priority():
     assert brake_mode == KEYBOARD_BRAKE_MODE
     assert brake.linear.x == 0.0
     assert brake.angular.z == -1.0
-    assert suppress_mode == KEYBOARD_SUPPRESS_MODE
-    assert suppressed is None
+    assert suppress_mode == RELEASE_BRAKE_MODE
+    assert suppressed.linear.x == 0.0
 
 
 def test_keyboard_reverse_publishes_negative_cmd_vel_teleop():
@@ -719,7 +766,7 @@ def test_keyboard_reverse_publishes_negative_cmd_vel_teleop():
     'steering',
     [-1.0, 0.0, 1.0],
 )
-def test_keyboard_neutral_steering_keeps_zero_brake(steering):
+def test_keyboard_neutral_steering_is_inactive_and_silent(steering):
     node = make_node()
 
     command, mode = keyboard_cycle(
@@ -728,8 +775,7 @@ def test_keyboard_neutral_steering_keeps_zero_brake(steering):
     )
 
     assert mode == BRAKE_MODE
-    assert command.linear.x == 0.0
-    assert command.angular.z == steering
+    assert command is None
 
 
 @pytest.mark.parametrize(
@@ -746,21 +792,19 @@ def test_controller_preempts_and_held_w_requires_release_repress(buttons):
     keyboard_cycle(node, keyboard_state(throttle=0.30, sequence=2))
 
     preempted, _, _ = cycle(node, joy(throttle=0.0, **buttons))
-    if buttons.get('l1'):
-        assert preempted is None
-    else:
-        assert preempted is not None
+    assert preempted is not None
 
     command, mode, _ = cycle(node, joy())
-    assert mode == KEYBOARD_DISARMED_MODE
+    assert mode == RELEASE_BRAKE_MODE
     assert command.linear.x == 0.0
 
+    node._release_brake_until = time.monotonic() - 1.0
     still_held, held_mode = keyboard_cycle(
         node,
         keyboard_state(throttle=0.30, sequence=3),
     )
     assert held_mode == KEYBOARD_DISARMED_MODE
-    assert still_held.linear.x == 0.0
+    assert still_held is None
 
     keyboard_cycle(node, keyboard_state(sequence=4))
     resumed, resumed_mode = keyboard_cycle(
@@ -790,15 +834,23 @@ def test_each_controller_clear_prevents_silent_autonomy_resume(buttons):
     cycle(node, joy(**buttons))
 
     command, mode, _ = cycle(node, joy())
-    assert command.linear.x == 0.0
-    assert mode == KEYBOARD_DISARMED_MODE
+    if buttons.get('l1'):
+        assert command is None
+        assert mode == KEYBOARD_DISARMED_MODE
+    else:
+        assert command.linear.x == 0.0
+        assert mode == RELEASE_BRAKE_MODE
 
     command, mode = keyboard_cycle(
         node,
         keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=3),
     )
-    assert command.linear.x == 0.0
-    assert mode == KEYBOARD_DISARMED_MODE
+    if buttons.get('l1'):
+        assert command is None
+        assert mode == KEYBOARD_DISARMED_MODE
+    else:
+        assert command.linear.x == 0.0
+        assert mode == RELEASE_BRAKE_MODE
 
     keyboard_cycle(
         node,
@@ -808,8 +860,8 @@ def test_each_controller_clear_prevents_silent_autonomy_resume(buttons):
         node,
         keyboard_state(mode=KeyboardState.MODE_SUPPRESS, sequence=5),
     )
-    assert command is None
-    assert mode == TELEOP_SUPPRESS_MODE
+    assert command.linear.x == 0.0
+    assert mode == RELEASE_BRAKE_MODE
 
 
 def test_sender_timeout_preserves_armed_autonomy_suppression(monkeypatch):
@@ -853,7 +905,7 @@ def test_sender_timeout_preserves_armed_autonomy_suppression(monkeypatch):
         ),
     )
     assert brake_mode == BRAKE_MODE
-    assert brake.linear.x == 0.0
+    assert brake is None
 
 
 def test_first_and_repeated_disarm_messages_publish_brake_immediately():
@@ -908,7 +960,7 @@ def test_stale_controller_state_expires_and_does_not_rearm_w(
     assert not node._manual_held
     assert not node._fixed_throttle_held
     assert not node._teleop_suppress_held
-    assert node._active_mode_pub.messages[-1].data == KEYBOARD_DISARMED_MODE
+    assert node._active_mode_pub.messages[-1].data == RELEASE_BRAKE_MODE
     assert node.pub.messages[-1].linear.x == 0.0
 
 
@@ -939,7 +991,7 @@ def test_teleop_defensively_invalidates_bad_keyboard_state(
     )
 
     assert active_mode == BRAKE_MODE
-    assert command.linear.x == 0.0
+    assert command is None
     assert not node._keyboard_valid
 
 
@@ -949,7 +1001,8 @@ def _spin_for(executor, duration):
         executor.spin_once(timeout_sec=0.01)
 
 
-def test_graph_topic_contract_rate_suppression_and_diagnostics():
+def test_graph_topic_contract_rate_suppression_and_diagnostics(monkeypatch):
+    monkeypatch.setenv('ROS_DOMAIN_ID', str(random.randint(120, 220)))
     rclpy.init()
     teleop = TeleopNode()
     probe = Node('teleop_stage2_test_probe')
@@ -982,16 +1035,7 @@ def test_graph_topic_contract_rate_suppression_and_diagnostics():
 
     try:
         _spin_for(executor, 0.32)
-        assert len(commands) >= 5
-        assert all(command.linear.x == 0.0 for command in commands)
-        intervals = [
-            later - earlier
-            for earlier, later in zip(command_times, command_times[1:])
-        ]
-        assert intervals
-        assert sum(intervals) / len(intervals) == pytest.approx(
-            0.05, abs=0.015
-        )
+        assert commands == []
         assert modes
         assert setpoints
 

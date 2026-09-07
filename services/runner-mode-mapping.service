@@ -1,7 +1,8 @@
 [Unit]
 Description=Runner mutually exclusive MAPPING application graph
 Conflicts=runner-mode-autonomy.service
-After=runner-motor.service runner-encoder.service
+After=runner-motor.service runner-encoder.service runner-local-control.service
+Wants=runner-local-control.service
 
 [Service]
 Type=simple

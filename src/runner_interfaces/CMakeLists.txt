@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AdapterState.msg"
   "msg/EncoderState.msg"
   "msg/KeyboardState.msg"
+  "msg/LocalControlState.msg"
   "msg/CommandAuthorityState.msg"
   "msg/ModeRequest.msg"
   "msg/ModeState.msg"

@@ -426,6 +426,6 @@ def test_stage2_topic_ownership_and_no_collision_monitor_remain():
     )
 
     assert "create_publisher(Twist, '/cmd_vel_auto', 10)" in adapter
-    assert 'topic: /cmd_vel_auto' in mux
+    assert 'topic: /cmd_vel_auto' not in mux
     assert "('/cmd_vel_out', '/cmd_vel')" not in LAUNCH_PATH.read_text()
     assert 'collision_monitor' not in stage3_text.lower()

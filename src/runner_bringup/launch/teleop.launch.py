@@ -1,7 +1,8 @@
-# map.launch.py, localize.launch.py, and teleop.launch.py are mutually exclusive.
-# Each is a complete runnable entry point; run exactly one.
-# Running more than one may duplicate application and sensor resources.
-# Internal tiers under launch/include are not standalone production entry points.
+# Persistent local-control tier: one joy_node, keyboard bridge, runner_teleop,
+# and the existing twist_mux. Owned by runner-local-control.service and kept
+# alive across IDLE/MAPPING/AUTONOMY. map.launch.py and localize.launch.py are
+# application tiers that run alongside this launch and no longer construct
+# joy/teleop/mux nodes. Engineering direct runs must not start a second copy.
 
 import os
 

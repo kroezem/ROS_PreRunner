@@ -25,8 +25,12 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from runner_interfaces.msg import EncoderState, StopRequest, StopState
-from sensor_msgs.msg import Joy
+from runner_interfaces.msg import (
+    EncoderState,
+    LocalControlState,
+    StopRequest,
+    StopState,
+)
 from std_msgs.msg import Bool
 
 LOCK_TIMEOUT = 0.15
@@ -79,8 +83,9 @@ class StopEnforcer(Node):
         self.final_at = None
         self.encoder_at = None
         self.stationary = False
-        self.joy_at = None
-        self.neutral = False
+        self.local_at = None
+        self.local_released = False
+        self.local_neutral = False
         self.started = time.monotonic()
         self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.write = None
@@ -99,7 +104,12 @@ class StopEnforcer(Node):
         self.zero_pub = self.create_publisher(Twist, '/cmd_vel_stop', qos)
         self.state_pub = self.create_publisher(StopState, '/paddock/stop_state', 1)
         self.create_subscription(EncoderState, '/wheel/encoder_state', self.on_encoder, 1)
-        self.create_subscription(Joy, '/joy', self.on_joy, 1)
+        self.create_subscription(
+            LocalControlState,
+            '/teleop/control_state',
+            self.on_local_control,
+            1,
+        )
         self.create_subscription(Twist, '/cmd_vel', self.on_final, 1)
         self.create_subscription(
             StopRequest,
@@ -117,11 +127,10 @@ class StopEnforcer(Node):
         self.encoder_at = time.monotonic()
         self.stationary = message.stationary
 
-    def on_joy(self, message):
-        self.joy_at = time.monotonic()
-        self.neutral = (len(message.buttons) > 5 and len(message.axes) > 5
-                        and not any(message.buttons[i] for i in (0, 4, 5))
-                        and message.axes[2] >= 0.9 and message.axes[5] >= 0.9)
+    def on_local_control(self, message):
+        self.local_at = time.monotonic()
+        self.local_released = message.released
+        self.local_neutral = message.neutral
 
     def on_final(self, message):
         if self.locked and message.linear.x == 0 and message.angular.z == 0:
@@ -134,9 +143,9 @@ class StopEnforcer(Node):
             return 'ENCODER_STALE'
         if not self.stationary:
             return 'NOT_STATIONARY'
-        if self.joy_at is None or now - self.joy_at > 0.20:
+        if self.local_at is None or now - self.local_at > 0.20:
             return 'LOCAL_STATUS_STALE'
-        if not self.neutral:
+        if not self.local_released or not self.local_neutral:
             return 'LOCAL_NOT_NEUTRAL'
         if self.fault or not self.durable or self.write:
             return self.fault or 'PERSISTENCE_PENDING'

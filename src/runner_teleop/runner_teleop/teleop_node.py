@@ -9,12 +9,13 @@ steering. The node never publishes the mux-owned ``/cmd_vel`` topic.
 from decimal import Decimal
 import math
 import time
+import uuid
 
 from geometry_msgs.msg import Twist
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from runner_interfaces.msg import KeyboardState
+from runner_interfaces.msg import KeyboardState, LocalControlState
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float32, String
 
@@ -35,9 +36,11 @@ KEYBOARD_BRAKE_MODE = 'keyboard_brake'
 KEYBOARD_MOTION_MODE = 'keyboard_motion'
 KEYBOARD_SUPPRESS_MODE = TELEOP_SUPPRESS_MODE
 KEYBOARD_DISARMED_MODE = 'keyboard_disarmed'
+RELEASE_BRAKE_MODE = 'release_brake'
 
 DEFAULT_INPUT_TIMEOUT = 0.15
 DEFAULT_MANUAL_TRIGGER_EXPO = 0.50
+DEFAULT_RELEASE_BRAKE_DURATION = 0.35
 
 NEUTRAL_US = 1500
 FWD_ONSET_US = 1550
@@ -165,6 +168,10 @@ class TeleopNode(Node):
             'keyboard_state_timeout',
             DEFAULT_INPUT_TIMEOUT,
         )
+        self.declare_parameter(
+            'release_brake_duration',
+            DEFAULT_RELEASE_BRAKE_DURATION,
+        )
 
         self._axis_steer = self.get_parameter('axis_steer').value
         # Keep the deployed parameter name for launch compatibility; L2 is
@@ -193,6 +200,9 @@ class TeleopNode(Node):
         self._keyboard_state_timeout = self.get_parameter(
             'keyboard_state_timeout'
         ).value
+        self._release_brake_duration = self.get_parameter(
+            'release_brake_duration'
+        ).value
         if (
             not isinstance(self._controller_timeout, float)
             or not math.isfinite(self._controller_timeout)
@@ -206,6 +216,14 @@ class TeleopNode(Node):
         ):
             raise ValueError(
                 'keyboard_state_timeout must be a positive float'
+            )
+        if (
+            not isinstance(self._release_brake_duration, float)
+            or not math.isfinite(self._release_brake_duration)
+            or self._release_brake_duration <= 0.15
+        ):
+            raise ValueError(
+                'release_brake_duration must be finite and exceed mux timeout'
             )
         _validate_manual_trigger_expo(self._manual_trigger_expo)
         try:
@@ -230,6 +248,9 @@ class TeleopNode(Node):
         )
         self._active_mode_pub = self.create_publisher(
             String, '/teleop/active_mode', 10
+        )
+        self._control_state_pub = self.create_publisher(
+            LocalControlState, '/teleop/control_state', 10
         )
         self.create_subscription(Joy, '/joy', self.on_joy, 10)
         self.create_subscription(
@@ -265,6 +286,11 @@ class TeleopNode(Node):
         self._keyboard_suppress_ready = False
         self._keyboard_suppress_armed = False
         self._keyboard_suppress_rearm_ready = True
+        self._process_epoch = str(uuid.uuid4())
+        self._takeover_epoch = 0
+        self._takeover_active = False
+        self._command_selected = False
+        self._release_brake_until = None
         self.get_logger().info(
             'runner_teleop ready  |  X=manual  R1=fixed throttle  '
             'L1=teleop suppress  L-stick=steer  L2=reverse'
@@ -322,6 +348,10 @@ class TeleopNode(Node):
         self._manual_held = manual_held
         self._fixed_throttle_held = fixed_throttle_held
         self._teleop_suppress_held = teleop_suppress_held
+        takeover_active = manual_held or fixed_throttle_held
+        if takeover_active and not self._takeover_active:
+            self._takeover_epoch += 1
+        self._takeover_active = takeover_active
         if manual_held or fixed_throttle_held or teleop_suppress_held:
             self._disarm_held_keyboard_motion()
             self._keyboard_suppress_armed = False
@@ -449,6 +479,7 @@ class TeleopNode(Node):
             self._manual_held = False
             self._fixed_throttle_held = False
             self._teleop_suppress_held = False
+            self._takeover_active = False
             self.fixed_throttle_inhibited_until_r1_release = False
             self._steer = 0.0
             self._manual_cmd = 0.0
@@ -461,8 +492,33 @@ class TeleopNode(Node):
         ):
             self._invalidate_keyboard()
 
+    def _publish_control_state(self, now, mode):
+        state = LocalControlState()
+        state.stamp = self.get_clock().now().to_msg()
+        state.process_epoch = self._process_epoch
+        state.takeover_epoch = self._takeover_epoch
+        state.connected = self._controller_live
+        state.active = self._takeover_active
+        state.neutral = (
+            not self._controller_live
+            or (
+                not self._manual_held
+                and not self._fixed_throttle_held
+                and self._throttle <= THROTTLE_DEADZONE
+                and self._reverse <= THROTTLE_DEADZONE
+            )
+        )
+        state.released = not self._takeover_active
+        state.sample_age_sec = (
+            -1.0 if self._last_joy_at is None
+            else float(max(0.0, now - self._last_joy_at))
+        )
+        state.mode = mode
+        self._control_state_pub.publish(state)
+
     def publish_cmd(self):
-        self._expire_inputs(time.monotonic())
+        now = time.monotonic()
+        self._expire_inputs(now)
         mode = _active_mode(
             self._manual_held,
             self._fixed_throttle_held,
@@ -472,23 +528,32 @@ class TeleopNode(Node):
         self._setpoint_pub.publish(
             Float32(data=self._fixed_throttle_setpoint)
         )
+        selected = False
         if mode == MANUAL_MODE:
+            selected = True
             command = self._manual_cmd
-        elif mode == FIXED_THROTTLE_MODE:
+        elif mode in (
+            FIXED_THROTTLE_MODE,
+            FIXED_THROTTLE_INHIBITED_MODE,
+        ):
+            selected = True
             if self._reverse > THROTTLE_DEADZONE:
                 command = -self._fixed_throttle_setpoint
-            elif self._throttle > THROTTLE_DEADZONE:
+            elif (
+                mode == FIXED_THROTTLE_MODE
+                and self._throttle > THROTTLE_DEADZONE
+            ):
                 command = self._fixed_throttle_setpoint
             else:
                 command = 0.0
         elif mode == TELEOP_SUPPRESS_MODE:
-            self._active_mode_pub.publish(String(data=mode))
-            return
+            command = 0.0
         elif (
             self._keyboard_valid
             and self._keyboard_mode & KeyboardState.MODE_BRAKE
         ):
             mode = KEYBOARD_BRAKE_MODE
+            selected = True
             command = 0.0
             self._steer = self._keyboard_steer
         elif (
@@ -496,14 +561,14 @@ class TeleopNode(Node):
             and self._keyboard_suppress_armed
         ):
             mode = TELEOP_SUPPRESS_MODE
-            self._active_mode_pub.publish(String(data=mode))
-            return
+            command = 0.0
         elif (
             self._keyboard_valid
             and self._keyboard_motion_requested
             and self._keyboard_motion_armed
         ):
             mode = KEYBOARD_MOTION_MODE
+            selected = True
             command = self._keyboard_throttle
             self._steer = self._keyboard_steer
         elif self._keyboard_valid:
@@ -520,7 +585,26 @@ class TeleopNode(Node):
         else:
             command = 0.0
 
+        if self._command_selected and not selected:
+            self._release_brake_until = now + self._release_brake_duration
+        self._command_selected = selected
+        if selected:
+            self._release_brake_until = None
+        elif (
+            self._release_brake_until is not None
+            and now < self._release_brake_until
+        ):
+            mode = RELEASE_BRAKE_MODE
+            command = 0.0
+            self._steer = 0.0
+        else:
+            self._release_brake_until = None
+            self._active_mode_pub.publish(String(data=mode))
+            self._publish_control_state(now, mode)
+            return
+
         self._active_mode_pub.publish(String(data=mode))
+        self._publish_control_state(now, mode)
         msg = Twist()
         msg.linear.x = command
         msg.angular.z = self._steer

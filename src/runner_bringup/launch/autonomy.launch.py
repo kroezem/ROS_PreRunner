@@ -22,18 +22,13 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    """Combine Nav2 and the Stage 2 command chain without duplicate sensors."""
+    """Launch only the AUTONOMY application tier."""
     bringup_share = get_package_share_directory('runner_bringup')
     adapter_share = get_package_share_directory('runner_drive_adapter')
     nav2_launch = os.path.join(
         bringup_share,
         'launch',
         'nav2.launch.py',
-    )
-    mux_parameters = os.path.join(
-        bringup_share,
-        'config',
-        'twist_mux.yaml',
     )
     adapter_parameters = os.path.join(
         adapter_share,
@@ -57,47 +52,6 @@ def generate_launch_description():
             launch_arguments={'map_name': map_name}.items(),
         ),
         Node(
-            package='joy',
-            executable='joy_node',
-            name='joy_node',
-            output='screen',
-            parameters=[{'autorepeat_rate': 20.0, 'deadzone': 0.05}],
-        ),
-        Node(
-            package='runner_teleop',
-            executable='keyboard_bridge',
-            name='keyboard_bridge',
-            output='screen',
-            parameters=[{
-                'bind_address': '0.0.0.0',
-                'port': 49321,
-                'allowed_source_ip': '',
-                'input_timeout': 0.15,
-                'speed_cap': 0.50,
-                'publication_rate': 20.0,
-                'autonomy_latch_timeout': 600.0,
-            }],
-        ),
-        Node(
-            package='runner_teleop',
-            executable='teleop_node',
-            name='runner_teleop',
-            output='screen',
-            parameters=[{
-                'axis_steer': 0,
-                'axis_brake': 2,
-                'axis_throttle': 5,
-                'deadman_button': 0,
-                'manual_trigger_expo': 0.50,
-                'fixed_throttle_initial_setpoint': 0.30,
-                'fixed_throttle_step': 0.01,
-                'fixed_throttle_max_setpoint': 0.50,
-                'fixed_throttle_min_setpoint': 0.00,
-                'controller_timeout': 0.15,
-                'keyboard_state_timeout': 0.15,
-            }],
-        ),
-        Node(
             package='runner_drive_adapter',
             executable='drive_adapter',
             name='drive_adapter',
@@ -113,13 +67,5 @@ def generate_launch_description():
                 'origin_file': speed_envelope,
                 'request_timeout_sec': 0.25,
             }],
-        ),
-        Node(
-            package='twist_mux',
-            executable='twist_mux',
-            name='twist_mux',
-            output='screen',
-            parameters=[mux_parameters],
-            remappings=[('/cmd_vel_out', '/cmd_vel')],
         ),
     ])

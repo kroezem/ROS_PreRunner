@@ -25,6 +25,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
+from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
@@ -36,7 +37,6 @@ from runner_paddock.command_supervisor import ControlEvent
 from runner_paddock.command_supervisor import SupervisorResult
 from runner_paddock.command_supervisor import VelocityCommand
 from runner_paddock.state_machine import Mode
-from sensor_msgs.msg import Joy
 
 
 RAW_AUTONOMY_TOPIC = '/cmd_vel_auto_raw'
@@ -46,18 +46,12 @@ CONTROL_EVENT_TOPIC = '/paddock/control_event'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 LEASE_STATE_TOPIC = '/paddock/control_lease'
-DUALSENSE_TOPIC = '/joy'
+LOCAL_CONTROL_TOPIC = '/teleop/control_state'
 DEFAULT_SUPERVISION_PERIOD_SEC = 0.010
-DEFAULT_DUALSENSE_TIMEOUT_SEC = 0.200
+DEFAULT_LOCAL_CONTROL_TIMEOUT_SEC = 0.100
 DEFAULT_STOP_STATE_TIMEOUT_SEC = 0.150
 STOP_REQUEST_TOPIC = '/paddock/internal/stop_request'
 STOP_STATE_TOPIC = '/paddock/stop_state'
-X_BUTTON_INDEX = 0
-R1_BUTTON_INDEX = 5
-
-
-def _button_held(message: Joy, index: int) -> bool:
-    return index < len(message.buttons) and bool(message.buttons[index])
 
 
 def _from_twist(message: Twist) -> VelocityCommand:
@@ -153,10 +147,10 @@ class CommandAuthorityNode(Node):
                 DEFAULT_SUPERVISION_PERIOD_SEC,
             ).value
         )
-        self._dualsense_timeout = float(
+        self._local_control_timeout = float(
             self.declare_parameter(
-                'dualsense_timeout_sec',
-                DEFAULT_DUALSENSE_TIMEOUT_SEC,
+                'local_control_timeout_sec',
+                DEFAULT_LOCAL_CONTROL_TIMEOUT_SEC,
             ).value
         )
         active_map = str(
@@ -167,11 +161,11 @@ class CommandAuthorityNode(Node):
                 'supervision_period_sec must be finite and positive'
             )
         if (
-            not math.isfinite(self._dualsense_timeout)
-            or self._dualsense_timeout <= 0
+            not math.isfinite(self._local_control_timeout)
+            or not 0 < self._local_control_timeout < 0.15
         ):
             raise ValueError(
-                'dualsense_timeout_sec must be finite and positive'
+                'local_control_timeout_sec must be finite and below mux timeout'
             )
 
         self._supervisor = CommandSupervisor(
@@ -179,7 +173,8 @@ class CommandAuthorityNode(Node):
             raw_autonomy_timeout_sec=raw_timeout,
             active_autonomy_map=active_map,
         )
-        self._last_joy_at = None
+        self._last_local_control_at = None
+        self._local_control_identity = None
         self._dualsense_active = False
         self._requester_id = str(uuid.uuid4())
         self._stop_request_id = 0
@@ -221,7 +216,12 @@ class CommandAuthorityNode(Node):
         self.create_subscription(
             ModeState, MODE_STATE_TOPIC, self._on_mode, mode_qos
         )
-        self.create_subscription(Joy, DUALSENSE_TOPIC, self._on_joy, 10)
+        self.create_subscription(
+            LocalControlState,
+            LOCAL_CONTROL_TOPIC,
+            self._on_local_control,
+            10,
+        )
         self.create_subscription(
             StopState,
             STOP_STATE_TOPIC,
@@ -344,13 +344,20 @@ class CommandAuthorityNode(Node):
         )
         self._apply(result)
 
-    def _on_joy(self, message: Joy) -> None:
+    def _on_local_control(self, message: LocalControlState) -> None:
         now = time.monotonic()
-        self._last_joy_at = now
-        active = (
-            _button_held(message, X_BUTTON_INDEX)
-            or _button_held(message, R1_BUTTON_INDEX)
-        )
+        self._last_local_control_at = now
+        identity = (message.process_epoch, message.takeover_epoch)
+        if identity != self._local_control_identity:
+            self._local_control_identity = identity
+            # A process/takeover epoch edge must revoke remote grants even if
+            # engagement and release occurred between two status samples.
+            if not self._dualsense_active:
+                self._dualsense_active = True
+                self._apply(
+                    self._supervisor.set_dualsense_active(True, now)
+                )
+        active = message.active
         if active == self._dualsense_active:
             return
         self._dualsense_active = active
@@ -367,13 +374,18 @@ class CommandAuthorityNode(Node):
         ):
             self._publish_stop_request(now)
         if (
-            self._dualsense_active
-            and self._last_joy_at is not None
-            and now - self._last_joy_at > self._dualsense_timeout
+            not self._dualsense_active
+            and (
+                self._last_local_control_at is None
+                or now - self._last_local_control_at
+                > self._local_control_timeout
+            )
         ):
-            self._dualsense_active = False
+            # Missing local status closes remote grants before the 150 ms mux
+            # input can expire and expose a lower-priority command.
+            self._dualsense_active = True
             self._apply(
-                self._supervisor.set_dualsense_active(False, now)
+                self._supervisor.set_dualsense_active(True, now)
             )
         self._apply(self._supervisor.tick(now))
 

@@ -1,7 +1,4 @@
-# map.launch.py, localize.launch.py, and teleop.launch.py are mutually exclusive.
-# Each is a complete runnable entry point; run exactly one.
-# Running more than one may duplicate UART sensor or PWM motor ownership.
-# Internal tiers under launch/include are not standalone production entry points.
+# AUTONOMY localization application tier. Local control is persistent.
 
 import os
 from pathlib import Path
@@ -73,8 +70,7 @@ def _configure_map(context):
 
 def generate_launch_description():
     package_share = get_package_share_directory('runner_bringup')
-    launch_dir = os.path.join(package_share, 'launch')
-    include_dir = os.path.join(launch_dir, 'include')
+    include_dir = os.path.join(package_share, 'launch', 'include')
     map_file_name = LaunchConfiguration('map_file_name')
 
     return LaunchDescription([
@@ -96,6 +92,4 @@ def generate_launch_description():
                 'map_file_name': map_file_name,
             }.items(),
         ),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(
-            os.path.join(launch_dir, 'teleop.launch.py'))),
     ])
