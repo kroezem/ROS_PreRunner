@@ -169,3 +169,98 @@ deliberately deferred to their later stage).
   is added but not installed under `/etc/systemd/system` (needs root).
 - Autonomous motion remains intentionally disconnected from the mux; the legacy
   autonomy mux input was not reintroduced.
+
+## Stage 5 — one real navigation/mission runtime
+
+Backend only. No mux change, no hold-to-RUN motion authorization, no frontend.
+Traction stays physically disconnected; this stage does not move the vehicle.
+
+### Single Nav2 mission owner
+
+New node `runner_navigation_runtime` (`runner_bringup`, application-tier, started
+by `nav2.launch.py`) is the *only* component that owns Nav2 mission action
+clients. It holds one `NavigateToPose` and one `NavigateThroughPoses` client —
+one mission execution component, not one client. The retired
+`foxglove_goal_bridge` node, its `/move_base_simple/goal`, `/runner/waypoint`,
+`/runner/route_control` and `/teleop/keyboard_state` ingress, its entry point and
+its test are removed in the same change; its generation-tracking,
+cancellation-retry and delayed-callback protection are refactored into the new
+runtime. `mode_runtime.AUTONOMY_ONLY_NODES` now expects
+`/runner_navigation_runtime` instead of `/foxglove_goal_bridge`.
+`keyboard_bridge` still publishes `/runner/route_control`; that topic simply has
+no production consumer now (its retirement is the keyboard cutover's job).
+
+### Interfaces
+
+- `runner_interfaces/NavigationRequest` — authorized `OP_SELECT` / `OP_DISPATCH`
+  / `OP_CANCEL` with a real map-frame `geometry_msgs/PoseStamped[]`, immutable
+  `mission_id`, monotonic `mission_revision`, bound `runtime_epoch` and `map_id`.
+  Sole writer: the command authority.
+- `runner_interfaces/NavigationState` — truthful lifecycle
+  `IDLE / DISPATCHING / ACTIVE / CANCELING / SUCCEEDED / FAILED / CANCELED`, plus
+  process `boot_id`, `mission_valid`, `action_generation`, `goal_uuid`,
+  `nav2_status`, `error_code`. Sole writer: the navigation runtime. `ACTIVE` is
+  reported only after Nav2 has actually accepted a goal handle — never on
+  dispatch intent.
+- `PaddockControlEvent` gains `goal_frame` / `goal_x` / `goal_y` / `goal_yaw`;
+  `EVENT_GOAL_SELECTED` now carries the operator's real pose instead of the
+  previous fabricated `(0, 0, 0)` `GoalIntent`. Non-finite goal poses are
+  rejected.
+
+### Generation / epoch invalidation
+
+Separate identities: process `boot_id`, `runtime_epoch` (from `ModeState`),
+logical `mission_revision`, and `action_generation`. Every asynchronous Nav2
+callback (`on_goal_response`, feedback, `on_result`, cancel response) is checked
+against the live `action_generation` *and* the live goal handle; a stale one is
+dropped and can never overwrite current mission state or reopen a grant. A
+`mission_revision` that is not strictly newer cannot rebind the mission. On a
+`runtime_epoch`/map change or on the runtime leaving AUTONOMY, the logical
+mission is invalidated and any in-flight action is canceled. On restart the new
+`boot_id` makes any previously reported state stale, and the first dispatch
+after boot issues a best-effort `CancelGoal` to both action servers before
+sending, so an orphaned server goal is never adopted.
+
+### Authority wiring
+
+The command authority publishes `/paddock/navigation_request`: `OP_SELECT` when
+it accepts a new goal intent (fresh `mission_id`, bumped `mission_revision`),
+`OP_DISPATCH` on the dispatch-intent edge, `OP_CANCEL` on RUN release, STOP,
+DualSense takeover, lease loss, mode/epoch change or goal clearing. It subscribes
+`/paddock/navigation_state` and now derives `CommandAuthorityState.autonomy_
+action_active` from the runtime's real Nav2 lifecycle instead of the reducer's
+optimistic `navigation_active` flag. RUN-release keeps the logical mission as a
+deliberate-continuation candidate (Q2); epoch/map change and leaving AUTONOMY do
+not.
+
+### Validation
+
+- `colcon build` clean for `runner_interfaces`, `runner_paddock`,
+  `runner_bringup`.
+- Package tests: `runner_paddock` 106 passed; `runner_bringup` 56 passed, 1
+  skipped, including new `test_navigation_runtime.py` (pose validation,
+  select/dispatch/cancel lifecycle, stale-generation result/acceptance guard,
+  stale `mission_revision` guard, epoch-change and leaving-AUTONOMY
+  invalidation, cancel-before-delivery).
+- Live software smoke (isolated `ROS_DOMAIN_ID`, no Nav2): the node starts and
+  publishes truthful `IDLE`; a `SELECT` binds `mission_valid` with the real
+  pose and stays `IDLE`; `DISPATCH` with no Nav2 server present holds at
+  `DISPATCHING` (never a fake `ACTIVE`); `CANCEL` reaches `CANCELED` with the
+  logical mission retained; a new `runtime_epoch` invalidates the mission.
+- Final system left safe: no navigation runtime process left running; live
+  `/paddock/mode_state` back to `IDLE/STABLE`, authority `NONE`,
+  `brake_intent: true`; traction disconnected throughout.
+
+### Hardware/integration validation pending (Stage 5)
+
+- A real Nav2 goal end-to-end (`SELECT → DISPATCH → NAV2_ACCEPTED → EXECUTING →
+  terminal`) and a real cancel against a live `bt_navigator` were not run: it
+  needs the managed AUTONOMY unit up with a verified map plus a held
+  command-authority lease, and the persistent operator services on this Pi are
+  still running pre-Stage-4/5 code. Covered by source and the isolated unit
+  tests; needs a hands-on run after a service restart/redeploy.
+- The delayed-old-`Twist`-across-cancellation quiescence acceptance (spec §10)
+  belongs to the Stage 7 controller-boundary cutover; Stage 5 owns mission
+  lifecycle only and the converter/mux seam is untouched.
+- Autonomous velocity remains intentionally disconnected from the mux; the
+  legacy `/cmd_vel_auto` mux input was not reintroduced.

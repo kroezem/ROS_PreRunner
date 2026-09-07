@@ -96,18 +96,12 @@ def generate_launch_description():
     )
     map_file_name = LaunchConfiguration('map_file_name')
     static_yaml = LaunchConfiguration('static_yaml')
-    route_file = LaunchConfiguration('route_file')
 
     return LaunchDescription([
         DeclareLaunchArgument(
             'map_name',
             description='Required basename of both map artifact sets in '
             f'{MAP_DIRECTORY}',
-        ),
-        DeclareLaunchArgument(
-            'route_file',
-            default_value='~/.ros/runner_route.json',
-            description='Persistent Foxglove route file',
         ),
         OpaqueFunction(function=_configure_map),
         IncludeLaunchDescription(PythonLaunchDescriptionSource(
@@ -165,10 +159,9 @@ def generate_launch_description():
         ),
         Node(
             package='runner_bringup',
-            executable='foxglove_goal_bridge',
-            name='foxglove_goal_bridge',
+            executable='navigation_runtime',
+            name='runner_navigation_runtime',
             output='screen',
-            parameters=[{'route_file': route_file}],
         ),
         Node(
             package='nav2_lifecycle_manager',

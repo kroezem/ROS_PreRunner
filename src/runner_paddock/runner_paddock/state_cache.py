@@ -38,6 +38,7 @@ class StateCache:
         'mode': 0.5,
         'command_authority': 0.5,
         'map_state': 3.0,
+        'navigation_state': 2.0,
         'plan': 2.0,
     }
 
@@ -49,6 +50,7 @@ class StateCache:
             'mode': _Entry(),
             'command_authority': _Entry(),
             'map_state': _Entry(),
+            'navigation_state': _Entry(),
             'map': _Entry(),
             'plan': _Entry(),
         }
@@ -74,7 +76,10 @@ class StateCache:
         with self._lock:
             values = {
                 name: deepcopy(self._entries[name].value)
-                for name in ('pose', 'mode', 'command_authority', 'map_state')
+                for name in (
+                    'pose', 'mode', 'command_authority', 'map_state',
+                    'navigation_state',
+                )
             }
             sources = {
                 name: self._source_health(name, entry, now)

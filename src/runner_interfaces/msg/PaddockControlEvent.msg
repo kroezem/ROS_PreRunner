@@ -16,3 +16,12 @@ uint64 sequence
 string client_id
 string lease_id
 uint8 event
+
+# Real map-frame goal pose, only meaningful for EVENT_GOAL_SELECTED. The
+# authority binds these coordinates verbatim into the logical mission it
+# forwards to the navigation runtime; no placeholder pose is ever fabricated.
+# goal_frame defaults to "map" when empty. yaw is radians.
+string goal_frame
+float64 goal_x
+float64 goal_y
+float64 goal_yaw

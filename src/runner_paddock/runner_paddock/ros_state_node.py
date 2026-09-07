@@ -29,6 +29,7 @@ from rclpy.qos import ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import MapState
 from runner_interfaces.msg import ModeState
+from runner_interfaces.msg import NavigationState
 from runner_paddock.state_cache import StateCache
 from tf2_ros import Buffer
 from tf2_ros import TransformException
@@ -39,6 +40,7 @@ MAP_TOPIC = '/map'
 PLAN_TOPIC = '/plan'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
+NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MAP_FRAME = 'map'
 ROBOT_FRAME = 'base_link'
@@ -106,6 +108,12 @@ class RosStateNode(Node):
         )
         self.create_subscription(
             MapState, MAP_STATE_TOPIC, self._on_map_state, map_qos
+        )
+        self.create_subscription(
+            NavigationState,
+            NAVIGATION_STATE_TOPIC,
+            self._on_navigation_state,
+            map_qos,
         )
         self.create_subscription(
             CommandAuthorityState,
@@ -219,6 +227,30 @@ class RosStateNode(Node):
         except (TypeError, ValueError) as error:
             self.get_logger().warning(
                 f'Rejected invalid {MAP_STATE_TOPIC}: {error}'
+            )
+
+    def _on_navigation_state(self, message: NavigationState) -> None:
+        try:
+            self._cache.update('navigation_state', {
+                'stamp': _stamp(message.stamp),
+                'boot_id': message.boot_id,
+                'state': int(message.state),
+                'mission_id': message.mission_id,
+                'mission_revision': int(message.mission_revision),
+                'runtime_epoch': int(message.runtime_epoch),
+                'map_id': message.map_id,
+                'mission_type': int(message.mission_type),
+                'mission_valid': bool(message.mission_valid),
+                'action_generation': int(message.action_generation),
+                'goal_uuid': message.goal_uuid,
+                'nav2_status': int(message.nav2_status),
+                'error_code': int(message.error_code),
+                'error_meaning': message.error_meaning,
+                'detail': message.detail,
+            })
+        except (TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected invalid {NAVIGATION_STATE_TOPIC}: {error}'
             )
 
     def _on_authority(self, message: CommandAuthorityState) -> None:

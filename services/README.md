@@ -57,7 +57,21 @@ and no `[Install]` section, so they cannot be enabled at boot:
   TF tier, one estimation tier, and mapping slam_toolbox.
 - `runner-mode-autonomy.service`: `autonomy.launch.py`, containing the same
   common owners once, localization slam_toolbox remapped to `/slam_map`,
-  map_server as the sole `/map` publisher, Nav2, and the drive adapter.
+  map_server as the sole `/map` publisher, Nav2, the drive adapter, and
+  `runner_navigation_runtime` (Stage 5) as the sole Nav2 mission/action owner.
+
+## Stage 5 navigation runtime
+
+`runner_navigation_runtime` (`ros2 run runner_bringup navigation_runtime`,
+started inside `nav2.launch.py`, application-tier) is the only component that
+owns Nav2 `NavigateToPose`/`NavigateThroughPoses` action clients. It consumes
+authorized `/paddock/navigation_request` from the command authority and
+publishes a truthful `/paddock/navigation_state` lifecycle; it never reports an
+active action before Nav2 has accepted a goal, and a stale action generation or
+runtime epoch can never overwrite current mission state. The retired
+`foxglove_goal_bridge` node and its direct goal/keyboard ingress are gone. This
+stage does not add a mux input, does not authorize motion, and leaves traction
+disconnected.
 
 AUTONOMY requests carry `autonomy_map` in `ModeRequest`. Before starting, the
 supervisor rejects path-like names and verifies all four artifacts: `.data`,

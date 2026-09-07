@@ -18,6 +18,7 @@ import math
 import time
 import uuid
 
+from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Twist
 import rclpy
 from rclpy.duration import Duration
@@ -27,6 +28,8 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import ModeState
+from runner_interfaces.msg import NavigationRequest
+from runner_interfaces.msg import NavigationState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import StopRequest
@@ -52,6 +55,9 @@ DEFAULT_LOCAL_CONTROL_TIMEOUT_SEC = 0.100
 DEFAULT_STOP_STATE_TIMEOUT_SEC = 0.150
 STOP_REQUEST_TOPIC = '/paddock/internal/stop_request'
 STOP_STATE_TOPIC = '/paddock/stop_state'
+NAVIGATION_REQUEST_TOPIC = '/paddock/navigation_request'
+NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
+DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC = 1.0
 
 
 def _from_twist(message: Twist) -> VelocityCommand:
@@ -82,6 +88,7 @@ def _authority_message(
     stop_state: StopState | None = None,
     *,
     stop_fresh: bool = False,
+    nav_action_active: bool | None = None,
 ) -> CommandAuthorityState:
     """Convert one pure snapshot to its typed authority interface."""
     snapshot = result.snapshot
@@ -95,7 +102,13 @@ def _authority_message(
     message.run_held = state.run_held
     message.autonomy_permitted = state.autonomy_permitted
     message.autonomy_goal_selected = state.goal is not None
-    message.autonomy_action_active = state.navigation_active
+    # Truthful action state comes from the navigation runtime's real Nav2
+    # lifecycle, never the reducer's optimistic dispatch intent.
+    message.autonomy_action_active = (
+        state.navigation_active
+        if nav_action_active is None
+        else bool(nav_action_active)
+    )
     message.brake_intent = snapshot.brake_intent
     message.lease_fresh = snapshot.lease_fresh
     message.lease_age_sec = (
@@ -183,6 +196,14 @@ class CommandAuthorityNode(Node):
         self._stop_state = None
         self._stop_state_at = None
         self._stop_state_timeout = DEFAULT_STOP_STATE_TIMEOUT_SEC
+        self._runtime_epoch = 0
+        self._mission_id = ''
+        self._mission_revision = 0
+        self._nav_last_goal_key = None
+        self._nav_last_dispatch_active = False
+        self._nav_action_active = False
+        self._nav_state_at = None
+        self._nav_state_timeout = DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC
         self._auto_pub = self.create_publisher(
             Twist, SUPERVISED_AUTONOMY_TOPIC, 10
         )
@@ -200,6 +221,9 @@ class CommandAuthorityNode(Node):
         stop_qos.lifespan = Duration(seconds=0.10)
         self._stop_request_pub = self.create_publisher(
             StopRequest, STOP_REQUEST_TOPIC, stop_qos
+        )
+        self._nav_request_pub = self.create_publisher(
+            NavigationRequest, NAVIGATION_REQUEST_TOPIC, 10
         )
         self.create_subscription(
             Twist, RAW_AUTONOMY_TOPIC, self._on_raw_autonomy, 10
@@ -227,6 +251,15 @@ class CommandAuthorityNode(Node):
             STOP_STATE_TOPIC,
             self._on_stop_state,
             QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
+        )
+        nav_state_qos = QoSProfile(depth=1)
+        nav_state_qos.reliability = ReliabilityPolicy.RELIABLE
+        nav_state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(
+            NavigationState,
+            NAVIGATION_STATE_TOPIC,
+            self._on_navigation_state,
+            nav_state_qos,
         )
         self.create_timer(supervision_period, self._on_supervision_timer)
 
@@ -258,6 +291,9 @@ class CommandAuthorityNode(Node):
             lease_id=message.lease_id,
             sequence=message.sequence,
             now=time.monotonic(),
+            goal_x=message.goal_x,
+            goal_y=message.goal_y,
+            goal_yaw=message.goal_yaw,
         )
         if not result.accepted:
             self.get_logger().warning(result.snapshot.reason)
@@ -336,6 +372,7 @@ class CommandAuthorityNode(Node):
                 f'Rejected unknown Paddock mode {message.mode}'
             )
             return
+        self._runtime_epoch = int(message.runtime_epoch)
         result = self._supervisor.set_runtime_mode(
             mode=mode,
             active_autonomy_map=message.active_autonomy_map,
@@ -389,6 +426,71 @@ class CommandAuthorityNode(Node):
             )
         self._apply(self._supervisor.tick(now))
 
+    def _on_navigation_state(self, message: NavigationState) -> None:
+        self._nav_state_at = time.monotonic()
+        self._nav_action_active = (
+            message.state == NavigationState.STATE_ACTIVE
+        )
+
+    def _navigation_state_fresh(self, now: float) -> bool:
+        return (
+            self._nav_state_at is not None
+            and now - self._nav_state_at <= self._nav_state_timeout
+        )
+
+    def _sync_navigation(self, snapshot) -> None:
+        """Translate accepted authority state into navigation-runtime intent."""
+        state = snapshot.state
+        goal = state.goal
+        goal_key = (
+            None if goal is None
+            else (goal.map_name, goal.x, goal.y, goal.yaw)
+        )
+        if goal_key != self._nav_last_goal_key:
+            if goal_key is not None:
+                self._mission_revision += 1
+                self._mission_id = uuid.uuid4().hex
+                self._publish_nav_request(
+                    NavigationRequest.OP_SELECT, state, goal
+                )
+            else:
+                self._publish_nav_request(
+                    NavigationRequest.OP_CANCEL, state, None
+                )
+            self._nav_last_goal_key = goal_key
+
+        dispatch_active = state.navigation_active
+        if dispatch_active and not self._nav_last_dispatch_active:
+            self._publish_nav_request(
+                NavigationRequest.OP_DISPATCH, state, goal
+            )
+        elif not dispatch_active and self._nav_last_dispatch_active:
+            self._publish_nav_request(
+                NavigationRequest.OP_CANCEL, state, None
+            )
+        self._nav_last_dispatch_active = dispatch_active
+
+    def _publish_nav_request(self, operation, state, goal) -> None:
+        message = NavigationRequest()
+        message.stamp = self.get_clock().now().to_msg()
+        message.lease_id = state.lease_id
+        message.operation = int(operation)
+        message.mission_id = self._mission_id
+        message.mission_revision = self._mission_revision
+        message.runtime_epoch = self._runtime_epoch
+        message.map_id = state.active_autonomy_map
+        message.mission_type = NavigationRequest.MISSION_SINGLE_GOAL
+        if operation == NavigationRequest.OP_SELECT and goal is not None:
+            pose = PoseStamped()
+            pose.header.frame_id = 'map'
+            pose.header.stamp = message.stamp
+            pose.pose.position.x = float(goal.x)
+            pose.pose.position.y = float(goal.y)
+            pose.pose.orientation.z = math.sin(float(goal.yaw) / 2.0)
+            pose.pose.orientation.w = math.cos(float(goal.yaw) / 2.0)
+            message.poses = [pose]
+        self._nav_request_pub.publish(message)
+
     def _apply(self, result: SupervisorResult) -> None:
         if result.autonomy_command is not None and self._stop_clear(time.monotonic()):
             self._auto_pub.publish(_to_twist(result.autonomy_command))
@@ -396,6 +498,7 @@ class CommandAuthorityNode(Node):
             brake = Twist()
             self._auto_pub.publish(brake)
             self._paddock_pub.publish(brake)
+        self._sync_navigation(result.snapshot)
         self._publish_state(result)
 
     def _publish_state(self, result: SupervisorResult) -> None:
@@ -409,6 +512,11 @@ class CommandAuthorityNode(Node):
             stamp,
             self._stop_state,
             stop_fresh=self._stop_is_fresh(now),
+            nav_action_active=(
+                self._nav_action_active
+                if self._navigation_state_fresh(now)
+                else False
+            ),
         ))
 
         lease = PaddockControlLease()

@@ -247,6 +247,9 @@ class CommandSupervisor:
         lease_id: str,
         sequence: int,
         now: float,
+        goal_x: float = 0.0,
+        goal_y: float = 0.0,
+        goal_yaw: float = 0.0,
     ) -> SupervisorResult:
         """Validate ownership/order, refresh the lease, and reduce an event."""
         self._expire_lease(now)
@@ -327,11 +330,19 @@ class CommandSupervisor:
             ).state
             return SupervisorResult(self._snapshot(now, 'CLEAR_STOP_REQUESTED'))
         if event == ControlEvent.GOAL_SELECTED:
+            if not all(
+                math.isfinite(value)
+                for value in (goal_x, goal_y, goal_yaw)
+            ):
+                return SupervisorResult(
+                    self._snapshot(now, 'GOAL_POSE_NOT_FINITE'),
+                    accepted=False,
+                )
             goal = GoalIntent(
                 map_name=self.state.active_autonomy_map,
-                x=0.0,
-                y=0.0,
-                yaw=0.0,
+                x=float(goal_x),
+                y=float(goal_y),
+                yaw=float(goal_yaw),
             )
             self.state = transition(
                 self.state,

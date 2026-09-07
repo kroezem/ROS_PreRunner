@@ -41,8 +41,8 @@ setup(
             'rf2o_scan_canonicalizer = '
             'runner_bringup.rf2o_scan_canonicalizer:main',
             'scan_rebinner = runner_bringup.scan_rebinner:main',
-            'foxglove_goal_bridge = '
-            'runner_bringup.foxglove_goal_bridge:main',
+            'navigation_runtime = '
+            'runner_bringup.navigation_runtime:main',
             'speed_envelope_observer = '
             'runner_bringup.speed_envelope_observer:main',
         ],

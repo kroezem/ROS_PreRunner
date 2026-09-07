@@ -81,7 +81,7 @@ AUTONOMY_ONLY_NODES = frozenset({
     '/global_costmap/global_costmap',
     '/local_costmap/local_costmap',
     '/lifecycle_manager_navigation',
-    '/foxglove_goal_bridge',
+    '/runner_navigation_runtime',
     '/drive_adapter',
     '/speed_envelope_observer',
 })
