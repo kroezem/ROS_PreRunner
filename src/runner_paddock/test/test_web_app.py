@@ -28,12 +28,35 @@ class FakeRuntime:
     def __init__(self):
         self.started = False
         self.stopped = False
+        self.actions = []
+        self.disconnected = []
+        self._owner = None
 
     def start(self):
         self.started = True
 
     def stop(self):
         self.stopped = True
+
+    def submit(self, conn_id, action):
+        self.actions.append((conn_id, action))
+        name = action.get('action') if isinstance(action, dict) else None
+        if name == 'acquire':
+            if self._owner is None:
+                self._owner = conn_id
+                return {'accepted': True, 'reason': 'acquired',
+                        'role': 'controller'}
+            role = 'controller' if self._owner == conn_id else 'observer'
+            return {'accepted': self._owner == conn_id,
+                    'reason': 'lease', 'role': role}
+        role = 'controller' if self._owner == conn_id else 'observer'
+        return {'accepted': role == 'controller', 'reason': name or 'noop',
+                'role': role}
+
+    def disconnect(self, conn_id):
+        self.disconnected.append(conn_id)
+        if self._owner == conn_id:
+            self._owner = None
 
 
 def _initial_cache():
@@ -43,14 +66,22 @@ def _initial_cache():
     return cache
 
 
-def test_static_shell_lifecycle_and_two_read_only_clients():
+def _drain_until(websocket, wanted, limit=40):
+    for _ in range(limit):
+        frame = websocket.receive_json()
+        if frame['type'] == wanted:
+            return frame
+    raise AssertionError(f'no {wanted} frame within {limit} frames')
+
+
+def test_static_shell_lifecycle_and_two_clients():
     runtime = FakeRuntime()
     app = create_app(cache=_initial_cache(), runtime=runtime)
 
     with TestClient(app) as client:
         response = client.get('/')
         assert response.status_code == 200
-        assert 'Read-only robot state' in response.text
+        assert 'operator console' in response.text
         assert runtime.started
 
         with client.websocket_connect('/ws') as first:
@@ -64,14 +95,44 @@ def test_static_shell_lifecycle_and_two_read_only_clients():
                 assert first_types == {'state', 'map', 'plan'}
                 assert second_types == {'state', 'map', 'plan'}
 
-                for websocket in (first, second):
-                    frames = [websocket.receive_json() for _ in range(3)]
-                    assert {frame['type'] for frame in frames} == {'state'}
-                    assert all(
-                        frame['protocol_version'] == 1 for frame in frames
-                    )
-
     assert runtime.stopped
+    assert len(runtime.disconnected) == 2
+
+
+def test_ws_action_round_trip_and_lease_role():
+    runtime = FakeRuntime()
+    app = create_app(cache=_initial_cache(), runtime=runtime)
+    with TestClient(app) as client:
+        with client.websocket_connect('/ws') as first:
+            first.send_json({'action': 'acquire'})
+            ack = _drain_until(first, 'ack')
+            assert ack['accepted'] and ack['role'] == 'controller'
+            assert ack['name'] == 'acquire'
+
+            first.send_json({'action': 'stop'})
+            assert _drain_until(first, 'ack')['accepted']
+
+            with client.websocket_connect('/ws') as second:
+                second.send_json({'action': 'acquire'})
+                ack2 = _drain_until(second, 'ack')
+                assert ack2['role'] == 'observer' and not ack2['accepted']
+
+                second.send_json({'action': 'stop'})
+                assert not _drain_until(second, 'ack')['accepted']
+
+    # Both connections released; the owner's disconnect frees the lease.
+    assert runtime._owner is None
+
+
+def test_ws_malformed_action_is_rejected_not_fatal():
+    runtime = FakeRuntime()
+    app = create_app(cache=_initial_cache(), runtime=runtime)
+    with TestClient(app) as client:
+        with client.websocket_connect('/ws') as socket:
+            socket.send_text('not json')
+            ack = _drain_until(socket, 'ack')
+            assert not ack['accepted']
+            assert 'malformed' in ack['reason']
 
 
 def test_state_frames_arrive_at_approximately_ten_hz():

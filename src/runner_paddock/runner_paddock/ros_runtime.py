@@ -41,6 +41,23 @@ class RosRuntime:
         """Report whether the executor thread remains alive."""
         return self._thread is not None and self._thread.is_alive()
 
+    def submit(self, conn_id: str, action: dict) -> dict:
+        """Forward one browser action to the gateway node."""
+        node = self._node
+        if node is None:
+            return {
+                'accepted': False,
+                'reason': 'ROS gateway not started',
+                'role': 'observer',
+            }
+        return node.submit(conn_id, action)
+
+    def disconnect(self, conn_id: str) -> None:
+        """Release the lease held by a disconnecting browser connection."""
+        node = self._node
+        if node is not None:
+            node.disconnect(conn_id)
+
     def start(self) -> None:
         """Initialize ROS and spin the read-only node on a dedicated thread."""
         if self._thread is not None:

@@ -11,14 +11,81 @@
   <body>
     <main>
       <header>
-        <p class="eyebrow">Runner Paddock</p>
-        <h1>Read-only robot state</h1>
-        <p id="connection" class="status waiting">Connecting…</p>
+        <p class="eyebrow">Runner Paddock — operator console (first integration draft)</p>
+        <div id="banner" class="banner waiting">Connecting…</div>
       </header>
-      <section>
-        <h2>Latest frames</h2>
-        <pre id="debug">Waiting for WebSocket data.</pre>
+
+      <section class="grid">
+        <div class="card" id="global-card">
+          <h2>Global</h2>
+          <dl class="kv">
+            <dt>Backend</dt><dd id="g-backend">—</dd>
+            <dt>Lease role</dt><dd id="g-role">—</dd>
+            <dt>Lease</dt><dd id="g-lease">—</dd>
+            <dt>Runtime</dt><dd id="g-runtime">—</dd>
+            <dt>Readiness</dt><dd id="g-ready">—</dd>
+            <dt>Authority / source</dt><dd id="g-authority">—</dd>
+            <dt>Inhibit reason</dt><dd id="g-reason">—</dd>
+            <dt>STOP</dt><dd id="g-stop">—</dd>
+            <dt>DualSense</dt><dd id="g-dualsense">—</dd>
+          </dl>
+          <div class="stop-row">
+            <button id="btn-stop" class="stop">STOP</button>
+            <button id="btn-clear-stop" class="clear">CLEAR STOP</button>
+          </div>
+          <p class="hint">CLEAR STOP needs the enforcer healthy, STOP applied, and the car stationary.</p>
+        </div>
+
+        <div class="card">
+          <h2>Mapping</h2>
+          <button data-mode="mapping" class="mode">Enter MAPPING</button>
+          <dl class="kv">
+            <dt>Session</dt><dd id="m-session">—</dd>
+            <dt>Session state</dt><dd id="m-phase">—</dd>
+            <dt>Unsaved</dt><dd id="m-unsaved">—</dd>
+            <dt>Save result</dt><dd id="m-save">—</dd>
+            <dt>Selected map</dt><dd id="m-selected">—</dd>
+          </dl>
+          <button id="btn-new-map" class="warn">NEW MAP</button>
+          <div class="inline">
+            <input id="save-name" type="text" inputmode="latin" autocomplete="off"
+                   placeholder="map basename" pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+            <button id="btn-save-map">SAVE MAP</button>
+          </div>
+          <h3>Saved maps</h3>
+          <ul id="map-catalog" class="catalog"></ul>
+        </div>
+
+        <div class="card">
+          <h2>Autonomy</h2>
+          <button data-mode="autonomy" class="mode">Enter AUTONOMY</button>
+          <button data-mode="idle" class="mode ghost">Return to IDLE</button>
+          <dl class="kv">
+            <dt>Active map</dt><dd id="a-map">—</dd>
+            <dt>Mission</dt><dd id="a-mission">—</dd>
+            <dt>Nav2 detail</dt><dd id="a-detail">—</dd>
+            <dt>Action active</dt><dd id="a-active">—</dd>
+          </dl>
+          <div class="inline">
+            <label>x <input id="goal-x" type="number" step="0.05" value="0"></label>
+            <label>y <input id="goal-y" type="number" step="0.05" value="0"></label>
+            <label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label>
+          </div>
+          <button id="btn-select-goal">Select goal pose</button>
+          <p class="hint" id="pose-hint">Robot pose: —</p>
+          <div class="run-row">
+            <button id="btn-run" class="run">HOLD&nbsp;TO&nbsp;RUN</button>
+            <button id="btn-cancel" class="warn">CANCEL</button>
+          </div>
+          <p class="hint">Release HOLD TO RUN to stop and cancel. A new deliberate hold is required to resume.</p>
+        </div>
       </section>
+
+      <section class="card">
+        <h2>Backend truth (raw)</h2>
+        <pre id="debug">Waiting for state…</pre>
+      </section>
+      <p id="acklog" class="hint"></p>
     </main>
     <script src="/static/app.js" defer></script>
   </body>

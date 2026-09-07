@@ -115,13 +115,20 @@ Do not launch `map.launch.py`, `localize.launch.py`, `nav2.launch.py`, or
 intentionally reported as `IDLE/FAULT`; the supervisor will not use `pkill` or
 claim an unknown process tree.
 
-`runner-paddock-web.service` runs the Stage 3 Paddock backend
-(`ros2 run runner_paddock web`) as an application-tier, read-only observer: it
-subscribes to established robot state and serves a same-origin WebSocket, and
-publishes nothing to ROS. It runs unprivileged as `matti`, binds `127.0.0.1`
-only (`PADDOCK_WEB_HOST`/`PADDOCK_WEB_PORT` in the unit), runs one uvicorn
-worker with no reload, and has no `systemctl`/sudoers grant — it cannot touch
-the hardware tier or switch modes. `KillSignal=SIGINT` gives uvicorn the same
+`runner-paddock-web.service` runs the Paddock operator backend
+(`ros2 run runner_paddock web`) as the persistent-operator-tier browser
+gateway: it subscribes to established robot state and serves a same-origin
+WebSocket, and it is the **sole browser-side writer** of
+`/paddock/control_event` (lease / RUN / STOP / CLEAR STOP / goal / heartbeat),
+`/paddock/mode_request` (runtime selection) and `/paddock/map_request` (NEW /
+SAVE / SELECT map). It holds at most one control lease at a time (one
+controller, any number of observers); it manufactures no renewals — an intent
+is published only in direct response to a fresh browser message, so a silent
+browser lets the Pi-side lease expire. It still runs unprivileged as `matti`,
+binds `127.0.0.1` only (`PADDOCK_WEB_HOST`/`PADDOCK_WEB_PORT` in the unit),
+runs one uvicorn worker with no reload, and has no `systemctl`/sudoers grant —
+it cannot touch the hardware tier and can only *request* mode changes through
+the lease-checked mode supervisor / map executor / command authority. `KillSignal=SIGINT` gives uvicorn the same
 graceful shutdown path as an interactive Ctrl-C, after which the
 `/runner_paddock_web_state` node leaves the graph. Runtime dependencies
 (`python3-fastapi python3-uvicorn python3-websockets`, declared in

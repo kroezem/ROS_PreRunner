@@ -360,3 +360,78 @@ survives.
   not attempted here.
 - The persistent Pi services were still running pre-Stage-7 binaries at the
   start of this pass; a coherent redeploy is required (Part C).
+
+## Stage 8 (partial) — minimal Paddock operator UI (Part B)
+
+Not the polished final UI: functionality over appearance, enough for Matti to
+exercise the Stage 7 backend from a tablet.
+
+### Backend: browser intent gateway
+
+`runner-paddock-web.service` is no longer read-only. The paddock ROS node
+(`RosStateNode`, unchanged name) now also owns three operator-intent writers
+and is the **sole browser-side writer** of each:
+
+- `/paddock/control_event` — lease acquire/release, RUN pressed/released,
+  STOP, CLEAR STOP, goal selected, heartbeat;
+- `/paddock/mode_request` — runtime selection (IDLE / MAPPING / AUTONOMY),
+  `request_id = time.time_ns()` (globally monotonic against the map
+  executor's own NEW MAP `ModeRequest`s);
+- `/paddock/map_request` — NEW / SAVE (session id filled from `ModeState`) /
+  SELECT map.
+
+New pure module `runner_paddock/gateway.py` (`OperatorGateway`, ROS- and
+clock-free): one control lease at a time (one *controller*, N *observers*);
+per-gateway monotonic `sequence`; hold-to-run edge tracking; every intent is
+produced **only** in direct response to a fresh browser message — the gateway
+manufactures no renewals, so a silent browser lets the Pi-side lease expire
+and RUN is revoked. `on_disconnect` always releases the lease (publishes
+`EVENT_LEASE_RELEASED`); a reconnecting browser starts with no lease, no RUN
+latch and no goal.
+
+New read subscriptions feeding the stream: `/paddock/control_lease`,
+`/paddock/stop_state`, `/teleop/control_state`, plus the STOP fields already
+on `CommandAuthorityState`. `StateCache` gains `control_lease`, `stop_state`,
+`local_control` and `gateway` sources.
+
+The `/ws` endpoint is now bidirectional: a state-sender task and an
+action-receiver task run concurrently; each browser action gets an `ack`
+frame (`accepted` / `reason` / `role`). `ros_runtime.submit` /
+`.disconnect` run off the event loop.
+
+### Frontend
+
+One page, three cards (Global / Mapping / Autonomy) plus a raw backend-truth
+dump. Global: backend/connection, lease role + freshness, runtime + phase +
+readiness reason, authority + selected source, concise inhibit reason, STOP
+state, big STOP + deliberate CLEAR STOP. Mapping: enter MAPPING, session
+id/phase, NEW MAP, SAVE MAP with basename + result, saved-map catalog with
+select + clear "◀ selected" marker. Autonomy: enter AUTONOMY / return IDLE,
+active map, mission + Nav2 lifecycle (DISPATCHING / ACTIVE / CANCELING /
+SUCCEEDED / FAILED / CANCELED), x/y/yaw goal input (robot pose shown as a
+reference — native map-click deferred, not started), big HOLD TO RUN
+(pointer-down repeats at 10 Hz, any release path — pointer up/leave, window
+blur, tab hide — sends RUN released), CANCEL. All mutating controls are
+disabled for an observer. The page renders backend truth only; on reconnect
+it re-acquires from scratch and shows a "RUN / goal / STOP-clear are NOT
+retained" banner.
+
+### Validation
+
+- `runner_paddock` package tests: 115 passed, including new `test_gateway.py`
+  (single-lease/observer, monotonic lease-scoped sequence, hold-to-run edges,
+  STOP clears the local run latch, disconnect releases + clean reconnect,
+  goal/map/mode intent shapes, bad-action rejection) and rewritten
+  `test_web_app.py` (bidirectional `/ws` round-trip, controller vs observer
+  acks, malformed-JSON action rejected but non-fatal, both connections
+  disconnect-released).
+- Live software smoke (isolated `ROS_DOMAIN_ID`, no other nodes): `GET /` 200;
+  `acquire` → controller; `heartbeat`, RUN press/hold/release edges, goal
+  select and an unknown action all return the expected `ack`; the gateway
+  node published `/paddock/control_event` etc. without error.
+
+### Pending
+
+- Real browser-in-hand exercise against the live managed stack (needs the
+  Part C redeploy). Native map rendering / click-to-goal is deliberately
+  deferred.

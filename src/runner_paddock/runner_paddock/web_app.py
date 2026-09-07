@@ -14,10 +14,13 @@
 
 """FastAPI application and same-origin read-only WebSocket endpoint."""
 
+import asyncio
 from contextlib import asynccontextmanager
+import json
 import os
 from pathlib import Path
 from typing import AsyncIterator
+import uuid
 
 from fastapi import FastAPI
 from fastapi import WebSocket
@@ -26,6 +29,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from runner_paddock.client_stream import ClientHub
 from runner_paddock.client_stream import StateStreamer
+from runner_paddock.protocol import encode_message
 from runner_paddock.ros_runtime import RosRuntime
 from runner_paddock.state_cache import StateCache
 import uvicorn
@@ -68,13 +72,55 @@ def create_app(
     async def websocket_state(websocket: WebSocket) -> None:
         await websocket.accept()
         client = hub.register()
-        try:
+        conn_id = uuid.uuid4().hex
+        loop = asyncio.get_running_loop()
+
+        async def pump_state() -> None:
             while True:
                 await websocket.send_text(await client.next_frame())
+
+        async def pump_actions() -> None:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    action = json.loads(raw)
+                except (ValueError, TypeError):
+                    outcome = {
+                        'accepted': False,
+                        'reason': 'malformed action JSON',
+                        'role': 'observer',
+                    }
+                    name = None
+                else:
+                    name = (
+                        action.get('action')
+                        if isinstance(action, dict) else None
+                    )
+                    # ROS publish + lease bookkeeping runs off the event loop.
+                    outcome = await loop.run_in_executor(
+                        None, ros_runtime.submit, conn_id, action
+                    )
+                await websocket.send_text(encode_message(
+                    'ack', name=name, **outcome
+                ))
+
+        state_task = asyncio.ensure_future(pump_state())
+        action_task = asyncio.ensure_future(pump_actions())
+        try:
+            await asyncio.wait(
+                {state_task, action_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
+            for task in (state_task, action_task):
+                task.cancel()
+            await asyncio.gather(
+                state_task, action_task, return_exceptions=True
+            )
             hub.unregister(client)
+            await loop.run_in_executor(None, ros_runtime.disconnect, conn_id)
 
     return app
 

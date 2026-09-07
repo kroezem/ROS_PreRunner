@@ -1,5 +1,5 @@
 [Unit]
-Description=Runner Paddock read-only web backend
+Description=Runner Paddock operator web backend (browser intent gateway)
 
 [Service]
 Type=simple

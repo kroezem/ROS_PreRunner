@@ -37,10 +37,18 @@ class StateCache:
         'pose': 0.5,
         'mode': 0.5,
         'command_authority': 0.5,
+        'control_lease': 0.5,
+        'stop_state': 1.0,
+        'local_control': 0.5,
         'map_state': 3.0,
         'navigation_state': 2.0,
         'plan': 2.0,
     }
+
+    _SMALL_SOURCES = (
+        'pose', 'mode', 'command_authority', 'control_lease', 'stop_state',
+        'local_control', 'gateway', 'map_state', 'navigation_state',
+    )
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
         self._clock = clock
@@ -49,6 +57,10 @@ class StateCache:
             'pose': _Entry(),
             'mode': _Entry(),
             'command_authority': _Entry(),
+            'control_lease': _Entry(),
+            'stop_state': _Entry(),
+            'local_control': _Entry(),
+            'gateway': _Entry(),
             'map_state': _Entry(),
             'navigation_state': _Entry(),
             'map': _Entry(),
@@ -76,10 +88,7 @@ class StateCache:
         with self._lock:
             values = {
                 name: deepcopy(self._entries[name].value)
-                for name in (
-                    'pose', 'mode', 'command_authority', 'map_state',
-                    'navigation_state',
-                )
+                for name in self._SMALL_SOURCES
             }
             sources = {
                 name: self._source_health(name, entry, now)
