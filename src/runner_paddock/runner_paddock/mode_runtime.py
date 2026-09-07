@@ -465,6 +465,17 @@ class ModeRuntime:
             return self.state
         if not isinstance(requested, Mode):
             return self.state
+        if requested == Mode.AUTONOMY and not autonomy_map:
+            # Operator precondition, not a runtime fault: AUTONOMY needs a map
+            # selected first. Acknowledge the request but reject it in place --
+            # do not stop the current runtime or enter FAULT over a missing
+            # selection. The gateway/UI keeps AUTONOMY unavailable until a
+            # completed map is selected; this is the backstop.
+            self._set(
+                accepted_request_id=request_id,
+                detail='AUTONOMY needs a selected map',
+            )
+            return self.state
         new_map = operation == OP_NEW_MAP and requested == Mode.MAPPING
         same_selection = (
             requested != Mode.AUTONOMY

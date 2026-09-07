@@ -170,6 +170,13 @@ class CommandAuthorityNode(Node):
         lease_timeout = float(
             self.declare_parameter('lease_timeout_sec', 0.150).value
         )
+        # Forgiving backstop on bare lease ownership, kept well clear of the
+        # RUN / autonomous-motion deadman above so ordinary browser/Wi-Fi
+        # jitter no longer drops the operator's control lease mid-session.
+        # The tight motion deadman is unchanged.
+        control_liveness = float(
+            self.declare_parameter('control_liveness_sec', 3.0).value
+        )
         raw_timeout = float(
             self.declare_parameter(
                 'raw_autonomy_timeout_sec', 0.150
@@ -205,6 +212,7 @@ class CommandAuthorityNode(Node):
         self._supervisor = CommandSupervisor(
             lease_timeout_sec=lease_timeout,
             raw_autonomy_timeout_sec=raw_timeout,
+            control_liveness_sec=control_liveness,
             active_autonomy_map=active_map,
         )
         self._last_local_control_at = None

@@ -7,14 +7,21 @@ Type=simple
 User=matti
 Group=matti
 WorkingDirectory=/home/matti/runner_ws
-# lease_timeout_sec is the browser-disconnect backstop for a held RUN: after
-# this long without a fresh ordered control event the lease expires, RUN is
-# revoked and autonomy brakes. 0.5 s is a deliberately forgiving first-
-# integration value for a Wi-Fi operator tablet; measure the real end-to-end
-# budget and tighten it before traction is reconnected. The browser also
-# sends RUN_RELEASED proactively on pointer-up / blur / hide, so this only
-# governs an actual crash or link loss.
-ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_paddock command_authority --ros-args -p lease_timeout_sec:=0.5'
+# Two independent freshness bounds on the operator link:
+#   lease_timeout_sec (0.5 s) -- RUN / autonomous-motion deadman. With RUN
+#     held, this long without a fresh ordered control event revokes autonomous
+#     motion and brakes. A deliberately forgiving first-integration value for a
+#     Wi-Fi operator tablet; measure the real end-to-end budget and tighten it
+#     before traction is reconnected. The browser also sends RUN_RELEASED
+#     proactively on pointer-up / blur / hide, so this only governs a crash or
+#     link loss while RUN is held.
+#   control_liveness_sec (3 s) -- backstop on bare lease *ownership* only.
+#     While the browser keeps heartbeating inside this window the operator
+#     keeps the control lease and the mutating UI stays live, so ordinary
+#     jitter no longer drops the lease mid-session; a lease that does lapse is
+#     reinstated in place on the next matching heartbeat. Autonomous motion is
+#     never permitted on this bound -- only on the tight deadman above.
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_paddock command_authority --ros-args -p lease_timeout_sec:=0.5 -p control_liveness_sec:=3.0'
 Restart=always
 RestartSec=2
 KillMode=control-group

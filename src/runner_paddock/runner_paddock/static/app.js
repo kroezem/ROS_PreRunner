@@ -141,6 +141,15 @@ function render() {
   });
   $("btn-stop").disabled = !controller;
   $("btn-run").classList.toggle("armed", runHeld);
+
+  // AUTONOMY needs a completed map selected first; keep the control out of
+  // reach until then and say why, rather than let the runtime fault.
+  const hasAutonomyMap = Boolean(mapState.selected_map_applied);
+  const autoBtn = document.querySelector('button[data-mode="autonomy"]');
+  if (autoBtn) autoBtn.disabled = !controller || !hasAutonomyMap;
+  $("a-map-hint").textContent = hasAutonomyMap
+    ? ""
+    : "Select a completed map (Mapping ▸ Saved maps) before AUTONOMY.";
 }
 
 function setBannerFromState(mode, auth, stop) {

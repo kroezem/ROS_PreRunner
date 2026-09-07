@@ -40,6 +40,7 @@ from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import StopState
 from runner_paddock.gateway import (
     ControlEventIntent,
+    GatewayResult,
     MapRequestIntent,
     ModeRequestIntent,
     OperatorGateway,
@@ -382,6 +383,17 @@ class RosStateNode(Node):
         """Validate one browser action, publish its intents, report outcome."""
         with self._gateway_lock:
             result = self._gateway.handle(conn_id, action)
+            if result.accepted and self._autonomy_without_map(action):
+                # Operator precondition: never send an AUTONOMY runtime request
+                # with no map selected -- that path stops the runtime and
+                # faults on an obscure basename error. Reject it here with a
+                # clear reason and publish nothing.
+                result = GatewayResult(
+                    False,
+                    'select a completed map before AUTONOMY',
+                    (),
+                    result.role,
+                )
             for intent in result.intents:
                 self._publish_intent(intent)
             self._publish_gateway_state()
@@ -436,6 +448,14 @@ class RosStateNode(Node):
             message.name = intent.name
             message.session_id = intent.session_id or self._mapping_session_id()
             self._map_request_pub.publish(message)
+
+    def _autonomy_without_map(self, action: dict) -> bool:
+        """Return True for a 'select AUTONOMY runtime' action with no map set."""
+        if not isinstance(action, dict) or action.get('action') != 'select_mode':
+            return False
+        if str(action.get('mode', '')).strip().lower() != 'autonomy':
+            return False
+        return not self._selected_map()
 
     def _selected_map(self) -> str:
         snapshot = self._cache.state_snapshot()

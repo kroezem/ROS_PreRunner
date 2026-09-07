@@ -27,7 +27,11 @@ from runner_paddock.state_machine import PaddockState
 from runner_paddock.state_machine import transition
 
 
+# Two independent freshness bounds on the operator link (see __init__):
+#   * lease_timeout_sec       -- RUN / autonomous-motion deadman (tight)
+#   * control_liveness_sec    -- lease-ownership liveness backstop (forgiving)
 DEFAULT_LEASE_TIMEOUT_SEC = 0.150
+DEFAULT_CONTROL_LIVENESS_SEC = 3.0
 DEFAULT_RAW_AUTONOMY_TIMEOUT_SEC = 0.150
 UINT64_MODULUS = 1 << 64
 UINT64_HALF_RANGE = 1 << 63
@@ -114,6 +118,7 @@ class CommandSupervisor:
         *,
         lease_timeout_sec: float = DEFAULT_LEASE_TIMEOUT_SEC,
         raw_autonomy_timeout_sec: float = DEFAULT_RAW_AUTONOMY_TIMEOUT_SEC,
+        control_liveness_sec: Optional[float] = None,
         active_autonomy_map: str = '',
     ) -> None:
         if not math.isfinite(lease_timeout_sec) or lease_timeout_sec <= 0.0:
@@ -125,7 +130,26 @@ class CommandSupervisor:
             raise ValueError(
                 'raw_autonomy_timeout_sec must be finite and positive'
             )
+        # ``lease_timeout_sec`` is the RUN / autonomous-motion deadman: with RUN
+        # held, no fresh ordered control event for this long revokes autonomous
+        # motion (brake). It stays tight per v1.3 and is unaffected by this
+        # split. ``control_liveness_sec`` is a separate, forgiving backstop on
+        # bare lease *ownership*: the operator keeps the control lease (and the
+        # mutating UI controls stay live) as long as the browser is heartbeating
+        # inside this window, so ordinary Wi-Fi jitter no longer drops the lease
+        # mid-session. It must be >= the motion deadman; it defaults to the
+        # motion deadman, which reproduces the pre-split single-timeout model.
+        if control_liveness_sec is None:
+            control_liveness_sec = lease_timeout_sec
+        if (
+            not math.isfinite(control_liveness_sec)
+            or control_liveness_sec < lease_timeout_sec
+        ):
+            raise ValueError(
+                'control_liveness_sec must be finite and >= lease_timeout_sec'
+            )
         self.lease_timeout_sec = lease_timeout_sec
+        self.control_liveness_sec = control_liveness_sec
         self.raw_autonomy_timeout_sec = raw_autonomy_timeout_sec
         self.state = PaddockState(
             active_autonomy_map=active_autonomy_map
@@ -133,6 +157,10 @@ class CommandSupervisor:
         self.last_lease_receive_at: Optional[float] = None
         self.last_raw_autonomy_at: Optional[float] = None
         self.last_control_sequence: Optional[int] = None
+        # (client_id, lease_id) of a lease that lapsed the liveness backstop;
+        # a matching heartbeat from the same still-connected browser reinstates
+        # it in place instead of forcing the operator to reload the page.
+        self._lapsed_lease: Optional[Tuple[str, str]] = None
 
     def _lease_age(self, now: float) -> Optional[float]:
         if self.last_lease_receive_at is None:
@@ -145,6 +173,7 @@ class CommandSupervisor:
         return max(0.0, now - self.last_raw_autonomy_at)
 
     def _lease_is_fresh(self, now: float) -> bool:
+        """RUN / autonomous-motion deadman: tight bound for permitting motion."""
         age = self._lease_age(now)
         return (
             self.state.lease_active
@@ -152,30 +181,49 @@ class CommandSupervisor:
             and age <= self.lease_timeout_sec
         )
 
+    def _lease_is_live(self, now: float) -> bool:
+        """Lease-ownership liveness: forgiving bound for keeping the lease."""
+        age = self._lease_age(now)
+        return (
+            self.state.lease_active
+            and age is not None
+            and age <= self.control_liveness_sec
+        )
+
     def _raw_is_fresh(self, now: float) -> bool:
         age = self._raw_age(now)
         return age is not None and age <= self.raw_autonomy_timeout_sec
 
     def _expire_lease(self, now: float) -> bool:
-        if self.state.lease_active and not self._lease_is_fresh(now):
+        # Only the forgiving liveness backstop drops the lease. The tight motion
+        # deadman (_lease_is_fresh) still gates autonomous motion every tick via
+        # _snapshot, but a brief link stall no longer costs the operator the
+        # lease itself.
+        if self.state.lease_active and not self._lease_is_live(now):
             lease_id = self.state.lease_id
+            client_id = self.state.lease_client_id
             self.state = transition(
                 self.state,
                 Event.LOSE_LEASE,
                 lease_id=lease_id,
             ).state
             self.last_control_sequence = None
+            self._lapsed_lease = (client_id, lease_id)
             return True
         return False
 
     def _snapshot(self, now: float, reason: str) -> SupervisorSnapshot:
-        lease_fresh = self._lease_is_fresh(now)
+        # Motion is gated by the tight deadman; the browser-visible lease_fresh
+        # flag tracks the forgiving liveness backstop so the status panel does
+        # not flap "STALE" between ordinary heartbeats.
+        motion_fresh = self._lease_is_fresh(now)
+        lease_live = self._lease_is_live(now)
         raw_fresh = self._raw_is_fresh(now)
-        autonomy_open = self.state.autonomy_permitted and lease_fresh
+        autonomy_open = self.state.autonomy_permitted and motion_fresh
         return SupervisorSnapshot(
             state=self.state,
             brake_intent=not (autonomy_open and raw_fresh),
-            lease_fresh=lease_fresh,
+            lease_fresh=lease_live,
             lease_age_sec=self._lease_age(now),
             raw_autonomy_fresh=raw_fresh,
             raw_autonomy_age_sec=self._raw_age(now),
@@ -225,7 +273,7 @@ class CommandSupervisor:
             return 'IDLE_BRAKE'
         if self.state.dualsense_active:
             return 'DUALSENSE_TAKEOVER'
-        if not self._lease_is_fresh(now):
+        if not self._lease_is_live(now):
             return 'NO_FRESH_LEASE'
         if self.state.run_blocked_until_release:
             return 'RUN_REARM_REQUIRED'
@@ -235,6 +283,11 @@ class CommandSupervisor:
             return 'RUN_RELEASED'
         if self.state.goal is None:
             return 'NO_GOAL_INTENT'
+        if not self._lease_is_fresh(now):
+            # Lease still owned (within the liveness backstop) but the RUN
+            # deadman lapsed: autonomous motion is revoked until fresh events
+            # resume.
+            return 'CONTROL_STALE'
         if not self._raw_is_fresh(now):
             return 'RAW_AUTONOMY_STALE'
         return 'AUTONOMY_RUN'
@@ -253,6 +306,32 @@ class CommandSupervisor:
     ) -> SupervisorResult:
         """Validate ownership/order, refresh the lease, and reduce an event."""
         self._expire_lease(now)
+
+        if (
+            event == ControlEvent.HEARTBEAT
+            and not self.state.lease_active
+            and self._lapsed_lease == (client_id, lease_id)
+        ):
+            # The lease lapsed the liveness backstop, but the same browser is
+            # still connected and heartbeating and no other controller has taken
+            # over: reinstate ownership in place so the mutating UI controls
+            # recover without a page reload. Autonomous motion does not resume
+            # until RUN is deliberately pressed again (LOSE_LEASE cleared it).
+            reinstated = transition(
+                self.state,
+                Event.ACQUIRE_LEASE,
+                client_id=client_id,
+                lease_id=lease_id,
+            )
+            if reinstated.state != self.state:
+                self.state = reinstated.state
+                self.last_lease_receive_at = now
+                self.last_control_sequence = sequence
+                self._lapsed_lease = None
+                return SupervisorResult(
+                    self._snapshot(now, 'LEASE_REINSTATED')
+                )
+
         if event == ControlEvent.LEASE_ACQUIRED:
             if self.state.lease_active:
                 return SupervisorResult(
@@ -273,6 +352,7 @@ class CommandSupervisor:
             self.state = result.state
             self.last_lease_receive_at = now
             self.last_control_sequence = sequence
+            self._lapsed_lease = None
             return SupervisorResult(self._snapshot(now, 'LEASE_ACQUIRED'))
 
         if (
@@ -414,7 +494,7 @@ class CommandSupervisor:
         snapshot = self._snapshot(now, self._reason(now))
         if (
             snapshot.state.authority == Authority.PADDOCK_AUTONOMY
-            and snapshot.lease_fresh
+            and self._lease_is_fresh(now)
             and snapshot.raw_autonomy_fresh
             and not snapshot.brake_intent
         ):
@@ -427,4 +507,5 @@ class CommandSupervisor:
         self.last_lease_receive_at = None
         self.last_raw_autonomy_at = None
         self.last_control_sequence = None
+        self._lapsed_lease = None
         return SupervisorResult(self._snapshot(now, 'RESTART_BRAKE'))

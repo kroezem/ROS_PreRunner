@@ -198,6 +198,27 @@ def test_map_requires_yaml_referenced_fourth_file(tmp_path):
         validate_map_bundle('studio', map_directory=tmp_path)
 
 
+def test_autonomy_without_a_selected_map_is_rejected_not_faulted(tmp_path):
+    complete_map(tmp_path)
+    value, systemd, _graph, _published = runtime(tmp_path)
+    value.transition(Mode.MAPPING, 1)
+    operations = list(systemd.operations)
+
+    result = value.transition(Mode.AUTONOMY, 2, autonomy_map='')
+
+    # Missing selection is an operator precondition, not a runtime fault: the
+    # current runtime is untouched and no basename error surfaces.
+    assert result.lifecycle != Lifecycle.FAULT
+    assert result.mode == Mode.MAPPING
+    assert 'map' in result.detail.lower()
+    assert 'basename' not in result.detail.lower()
+    assert systemd.operations == operations
+
+    # A later, well-formed AUTONOMY request still works.
+    ok = value.transition(Mode.AUTONOMY, 3, autonomy_map='studio')
+    assert ok.mode == Mode.AUTONOMY
+
+
 def test_mapping_idle_autonomy_idle_is_serial_and_exclusive(tmp_path):
     complete_map(tmp_path)
     value, systemd, graph, published = runtime(tmp_path)

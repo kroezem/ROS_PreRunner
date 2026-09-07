@@ -237,6 +237,79 @@ def test_unstable_runtime_revokes_mode_and_future_command_grant():
     assert result.snapshot.brake_intent
 
 
+def _split_autonomy_ready(now=0.0):
+    """AUTONOMY-ready supervisor with a tight motion deadman, forgiving lease."""
+    supervisor = CommandSupervisor(
+        active_autonomy_map=MAP,
+        lease_timeout_sec=0.5,
+        control_liveness_sec=3.0,
+    )
+    assert control(supervisor, ControlEvent.LEASE_ACQUIRED, 1, now).accepted
+    assert supervisor.request_mode(
+        mode=Mode.AUTONOMY, request_id=1, lease_id=LEASE, now=now,
+    ).accepted
+    assert control(supervisor, ControlEvent.GOAL_SELECTED, 2, now).accepted
+    assert control(supervisor, ControlEvent.RUN_PRESSED, 3, now).accepted
+    return supervisor
+
+
+def test_control_liveness_must_not_be_below_the_motion_deadman():
+    with pytest.raises(ValueError):
+        CommandSupervisor(lease_timeout_sec=0.5, control_liveness_sec=0.2)
+
+
+def test_link_jitter_beyond_motion_deadman_keeps_the_lease():
+    supervisor = _split_autonomy_ready()
+    supervisor.receive_raw_autonomy(COMMAND, 0.010)
+
+    # 1.2 s of silence: past the 0.5 s motion deadman, inside 3 s liveness.
+    stale = supervisor.tick(1.2)
+
+    assert stale.snapshot.state.lease_active
+    assert stale.snapshot.brake_intent
+    assert stale.snapshot.reason == 'CONTROL_STALE'
+    assert supervisor.receive_raw_autonomy(COMMAND, 1.21).autonomy_command is None
+
+    # A fresh heartbeat inside the liveness window resumes normal operation.
+    resumed = control(supervisor, ControlEvent.HEARTBEAT, 4, 1.30)
+    assert resumed.accepted
+    assert not resumed.snapshot.brake_intent
+    assert supervisor.receive_raw_autonomy(COMMAND, 1.31).autonomy_command == COMMAND
+
+
+def test_motion_deadman_still_revokes_autonomy_fast_when_run_is_held():
+    supervisor = _split_autonomy_ready()
+    forwarded = supervisor.receive_raw_autonomy(COMMAND, 0.010)
+    still_ok = supervisor.receive_raw_autonomy(COMMAND, 0.5)
+    revoked = supervisor.receive_raw_autonomy(COMMAND, 0.5000001)
+
+    assert forwarded.autonomy_command == COMMAND
+    assert still_ok.autonomy_command == COMMAND
+    assert revoked.autonomy_command is None
+    assert revoked.snapshot.brake_intent
+    assert revoked.snapshot.state.lease_active  # lease kept; only motion revoked
+
+
+def test_lapsed_lease_is_reinstated_by_a_matching_heartbeat_only():
+    supervisor = _split_autonomy_ready()
+
+    lost = supervisor.tick(3.0000001)
+    assert not lost.snapshot.state.lease_active
+    assert lost.snapshot.reason == 'LEASE_EXPIRED'
+
+    stranger = supervisor.handle_control_event(
+        event=ControlEvent.HEARTBEAT,
+        client_id='phone-b', lease_id='lease-b', sequence=9, now=3.1,
+    )
+    assert not stranger.accepted
+
+    back = control(supervisor, ControlEvent.HEARTBEAT, 9, 3.2)
+    assert back.accepted
+    assert back.snapshot.reason == 'LEASE_REINSTATED'
+    assert back.snapshot.state.lease_active
+    assert not back.snapshot.state.run_held  # autonomous motion stays revoked
+
+
 @pytest.mark.parametrize(
     'wrong_owner',
     [
