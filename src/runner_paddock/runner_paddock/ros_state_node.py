@@ -27,6 +27,7 @@ from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
+from runner_interfaces.msg import MapState
 from runner_interfaces.msg import ModeState
 from runner_paddock.state_cache import StateCache
 from tf2_ros import Buffer
@@ -37,6 +38,7 @@ from tf2_ros import TransformListener
 MAP_TOPIC = '/map'
 PLAN_TOPIC = '/plan'
 MODE_STATE_TOPIC = '/paddock/mode_state'
+MAP_STATE_TOPIC = '/paddock/map_state'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MAP_FRAME = 'map'
 ROBOT_FRAME = 'base_link'
@@ -103,6 +105,9 @@ class RosStateNode(Node):
             ModeState, MODE_STATE_TOPIC, self._on_mode, map_qos
         )
         self.create_subscription(
+            MapState, MAP_STATE_TOPIC, self._on_map_state, map_qos
+        )
+        self.create_subscription(
             CommandAuthorityState,
             AUTHORITY_STATE_TOPIC,
             self._on_authority,
@@ -166,10 +171,54 @@ class RosStateNode(Node):
                 'accepted_request_id': int(message.accepted_request_id),
                 'active_autonomy_map': message.active_autonomy_map,
                 'detail': message.detail,
+                'runtime_epoch': int(message.runtime_epoch),
+                'mapping_session_id': message.mapping_session_id,
+                'ready': bool(message.ready),
+                'readiness_reason': message.readiness_reason,
             })
         except (TypeError, ValueError) as error:
             self.get_logger().warning(
                 f'Rejected invalid {MODE_STATE_TOPIC}: {error}'
+            )
+
+    def _on_map_state(self, message: MapState) -> None:
+        try:
+            catalog = [
+                {
+                    'name': entry.name,
+                    'revision': entry.revision,
+                    'complete': bool(entry.complete),
+                    'selected': bool(entry.selected),
+                    'session_id': entry.session_id,
+                    'reason': entry.reason,
+                    'resolution': float(entry.resolution),
+                    'width': int(entry.width),
+                    'height': int(entry.height),
+                }
+                for entry in message.catalog
+            ]
+            _finite(*[row['resolution'] for row in catalog])
+            self._cache.update('map_state', {
+                'stamp': _stamp(message.stamp),
+                'session_id': message.session_id,
+                'runtime_epoch': int(message.runtime_epoch),
+                'mapping_active': bool(message.mapping_active),
+                'session_phase': int(message.session_phase),
+                'session_ready': bool(message.session_ready),
+                'unsaved': bool(message.unsaved),
+                'saved_name': message.saved_name,
+                'saved_revision': message.saved_revision,
+                'save_state': int(message.save_state),
+                'save_request_id': int(message.save_request_id),
+                'save_detail': message.save_detail,
+                'selected_map_requested': message.selected_map_requested,
+                'selected_map_applied': message.selected_map_applied,
+                'selected_map_reason': message.selected_map_reason,
+                'catalog': catalog,
+            })
+        except (TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected invalid {MAP_STATE_TOPIC}: {error}'
             )
 
     def _on_authority(self, message: CommandAuthorityState) -> None:

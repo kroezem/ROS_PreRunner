@@ -21,11 +21,17 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Tuple
+import uuid
 
 import dbus
 
 from runner_paddock.state_machine import Mode
+
+
+# ModeRequest.operation constants (kept local to avoid a message import here).
+OP_SELECT_RUNTIME = 0
+OP_NEW_MAP = 1
 
 
 SYSTEMD_BUS_NAME = 'org.freedesktop.systemd1'
@@ -123,6 +129,15 @@ class RuntimeState:
     accepted_request_id: int = 0
     active_autonomy_map: str = ''
     detail: str = ''
+    # Monotonic generation; increments on every successful application start
+    # (MAPPING/AUTONOMY) and on NEW MAP. Distinguishes current from stale status.
+    runtime_epoch: int = 0
+    # Non-empty only while MAPPING is the actual runtime; a fresh value per
+    # MAPPING start and per NEW MAP.
+    mapping_session_id: str = ''
+    # Continuously refreshed capability readiness for the actual runtime.
+    ready: bool = False
+    readiness_reason: str = 'IDLE'
 
 
 class SystemdManager:
@@ -226,9 +241,11 @@ class ModeRuntime:
         *,
         map_directory: Path = MAP_DIRECTORY,
         map_file: Path = AUTONOMY_MAP_FILE,
-        transition_timeout: float = 20.0,
+        transition_timeout: float = 45.0,
         poll_period: float = 0.1,
         ownership_ready: Callable[[Mode], bool] | None = None,
+        capability_ready: Callable[[Mode], Tuple[bool, str]] | None = None,
+        session_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self.systemd = systemd
         self.graph_nodes = graph_nodes
@@ -238,7 +255,13 @@ class ModeRuntime:
         self.transition_timeout = transition_timeout
         self.poll_period = poll_period
         self.ownership_ready = ownership_ready or (lambda _mode: True)
-        self.state = RuntimeState()
+        # Capability-specific evidence supplied by the ROS node; ROS-free tests
+        # default it to "ready" so structural orchestration stays isolated.
+        self.capability_ready = capability_ready or (lambda _mode: (True, ''))
+        self.session_id_factory = (
+            session_id_factory or (lambda: uuid.uuid4().hex[:12])
+        )
+        self.state = RuntimeState(ready=True, readiness_reason='')
 
     def _set(self, **changes) -> None:
         values = self.state.__dict__ | changes
@@ -260,25 +283,58 @@ class ModeRuntime:
         counts = Counter(self.graph_nodes())
         return not any(counts.get(node, 0) for node in MODE_NODES)
 
-    def _ready(self, mode: Mode) -> bool:
+    def _structural_reason(self, mode: Mode) -> str:
+        """Return '' when systemd/graph ownership matches ``mode`` exactly."""
         unit = MAPPING_UNIT if mode == Mode.MAPPING else AUTONOMY_UNIT
         if not self.systemd.state(unit).active:
-            return False
+            return f'{unit} is not active/running'
         counts = Counter(self.graph_nodes())
-        required = COMMON_NODES
         forbidden = AUTONOMY_ONLY_NODES if mode == Mode.MAPPING else frozenset()
-        return (
-            all(counts.get(node, 0) == 1 for node in required)
-            and all(
-                counts.get(node, 0) == 1
-                for node in PERSISTENT_LOCAL_NODES
-            )
-            and all(counts.get(node, 0) == 1 for node in (
-                AUTONOMY_ONLY_NODES if mode == Mode.AUTONOMY else frozenset()
-            ))
-            and not any(counts.get(node, 0) for node in forbidden)
-            and self.ownership_ready(mode)
+        required = set(COMMON_NODES) | set(PERSISTENT_LOCAL_NODES)
+        if mode == Mode.AUTONOMY:
+            required |= set(AUTONOMY_ONLY_NODES)
+        # Presence, not exact name count: a duplicate node *name* is DDS
+        # discovery residue, not proof of a duplicate owner (v1.3 s2). The
+        # authoritative single-owner enforcement is per topic/edge in
+        # ownership_ready(); the forbidden set still blocks mapping/autonomy
+        # node coexistence, which is the real ownership-conflict risk.
+        missing = sorted(node for node in required if counts.get(node, 0) < 1)
+        if missing:
+            return f'missing node(s): {", ".join(missing)}'
+        present_forbidden = sorted(
+            node for node in forbidden if counts.get(node, 0)
         )
+        if present_forbidden:
+            return f'unexpected node(s): {", ".join(present_forbidden)}'
+        if not self.ownership_ready(mode):
+            return 'single-writer ownership check failed'
+        return ''
+
+    def _ready(self, mode: Mode) -> bool:
+        return not self._structural_reason(mode)
+
+    def _fully_ready(self, mode: Mode) -> Tuple[bool, str]:
+        """Structural ownership plus capability-specific runtime evidence."""
+        reason = self._structural_reason(mode)
+        if reason:
+            return False, reason
+        ok, capability_reason = self.capability_ready(mode)
+        return ok, ('' if ok else (capability_reason or 'capability not ready'))
+
+    def refresh(self) -> RuntimeState:
+        """Re-evaluate continuous readiness without changing the lifecycle."""
+        if self.state.lifecycle != Lifecycle.STABLE:
+            if self.state.ready:
+                self._set(ready=False)
+            return self.state
+        if self.state.mode == Mode.IDLE:
+            if not self.state.ready or self.state.readiness_reason:
+                self._set(ready=True, readiness_reason='')
+            return self.state
+        ok, reason = self._fully_ready(self.state.mode)
+        if ok != self.state.ready or reason != self.state.readiness_reason:
+            self._set(ready=ok, readiness_reason=reason)
+        return self.state
 
     def _write_map(self, basename: str) -> None:
         self.map_file.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -291,6 +347,9 @@ class ModeRuntime:
         if not self.map_file.is_file():
             return ''
         return self.map_file.read_text(encoding='utf-8').strip()
+
+    def _new_session_id(self) -> str:
+        return f'{self.state.runtime_epoch + 1}-{self.session_id_factory()}'
 
     def _stop_all(self) -> None:
         # Always issue both stops: this also collapses ambiguous/conflicting state.
@@ -315,6 +374,9 @@ class ModeRuntime:
             mode=Mode.IDLE,
             lifecycle=Lifecycle.FAULT,
             detail=detail + cleanup,
+            mapping_session_id='',
+            ready=False,
+            readiness_reason=detail,
         )
         return self.state
 
@@ -337,22 +399,49 @@ class ModeRuntime:
                     return self._fail(
                         'mode-scoped ROS resources exist outside active mode units'
                     )
-                self._set(mode=Mode.IDLE, lifecycle=Lifecycle.STABLE, detail='')
+                self._set(
+                    mode=Mode.IDLE,
+                    lifecycle=Lifecycle.STABLE,
+                    detail='',
+                    mapping_session_id='',
+                    ready=True,
+                    readiness_reason='',
+                )
                 return self.state
             mode = (
                 Mode.MAPPING if active[0] == MAPPING_UNIT else Mode.AUTONOMY
             )
             if not self._ready(mode):
-                return self._fail(f'{mode.name} unit is active but graph is partial')
+                # A freshly active unit may still be discovering its graph.
+                # Give structural ownership a bounded grace period before
+                # concluding the graph is genuinely partial and tearing it down.
+                try:
+                    self._wait(
+                        lambda: self._ready(mode),
+                        f'{mode.name} graph discovery',
+                    )
+                except RuntimeError:
+                    return self._fail(
+                        f'{mode.name} unit is active but graph is partial: '
+                        f'{self._structural_reason(mode)}'
+                    )
             selected_map = self.state.active_autonomy_map
             if mode == Mode.AUTONOMY:
                 selected_map = self._stored_map()
                 validate_map_bundle(selected_map, map_directory=self.map_directory)
+            ok, reason = self._fully_ready(mode)
+            session_id = (
+                self._new_session_id() if mode == Mode.MAPPING else ''
+            )
             self._set(
                 mode=mode,
                 lifecycle=Lifecycle.STABLE,
                 active_autonomy_map=selected_map,
                 detail='',
+                runtime_epoch=max(self.state.runtime_epoch, 1),
+                mapping_session_id=session_id,
+                ready=ok,
+                readiness_reason=reason,
             )
             return self.state
         except (OSError, RuntimeError, ValueError) as error:
@@ -364,32 +453,55 @@ class ModeRuntime:
         request_id: int,
         *,
         autonomy_map: str = '',
+        operation: int = OP_SELECT_RUNTIME,
     ) -> RuntimeState:
-        """Stop fully, validate/start, verify, then publish actual mode."""
+        """
+        Stop fully, validate/start, verify, then publish actual mode.
+
+        ``operation`` OP_NEW_MAP (only with ``requested`` MAPPING) forces a fresh
+        mapping SLAM session even when MAPPING is already the stable runtime.
+        """
         if request_id <= self.state.accepted_request_id:
             return self.state
         if not isinstance(requested, Mode):
             return self.state
+        new_map = operation == OP_NEW_MAP and requested == Mode.MAPPING
         same_selection = (
             requested != Mode.AUTONOMY
             or autonomy_map == self.state.active_autonomy_map
         )
         if (
-            self.state.lifecycle == Lifecycle.STABLE
+            not new_map
+            and self.state.lifecycle == Lifecycle.STABLE
             and requested == self.state.mode
             and same_selection
         ):
+            # Idempotent re-selection: never restarts, never resets a map.
             self._set(accepted_request_id=request_id)
             return self.state
+        detail = (
+            'starting fresh mapping session'
+            if new_map else f'transitioning to {requested.name}'
+        )
         self._set(
             lifecycle=Lifecycle.TRANSITIONING,
             accepted_request_id=request_id,
-            detail=f'transitioning to {requested.name}',
+            detail=detail,
+            ready=False,
+            readiness_reason=detail,
+            mapping_session_id='',
         )
         try:
             self._stop_all()
             if requested == Mode.IDLE:
-                self._set(mode=Mode.IDLE, lifecycle=Lifecycle.STABLE, detail='')
+                self._set(
+                    mode=Mode.IDLE,
+                    lifecycle=Lifecycle.STABLE,
+                    detail='',
+                    mapping_session_id='',
+                    ready=True,
+                    readiness_reason='',
+                )
                 return self.state
             if requested == Mode.AUTONOMY:
                 validate_map_bundle(
@@ -401,11 +513,24 @@ class ModeRuntime:
             else:
                 unit = MAPPING_UNIT
             self.systemd.start(unit)
-            self._wait(lambda: self._ready(requested), f'{requested.name} readiness')
+            self._wait(
+                lambda: self._fully_ready(requested)[0],
+                f'{requested.name} readiness',
+            )
+            ok, reason = self._fully_ready(requested)
+            epoch = self.state.runtime_epoch + 1
+            session_id = (
+                f'{epoch}-{self.session_id_factory()}'
+                if requested == Mode.MAPPING else ''
+            )
             changes = {
                 'mode': requested,
                 'lifecycle': Lifecycle.STABLE,
                 'detail': '',
+                'runtime_epoch': epoch,
+                'mapping_session_id': session_id,
+                'ready': ok,
+                'readiness_reason': reason,
             }
             if requested == Mode.AUTONOMY:
                 changes['active_autonomy_map'] = autonomy_map

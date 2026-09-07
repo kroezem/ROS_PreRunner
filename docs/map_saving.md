@@ -4,8 +4,17 @@ The studio bundle is committed (6a7c961); artifact presence does not certify phy
 an explicit basename containing nonempty `.posegraph`, `.data`, `.yaml`, and
 the occupancy image referenced by that YAML.
 
-The `Runner: Save Map` VS Code task creates two different representations of
-the same map:
+Two paths produce a bundle. The Paddock backend (`runner_map_executor`, v1.3
+Stage 4) is the normal operator path: it stages into `maps/.staging/`, captures
+a same-session occupancy raster, validates the complete four-artifact bundle,
+writes `<name>.manifest.json` (session id, creation time, revision, SHA-256 of
+the four artifacts) and only then moves the bundle into `maps/`. A half-written
+bundle stays in `.staging/` and never becomes selectable. See
+`docs/paddock_v1.3_implementation.md`.
+
+The `Runner: Save Map` VS Code task / `scripts/save_map.sh` is the engineering
+path and remains valid. It creates two different representations of the same
+map:
 
 - `slam_toolbox`'s `SerializePoseGraph` service creates `.posegraph` and
   `.data`.

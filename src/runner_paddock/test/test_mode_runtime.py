@@ -25,6 +25,7 @@ from runner_paddock.mode_runtime import COMMON_NODES
 from runner_paddock.mode_runtime import Lifecycle
 from runner_paddock.mode_runtime import MAPPING_UNIT
 from runner_paddock.mode_runtime import ModeRuntime
+from runner_paddock.mode_runtime import OP_NEW_MAP
 from runner_paddock.mode_runtime import PERSISTENT_LOCAL_NODES
 from runner_paddock.mode_runtime import UnitState
 from runner_paddock.mode_runtime import validate_map_bundle
@@ -76,7 +77,7 @@ def complete_map(directory: Path, name='studio'):
     (directory / f'{name}.yaml').write_text(f'image: {name}.pgm\n')
 
 
-def runtime(tmp_path, graph=None):
+def runtime(tmp_path, graph=None, capability_ready=None):
     """Build a fast runtime and collect every published lifecycle state."""
     graph = (
         Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
@@ -84,6 +85,12 @@ def runtime(tmp_path, graph=None):
     )
     systemd = FakeSystemd(graph)
     published = []
+    counter = [0]
+
+    def next_session_id():
+        counter[0] += 1
+        return f'tok{counter[0]}'
+
     value = ModeRuntime(
         systemd,
         lambda: graph,
@@ -92,8 +99,89 @@ def runtime(tmp_path, graph=None):
         map_file=tmp_path / 'run' / 'autonomy-map',
         transition_timeout=0.05,
         poll_period=0.001,
+        capability_ready=capability_ready,
+        session_id_factory=next_session_id,
     )
     return value, systemd, graph, published
+
+
+def test_runtime_epoch_increments_per_successful_application_start(tmp_path):
+    complete_map(tmp_path)
+    value, _systemd, _graph, _published = runtime(tmp_path)
+
+    assert value.state.runtime_epoch == 0
+    assert value.transition(Mode.MAPPING, 1).runtime_epoch == 1
+    assert value.transition(Mode.IDLE, 2).runtime_epoch == 1
+    assert value.transition(
+        Mode.AUTONOMY, 3, autonomy_map='studio'
+    ).runtime_epoch == 2
+
+
+def test_mapping_session_id_lifecycle(tmp_path):
+    complete_map(tmp_path)
+    value, systemd, _graph, _published = runtime(tmp_path)
+
+    first = value.transition(Mode.MAPPING, 1).mapping_session_id
+    assert first
+    # Idempotent re-selection never resets the session or restarts anything.
+    operations = list(systemd.operations)
+    same = value.transition(Mode.MAPPING, 2).mapping_session_id
+    assert same == first
+    assert systemd.operations == operations
+
+    # NEW MAP forces a fresh session and a real restart.
+    fresh = value.transition(
+        Mode.MAPPING, 3, operation=OP_NEW_MAP
+    )
+    assert fresh.mapping_session_id != first
+    assert fresh.runtime_epoch == 2
+    assert systemd.operations != operations
+
+    # Leaving MAPPING clears the session identity.
+    assert value.transition(Mode.IDLE, 4).mapping_session_id == ''
+    autonomy = value.transition(Mode.AUTONOMY, 5, autonomy_map='studio')
+    assert autonomy.mapping_session_id == ''
+
+
+def test_new_map_restart_verifies_old_owner_gone_first(tmp_path):
+    value, systemd, graph, _published = runtime(tmp_path)
+    value.transition(Mode.MAPPING, 1)
+    boundary = len(systemd.operations)
+
+    value.transition(Mode.MAPPING, 2, operation=OP_NEW_MAP)
+
+    # stop precedes start within the NEW MAP restart.
+    new_map_ops = systemd.operations[boundary:]
+    assert new_map_ops[0][0] == 'stop'
+    assert ('start', MAPPING_UNIT) in new_map_ops
+    assert new_map_ops.index(('start', MAPPING_UNIT)) > 0
+
+
+def test_capability_evidence_gates_readiness_and_surfaces_reason(tmp_path):
+    gate = {'ready': False}
+    value, _systemd, _graph, _published = runtime(
+        tmp_path,
+        capability_ready=lambda _mode: (
+            (True, '') if gate['ready'] else (False, 'scan_slam is stale')
+        ),
+    )
+
+    result = value.transition(Mode.MAPPING, 1)
+    assert result.lifecycle == Lifecycle.FAULT
+    assert 'readiness' in result.detail
+
+    gate['ready'] = True
+    ready = value.transition(Mode.MAPPING, 2)
+    assert ready.lifecycle == Lifecycle.STABLE
+    assert ready.ready
+    assert ready.readiness_reason == ''
+
+    # Continuous refresh reflects a later capability loss without a FAULT.
+    gate['ready'] = False
+    refreshed = value.refresh()
+    assert refreshed.lifecycle == Lifecycle.STABLE
+    assert not refreshed.ready
+    assert refreshed.readiness_reason == 'scan_slam is stale'
 
 
 @pytest.mark.parametrize('name', ['', '../studio', 'a/b', 'a\\b', '..'])

@@ -27,6 +27,7 @@ setup(
             'runner_paddock.command_authority_node:main',
             'mode_launcher = runner_paddock.mode_launcher:main',
             'mode_supervisor = runner_paddock.mode_supervisor_node:main',
+            'map_executor = runner_paddock.map_session_node:main',
             'web = runner_paddock.web_app:main',
         ],
     },
