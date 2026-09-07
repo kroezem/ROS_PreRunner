@@ -222,7 +222,13 @@ class ModeSupervisorNode(Node):
         if not self._lock.acquire(blocking=False):
             return
         try:
-            self._runtime.refresh()
+            state = self._runtime.refresh()
+            # Heartbeat: re-publish the current runtime state every tick so
+            # /paddock/mode_state carries the same liveness guarantee as the
+            # other Paddock status topics (e.g. /paddock/map_state). The
+            # runtime itself only publishes on a state change, so a steady
+            # IDLE runtime would otherwise let mode_state age without bound.
+            self._publish(state)
         finally:
             self._lock.release()
 

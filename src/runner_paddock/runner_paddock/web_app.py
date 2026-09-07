@@ -64,6 +64,23 @@ def create_app(
     app.state.ros_runtime = ros_runtime
     app.mount('/static', StaticFiles(directory=STATIC_DIRECTORY), name='static')
 
+    @app.middleware('http')
+    async def _revalidate_shell(request, call_next):
+        """
+        Force the browser to revalidate the console shell on every load.
+
+        The static assets are served with heuristic-cacheable validators only,
+        so after a redeploy a browser (and the in-scope service worker's
+        network-first ``fetch``) can keep serving a stale ``app.js`` against a
+        fresh ``index.html``. ``no-cache`` keeps the ETag/Last-Modified 304
+        path fast while guaranteeing the served code matches the deployment.
+        """
+        response = await call_next(request)
+        path = request.url.path
+        if path == '/' or path.startswith('/static/'):
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
+
     @app.get('/', include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIRECTORY / 'index.html')

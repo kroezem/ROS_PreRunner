@@ -469,3 +469,42 @@ commands are in the report's DEPLOYMENT section.
 - `runner_interfaces` had a stale `build/` symlink-vs-directory conflict that
   broke `colcon build`; cleared (`rm -rf build/runner_interfaces` + rebuild).
   A clean 4-package build now passes.
+
+### Post-deploy fixes — stale console shell and stale mode_state
+
+Two concrete defects surfaced once the coherent stack was live; both are
+read-only diagnoses with a minimal fix, no Paddock redesign.
+
+- **Operator console showed no structured state, header stuck at
+  "Connecting…".** `/ws` was delivering fresh `state` frames (the raw
+  backend-truth dump updated) but every card stayed at `—`. Cause: the browser
+  was running the pre-Stage-8 `app.js` (which targets a `#connection` node that
+  no longer exists — its `open` handler throws, so it only ever writes the raw
+  `#debug` dump) against the new `index.html`. The stale asset came from
+  heuristic HTTP caching of `/static/app.js` (served with validators but no
+  `Cache-Control`), which the in-scope service worker's network-first `fetch`
+  also honours. Fix: `web_app` now sets `Cache-Control: no-cache` on `/` and
+  `/static/*` (ETag/Last-Modified 304s still apply); `service-worker.js` cache
+  bumped to `-v2` with a network (`cache: 'reload'`) precache and
+  `skipWaiting` / `clients.claim` so a redeploy self-heals. The current
+  `app.js` renders correctly against the current `index.html` (verified
+  headless: load → open → `state` frame populates every card and the banner).
+
+- **`/paddock/mode_state` aged without bound in steady state** (~72 s stale
+  while authority / STOP / local-control / map-state were fresh). Cause: the
+  mode supervisor only published `ModeState` on a lifecycle/readiness *change*;
+  its 0.5 s refresh timer called `ModeRuntime.refresh()` but that too only
+  publishes on change, so a stable IDLE runtime never re-published. Fix:
+  `ModeSupervisorNode._on_refresh_timer` now re-publishes the current runtime
+  state every tick, giving `mode_state` the same 0.5 s liveness guarantee as
+  `map_session_node` already gives `map_state`. `ModeRuntime` publish-on-change
+  semantics (and its tests) are unchanged.
+
+Validation: `runner_paddock` build clean; 115 package tests pass; the
+`no-cache` headers verified on `/`, `/static/app.js`, `/static/style.css`,
+`/static/service-worker.js` and absent on other routes. Live end-to-end
+confirmation (console rendering in a real browser, `mode_state` staying fresh
+in IDLE) needs the operator to restart `runner-paddock-web` and
+`runner-mode-supervisor` — this shell cannot (polkit only grants `matti`
+start/stop of the two `runner-mode-*` units). Not started: broader integration
+validation.
