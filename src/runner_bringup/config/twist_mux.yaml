@@ -3,6 +3,16 @@ twist_mux:
     # Jazzy twist_mux 4.5 defaults to TwistStamped unless this is explicit.
     use_stamped: false
     topics:
+      # Supervised Paddock autonomy. Sole writer: runner_command_authority,
+      # which publishes here only while every autonomy interlock holds and
+      # goes silent (after a bounded brake) on revoke. Lowest priority: local
+      # DualSense teleop and the global STOP zero both override it. The 0.30 s
+      # timeout matches the authority's 20 Hz supervised cadence with margin;
+      # a stale autonomy sample simply drops out of arbitration.
+      autonomy:
+        topic: /cmd_vel_auto
+        timeout: 0.30
+        priority: 50
       teleop:
         topic: /cmd_vel_teleop
         timeout: 0.15

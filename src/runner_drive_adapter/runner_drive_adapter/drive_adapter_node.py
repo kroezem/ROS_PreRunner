@@ -96,7 +96,10 @@ class DriveAdapterNode(Node):
         self.add_on_set_parameters_callback(self._on_parameters)
         self._warnings = WarningThrottle()
         self._shutdown_recorded = False
-        self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto', 10)
+        # v1.3 autonomy seam: the adapter is the sole writer of the *raw*
+        # converted autonomy command. runner_command_authority validates and
+        # supervises it before anything reaches /cmd_vel_auto and the mux.
+        self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto_raw', 10)
         self._state_pub = self.create_publisher(
             String, '/drive_adapter/state', 10
         )

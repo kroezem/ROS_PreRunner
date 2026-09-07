@@ -12,7 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Private transitional authority scaffold; outputs must not feed production mux."""
+"""
+Command authority: sole supervised writer of /cmd_vel_auto for the mux.
+
+v1.3 autonomous command path (Part A cutover):
+
+``Nav2 -> /cmd_vel_nav -> drive_adapter -> /cmd_vel_auto_raw ->
+command_authority -> /cmd_vel_auto -> twist_mux -> /cmd_vel -> motor``
+
+The drive adapter is the sole writer of ``/cmd_vel_auto_raw``. This node is
+the sole writer of the supervised ``/cmd_vel_auto`` and forwards a raw sample
+only while every current-state autonomy interlock holds (runtime AUTONOMY and
+ready, matching epoch/map, fresh lease, STOP clear, no DualSense takeover /
+unresolved rearm, RUN held, fresh raw input, mission lifecycle compatible).
+On revoke it emits a bounded brake transition on ``/cmd_vel_auto`` and then
+goes silent; the mux (autonomy priority 50) is always overridden by local
+DualSense teleop (100) and the global STOP zero (255). It never writes
+``/cmd_vel``.
+"""
 
 import math
 import time
@@ -43,8 +60,12 @@ from runner_paddock.state_machine import Mode
 
 
 RAW_AUTONOMY_TOPIC = '/cmd_vel_auto_raw'
-SUPERVISED_AUTONOMY_TOPIC = '/paddock/private/cmd_vel_auto'
+SUPERVISED_AUTONOMY_TOPIC = '/cmd_vel_auto'
 PADDOCK_OUTPUT_TOPIC = '/paddock/private/cmd_vel_paddock'
+# Bounded brake transition emitted on /cmd_vel_auto after a revoke, then the
+# publisher goes silent. Covers one full mux autonomy input timeout (0.30 s)
+# so the deliberate zero is arbitrated before the input ages out.
+DEFAULT_AUTO_BRAKE_WINDOW_SEC = 0.30
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 MODE_STATE_TOPIC = '/paddock/mode_state'
@@ -204,6 +225,19 @@ class CommandAuthorityNode(Node):
         self._nav_action_active = False
         self._nav_state_at = None
         self._nav_state_timeout = DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC
+        self._auto_brake_window = float(
+            self.declare_parameter(
+                'auto_brake_window_sec', DEFAULT_AUTO_BRAKE_WINDOW_SEC
+            ).value
+        )
+        if (
+            not math.isfinite(self._auto_brake_window)
+            or self._auto_brake_window <= 0.0
+        ):
+            raise ValueError('auto_brake_window_sec must be finite and positive')
+        # Monotonic deadline until which a bounded brake zero is still
+        # published on /cmd_vel_auto after a revoke; None means silent.
+        self._auto_brake_deadline = None
         self._auto_pub = self.create_publisher(
             Twist, SUPERVISED_AUTONOMY_TOPIC, 10
         )
@@ -265,9 +299,10 @@ class CommandAuthorityNode(Node):
 
         self._apply(self._supervisor.restart(time.monotonic()))
         self.get_logger().info(
-            'Command authority offline contract: '
-            f'{RAW_AUTONOMY_TOPIC} -> {SUPERVISED_AUTONOMY_TOPIC}; '
-            f'brake intent -> {PADDOCK_OUTPUT_TOPIC}; '
+            'Command authority supervised autonomy path: '
+            f'{RAW_AUTONOMY_TOPIC} -> supervise -> {SUPERVISED_AUTONOMY_TOPIC} '
+            '-> twist_mux (autonomy priority 50); '
+            f'bounded brake window {self._auto_brake_window:.3f} s then silent; '
             'never publishes /cmd_vel'
         )
 
@@ -373,11 +408,17 @@ class CommandAuthorityNode(Node):
             )
             return
         self._runtime_epoch = int(message.runtime_epoch)
+        # "Runtime actually AUTONOMY and ready": a STABLE-but-not-ready runtime
+        # is treated as not eligible for remote motion (fail closed). The
+        # readiness reason is surfaced to the UI separately via ModeState.
+        runtime_ready = (
+            message.status == ModeState.STATUS_STABLE and bool(message.ready)
+        )
         result = self._supervisor.set_runtime_mode(
             mode=mode,
             active_autonomy_map=message.active_autonomy_map,
             now=time.monotonic(),
-            runtime_stable=(message.status == ModeState.STATUS_STABLE),
+            runtime_stable=runtime_ready,
         )
         self._apply(result)
 
@@ -492,12 +533,35 @@ class CommandAuthorityNode(Node):
         self._nav_request_pub.publish(message)
 
     def _apply(self, result: SupervisorResult) -> None:
-        if result.autonomy_command is not None and self._stop_clear(time.monotonic()):
+        now = time.monotonic()
+        # Mission lifecycle must be compatible with motion: a real, current,
+        # accepted/executing Nav2 action. DISPATCHING / CANCELING / terminal
+        # states, or a stale navigation_state, forbid autonomous output even
+        # if the supervisor's interlock is otherwise satisfied.
+        nav_motion_ok = (
+            self._nav_action_active and self._navigation_state_fresh(now)
+        )
+        forwarded = (
+            result.autonomy_command is not None
+            and self._stop_clear(now)
+            and nav_motion_ok
+        )
+        if forwarded:
             self._auto_pub.publish(_to_twist(result.autonomy_command))
+            # Arm the bounded brake window off every forwarded sample; a
+            # non-None deadline is exactly "was forwarding until recently".
+            self._auto_brake_deadline = now + self._auto_brake_window
+        elif self._auto_brake_deadline is not None:
+            if now <= self._auto_brake_deadline:
+                # Revoke transition: explicit zero on /cmd_vel_auto ...
+                self._auto_pub.publish(Twist())
+            else:
+                # ... then the publisher goes silent (input ages out of mux).
+                self._auto_brake_deadline = None
         if result.snapshot.brake_intent:
-            brake = Twist()
-            self._auto_pub.publish(brake)
-            self._paddock_pub.publish(brake)
+            # /paddock private manual brake channel (manual path not yet cut
+            # over); harmless and never reaches the mux.
+            self._paddock_pub.publish(Twist())
         self._sync_navigation(result.snapshot)
         self._publish_state(result)
 

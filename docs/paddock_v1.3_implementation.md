@@ -264,3 +264,99 @@ not.
   lifecycle only and the converter/mux seam is untouched.
 - Autonomous velocity remains intentionally disconnected from the mux; the
   legacy `/cmd_vel_auto` mux input was not reintroduced.
+
+## Stage 7 — autonomy authority / velocity cutover (Part A)
+
+The final v1.3 autonomous command path is now wired end to end:
+
+```
+Nav2 -> /cmd_vel_nav -> drive_adapter -> /cmd_vel_auto_raw
+     -> command_authority -> /cmd_vel_auto -> existing twist_mux -> /cmd_vel -> motor
+```
+
+### Ownership / topology
+
+- `drive_adapter` is the **sole writer of `/cmd_vel_auto_raw`** (was
+  `/cmd_vel_auto`). No retuning: only the publisher topic changed. It stays a
+  persistent-process diagnostic writer, active only in the AUTONOMY
+  application.
+- `command_authority` is the **sole writer of the supervised `/cmd_vel_auto`**
+  (was the private `/paddock/private/cmd_vel_auto`). It forwards a raw sample
+  only while every current-state interlock holds and otherwise emits a bounded
+  0.30 s brake transition on `/cmd_vel_auto`, then goes silent.
+- `twist_mux` gains exactly one autonomy input: `topic: /cmd_vel_auto`,
+  `timeout: 0.30`, `priority: 50`. Ordering is
+  `autonomy 50 < teleop 100 < stop-lock 200 < stop-zero 255`, so local
+  DualSense teleop and the global STOP always override autonomy. Still one
+  mux, still the sole `/cmd_vel` writer. No second mux, no adapter→mux bypass.
+
+### Autonomy permit conditions (fail closed on stale/unknown)
+
+Supervised output on `/cmd_vel_auto` requires **all** of:
+
+- runtime actually `AUTONOMY`, `STATUS_STABLE` **and** `ModeState.ready`
+  (a stable-but-not-ready runtime is treated as ineligible);
+- current runtime epoch / active map identity match (goal is bound to the
+  active map; a map/epoch change clears the goal and RUN);
+- fresh Paddock control lease (`lease_timeout_sec`, deployed at 0.5 s as the
+  browser-disconnect backstop for a held RUN — a first-integration Wi-Fi
+  value to be measured and tightened before traction);
+- STOP state fresh **and** clear (`_stop_clear`; a stale `/paddock/stop_state`
+  fails closed);
+- local DualSense not active and no unresolved takeover
+  (`run_blocked_until_release`);
+- autonomous RUN permission current (`run_held`; hold-to-run, see below);
+- raw converted input fresh (`raw_autonomy_timeout_sec`, 0.15 s at the 20 Hz
+  adapter cadence);
+- mission lifecycle compatible with motion: a real, current, accepted /
+  executing Nav2 action (`NavigationState.STATE_ACTIVE`, fresh). `DISPATCHING`,
+  `CANCELING`, terminal, or a stale navigation state forbid output.
+
+Precedence preserved: **STOP > DualSense > Paddock autonomous.**
+
+### RUN semantics — hold-to-run
+
+- RUN press (`EVENT_RUN_PRESSED`) under a fresh lease + ready AUTONOMY + a
+  validated goal + neutral local input establishes RUN and dispatches through
+  the current generation/epoch (`OP_DISPATCH`).
+- RUN release (`EVENT_RUN_RELEASED`) revokes motion immediately (bounded brake
+  then silent) **and** requests a Nav2 cancel via the Stage-5 runtime
+  (`OP_CANCEL`). The logical mission is retained as a deliberate-continuation
+  candidate (Q2); a **new** deliberate RUN edge is required to redispatch.
+- Releasing DualSense never auto-resumes: `run_blocked_until_release` holds
+  until a fresh release→press after the local takeover clears.
+- RUN is also revoked by: browser disconnect / stale heartbeat (lease expiry),
+  lease loss, STOP, runtime/map/epoch change, DualSense takeover, readiness
+  loss. Reconnect never resurrects RUN, an old goal dispatch, or a STOP clear —
+  the authority restarts with no lease, RUN, goal or raw sample.
+
+No fake Nav2 pause: RUN release issues a real cancel; Nav2 may time out while
+gated stationary, which is why the logical mission (not the action) is what
+survives.
+
+### Validation
+
+- `colcon build` clean for `runner_paddock`, `runner_drive_adapter`,
+  `runner_bringup` (`runner_interfaces` unchanged; its pre-existing stale
+  build-symlink is untouched).
+- Package tests: `runner_paddock` 106 passed (updated authority topic
+  contract); `runner_drive_adapter` 110 passed (raw-topic rename);
+  `runner_bringup` 56 passed / 1 skipped, including the live-`twist_mux`
+  subprocess test rewritten as
+  `test_runtime_autonomy_input_is_below_local_teleop_and_stop` (teleop 100
+  overrides autonomy 50; local release lets the supervised autonomy input
+  drive; stop-lock 200 and stop-zero 255 both mask it).
+- Structural smoke: `command_authority` starts and logs the
+  `/cmd_vel_auto_raw -> /cmd_vel_auto -> twist_mux` path; with no raw input
+  (IDLE) it stays silent (`brake_intent`, no armed brake window).
+
+### Hardware / integration validation pending
+
+- A real held-RUN autonomous drive, DualSense takeover mid-mission, RUN-release
+  cancel, and global STOP during motion are **Matti's integration test** — see
+  the checklist. No traction was used.
+- End-to-end stale-`/cmd_vel` duration and the delayed-old-`Twist`-across-
+  cancellation quiescence acceptance (spec §10/§11) are measured on hardware;
+  not attempted here.
+- The persistent Pi services were still running pre-Stage-7 binaries at the
+  start of this pass; a coherent redeploy is required (Part C).

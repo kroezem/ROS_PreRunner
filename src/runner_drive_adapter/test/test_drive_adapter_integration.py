@@ -49,7 +49,7 @@ def test_graph_ownership_staleness_and_diagnostics():
     typed_states = []
     probe.create_subscription(
         Twist,
-        '/cmd_vel_auto',
+        '/cmd_vel_auto_raw',
         commands.append,
         10,
     )
@@ -83,7 +83,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         _spin_for(executor, 0.15)
         assert commands == []
         assert any('reason=no_command' in state.data for state in states)
-        assert len(probe.get_publishers_info_by_topic('/cmd_vel_auto')) == 1
+        assert len(probe.get_publishers_info_by_topic('/cmd_vel_auto_raw')) == 1
         cmd_vel_publishers = probe.get_publishers_info_by_topic('/cmd_vel')
         assert not any(
             endpoint.node_name == 'drive_adapter'

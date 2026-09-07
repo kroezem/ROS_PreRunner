@@ -425,7 +425,11 @@ def test_stage2_topic_ownership_and_no_collision_monitor_remain():
         )
     )
 
-    assert "create_publisher(Twist, '/cmd_vel_auto', 10)" in adapter
-    assert 'topic: /cmd_vel_auto' not in mux
+    # v1.3 autonomy cutover: the adapter writes the *raw* converted command;
+    # the command authority is the sole supervised writer of /cmd_vel_auto,
+    # which is the one autonomy input on the existing mux (priority 50).
+    assert "create_publisher(Twist, '/cmd_vel_auto_raw', 10)" in adapter
+    assert "create_publisher(Twist, '/cmd_vel_auto', 10)" not in adapter
+    assert 'topic: /cmd_vel_auto\n' in mux
     assert "('/cmd_vel_out', '/cmd_vel')" not in LAUNCH_PATH.read_text()
     assert 'collision_monitor' not in stage3_text.lower()

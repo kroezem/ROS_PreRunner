@@ -40,11 +40,18 @@ def _parameters():
     return document['twist_mux']['ros__parameters']
 
 
-def test_mux_configuration_has_only_persistent_local_and_stop_inputs():
+def test_mux_configuration_has_autonomy_local_and_stop_inputs():
     parameters = _parameters()
 
     assert parameters['use_stamped'] is False
-    assert set(parameters['topics']) == {'teleop', 'global_stop'}
+    # v1.3 autonomy cutover adds exactly one autonomy input, below local
+    # DualSense teleop and below the global STOP zero.
+    assert set(parameters['topics']) == {'autonomy', 'teleop', 'global_stop'}
+    assert parameters['topics']['autonomy'] == {
+        'topic': '/cmd_vel_auto',
+        'timeout': 0.30,
+        'priority': 50,
+    }
     assert parameters['topics']['teleop'] == {
         'topic': '/cmd_vel_teleop',
         'timeout': 0.15,
@@ -56,7 +63,9 @@ def test_mux_configuration_has_only_persistent_local_and_stop_inputs():
         'priority': 255,
     }
     assert (
-        parameters['topics']['teleop']['priority']
+        parameters['topics']['autonomy']['priority']
+        < parameters['topics']['teleop']['priority']
+        < parameters['locks']['global_stop']['priority']
         < parameters['topics']['global_stop']['priority']
     )
     assert parameters['locks']['global_stop'] == {
@@ -118,7 +127,8 @@ def _publish_for(executor, publisher, message, duration, period=0.02):
         executor.spin_once(timeout_sec=0.002)
 
 
-def test_runtime_local_release_cannot_expose_legacy_autonomy(monkeypatch):
+def test_runtime_autonomy_input_is_below_local_teleop_and_stop(monkeypatch):
+    """The one autonomy input never overrides DualSense teleop or STOP."""
     domain_id = str(random.randint(120, 220))
     monkeypatch.setenv('ROS_DOMAIN_ID', domain_id)
     environment = os.environ.copy()
@@ -138,26 +148,20 @@ def test_runtime_local_release_cannot_expose_legacy_autonomy(monkeypatch):
     )
 
     rclpy.init()
-    probe = Node('stage3_mux_test_probe')
+    probe = Node('stage7_mux_test_probe')
     executor = SingleThreadedExecutor()
     executor.add_node(probe)
     outputs = []
     probe.create_subscription(Twist, '/cmd_vel', outputs.append, 10)
     teleop_pub = probe.create_publisher(Twist, '/cmd_vel_teleop', 10)
-    legacy_auto_pub = probe.create_publisher(Twist, '/cmd_vel_auto', 10)
+    auto_pub = probe.create_publisher(Twist, '/cmd_vel_auto', 10)
+    stop_pub = probe.create_publisher(Twist, '/cmd_vel_stop', 10)
     lock_pub = probe.create_publisher(Bool, '/paddock/stop_lock', 10)
     teleop = Twist()
     teleop.linear.x = 0.63
-    legacy = Twist()
-    legacy.linear.x = 0.21
+    auto = Twist()
+    auto.linear.x = 0.21
     brake = Twist()
-
-    def publish(publisher, message, duration):
-        deadline = time.monotonic() + duration
-        while time.monotonic() < deadline:
-            lock_pub.publish(Bool(data=False))
-            publisher.publish(message)
-            executor.spin_once(timeout_sec=0.01)
 
     try:
         assert _spin_until(
@@ -165,33 +169,53 @@ def test_runtime_local_release_cannot_expose_legacy_autonomy(monkeypatch):
             lambda: (
                 len(probe.get_subscriptions_info_by_topic(
                     '/cmd_vel_teleop')) == 1
+                and len(probe.get_subscriptions_info_by_topic(
+                    '/cmd_vel_auto')) == 1
                 and len(probe.get_publishers_info_by_topic('/cmd_vel')) == 1
             ),
             3.0,
         )
-        assert probe.get_subscriptions_info_by_topic('/cmd_vel_auto') == []
-        assert len(probe.get_publishers_info_by_topic('/cmd_vel')) == 1
 
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not outputs:
+        # Local DualSense teleop (priority 100) overrides autonomy (50).
+        outputs.clear()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
             lock_pub.publish(Bool(data=False))
             teleop_pub.publish(teleop)
+            auto_pub.publish(auto)
             executor.spin_once(timeout_sec=0.01)
         assert outputs and outputs[-1].linear.x == pytest.approx(0.63)
 
+        # Local release: autonomy IS now selected (the intended cutover), but
+        # only because the command authority is its sole, supervised writer.
         outputs.clear()
-        deadline = time.monotonic() + 0.35
+        deadline = time.monotonic() + 0.6
         while time.monotonic() < deadline:
             lock_pub.publish(Bool(data=False))
-            teleop_pub.publish(brake)
-            legacy_auto_pub.publish(legacy)
+            auto_pub.publish(auto)
             executor.spin_once(timeout_sec=0.01)
-        assert outputs
+        assert outputs and outputs[-1].linear.x == pytest.approx(0.21)
+
+        # STOP lock (priority 200) masks the autonomy input entirely.
+        outputs.clear()
+        deadline = time.monotonic() + 0.4
+        while time.monotonic() < deadline:
+            lock_pub.publish(Bool(data=True))
+            auto_pub.publish(auto)
+            executor.spin_once(timeout_sec=0.01)
         assert all(message.linear.x == 0.0 for message in outputs)
 
+        # Global STOP zero (priority 255) overrides autonomy directly.
         outputs.clear()
-        publish(legacy_auto_pub, legacy, 0.40)
-        assert outputs == []
+        deadline = time.monotonic() + 0.4
+        while time.monotonic() < deadline:
+            lock_pub.publish(Bool(data=False))
+            stop_pub.publish(brake)
+            auto_pub.publish(auto)
+            executor.spin_once(timeout_sec=0.01)
+        assert outputs and all(
+            message.linear.x == 0.0 for message in outputs
+        )
     finally:
         executor.remove_node(probe)
         probe.destroy_node()
