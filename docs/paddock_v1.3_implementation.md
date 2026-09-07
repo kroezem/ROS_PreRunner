@@ -435,3 +435,37 @@ retained" banner.
 - Real browser-in-hand exercise against the live managed stack (needs the
   Part C redeploy). Native map rendering / click-to-goal is deliberately
   deferred.
+
+## Deployment coherence (Part C)
+
+`services/install.sh` is now the single source of truth for the systemd
+layout: `--check` reports drift without changing anything, no-arg applies the
+layout (symlink every tracked unit, install `setup-runner-pwm` and the polkit
+rule, `daemon-reload`, `enable` the persistent tier but never the two
+`runner-mode-*` units), `--restart` cycles the operator/application tier in
+dependency order.
+
+Drift found on the Pi at the start of this pass (`install.sh --check`):
+
+- `runner-command-authority.service`, `runner-stop-enforcer.service` and
+  `runner-pwm-setup.service` were hand-**copied** into `/etc/systemd/system`,
+  not symlinked — so repo edits (including the Stage 7
+  `lease_timeout_sec:=0.5`) never reached the running units.
+- `runner-map-executor.service` (Stage 4) was **never installed** — the
+  Mapping UI's NEW / SAVE / SELECT map path has no backend until it is.
+- `runner-pwm-setup.service` and its `/usr/local/sbin/setup-runner-pwm` script
+  existed only on disk; both are now tracked in `services/`.
+- The persistent services were running pre-Stage-4/5/7 code.
+
+Repo changes: added `services/install.sh`, `services/runner-pwm-setup.service`,
+`services/setup-runner-pwm`; `chmod 644` on the two mode-600 unit files so they
+symlink cleanly; `services/README.md` install section rewritten around the
+script and now lists `runner-stop-enforcer` and `runner-map-executor`.
+
+No systemd changes were applied: this environment has no passwordless sudo and
+`/etc/polkit-1/rules.d` is not readable unprivileged. The exact operator
+commands are in the report's DEPLOYMENT section.
+
+- `runner_interfaces` had a stale `build/` symlink-vs-directory conflict that
+  broke `colcon build`; cleared (`rm -rf build/runner_interfaces` + rebuild).
+  A clean 4-package build now passes.

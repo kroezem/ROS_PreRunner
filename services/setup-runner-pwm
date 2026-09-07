@@ -1,0 +1,33 @@
+#!/bin/bash
+# Boot-time PWM exporter / permission preparer for runner-pwm-setup.service.
+# Installed to /usr/local/sbin/setup-runner-pwm by services/install.sh.
+set -e
+
+CHIP=/sys/class/pwm/pwmchip0
+
+for _ in {1..50}; do
+    [ -d "$CHIP" ] && break
+    sleep 0.1
+done
+
+[ -d "$CHIP" ] || {
+    echo "PWM controller not found: $CHIP"
+    exit 1
+}
+
+chown root:gpio "$CHIP/export" "$CHIP/unexport"
+chmod 0660 "$CHIP/export" "$CHIP/unexport"
+
+for channel in 0 1; do
+    if [ ! -d "$CHIP/pwm$channel" ]; then
+        echo "$channel" > "$CHIP/export"
+    fi
+
+    for _ in {1..20}; do
+        [ -e "$CHIP/pwm$channel/period" ] && break
+        sleep 0.05
+    done
+
+    chown root:gpio "$CHIP/pwm$channel/"{period,duty_cycle,enable,polarity}
+    chmod 0660 "$CHIP/pwm$channel/"{period,duty_cycle,enable,polarity}
+done

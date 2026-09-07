@@ -1,0 +1,12 @@
+[Unit]
+Description=Export Runner PWM channels and set permissions
+After=local-fs.target
+ConditionPathExists=/sys/class/pwm/pwmchip0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/setup-runner-pwm
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

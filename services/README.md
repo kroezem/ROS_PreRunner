@@ -180,22 +180,67 @@ state is absent or never supplies a post-request stationary sample,
 `motor_node` remains fail-closed at zero duty (active brake), logs the pending
 gate condition, and does not change the hardware DIR line.
 
-Install the units as symlinks so the tracked copies remain authoritative:
+### Coherent install / deploy
+
+`services/install.sh` is the single source of truth for the systemd layout.
+It symlinks **every** tracked unit into `/etc/systemd/system` (replacing any
+stale hand-copied file), installs `setup-runner-pwm` to `/usr/local/sbin` and
+the narrow `49-runner-mode-units.rules` polkit rule, runs `daemon-reload`, and
+`enable`s the persistent tier — but never the two `runner-mode-*` units, which
+`runner-mode-supervisor` owns.
 
 ```sh
-sudo ln -s /home/matti/runner_ws/services/runner-foxglove.service /etc/systemd/system/runner-foxglove.service
-sudo ln -s /home/matti/runner_ws/services/runner-battery.service /etc/systemd/system/runner-battery.service
-sudo ln -s /home/matti/runner_ws/services/runner-telemetry.service /etc/systemd/system/runner-telemetry.service
-sudo ln -s /home/matti/runner_ws/services/runner-motor.service /etc/systemd/system/runner-motor.service
-sudo ln -s /home/matti/runner_ws/services/runner-encoder.service /etc/systemd/system/runner-encoder.service
-sudo ln -s /home/matti/runner_ws/services/runner-paddock-web.service /etc/systemd/system/runner-paddock-web.service
-sudo ln -s /home/matti/runner_ws/services/runner-mode-mapping.service /etc/systemd/system/runner-mode-mapping.service
-sudo ln -s /home/matti/runner_ws/services/runner-mode-autonomy.service /etc/systemd/system/runner-mode-autonomy.service
-sudo ln -s /home/matti/runner_ws/services/runner-command-authority.service /etc/systemd/system/runner-command-authority.service
-sudo ln -s /home/matti/runner_ws/services/runner-local-control.service /etc/systemd/system/runner-local-control.service
-sudo ln -s /home/matti/runner_ws/services/runner-mode-supervisor.service /etc/systemd/system/runner-mode-supervisor.service
-sudo systemctl daemon-reload
+cd /home/matti/runner_ws
+git pull
+colcon build --symlink-install          # message defs + nodes must be current
+services/install.sh --check             # report drift, change nothing
+sudo services/install.sh                # apply the layout + enable persistent tier
+sudo services/install.sh --restart      # restart the operator/application tier in order
 ```
+
+`--restart` cycles `runner-stop-enforcer → runner-command-authority →
+runner-local-control → runner-mode-supervisor → runner-map-executor →
+runner-paddock-web`. It deliberately does **not** touch `runner-motor` /
+`runner-encoder`; restart those yourself, with traction power disconnected, if
+their binaries changed. A reboot achieves the same coherent bring-up.
+
+The persistent tier that `install.sh` enables:
+
+| Unit | Role |
+|---|---|
+| `runner-pwm-setup.service` | oneshot PWM export + perms (before motor) |
+| `runner-motor.service` | sole motor/steering PWM owner |
+| `runner-encoder.service` | sole GPIO 22 encoder owner |
+| `runner-battery` / `runner-telemetry` / `runner-foxglove` | telemetry + diag |
+| `runner-stop-enforcer.service` | persistent global STOP executor + mux lock |
+| `runner-local-control.service` | joy + keyboard bridge + teleop + the one twist_mux |
+| `runner-command-authority.service` | sole supervised `/cmd_vel_auto` writer, lease + RUN |
+| `runner-mode-supervisor.service` | sole start/stop owner of the mode units |
+| `runner-map-executor.service` | `/paddock/map_request` → `/paddock/map_state` |
+| `runner-paddock-web.service` | browser intent gateway |
+
+Manual equivalent (only if not using the script):
+
+```sh
+for u in runner-pwm-setup runner-motor runner-encoder runner-battery \
+         runner-telemetry runner-foxglove runner-stop-enforcer \
+         runner-local-control runner-command-authority runner-mode-supervisor \
+         runner-map-executor runner-paddock-web runner-mode-mapping \
+         runner-mode-autonomy; do
+  sudo ln -sfn "/home/matti/runner_ws/services/$u.service" "/etc/systemd/system/$u.service"
+done
+sudo install -m 0755 /home/matti/runner_ws/services/setup-runner-pwm /usr/local/sbin/setup-runner-pwm
+sudo install -m 0644 /home/matti/runner_ws/services/49-runner-mode-units.rules /etc/polkit-1/rules.d/
+sudo systemctl daemon-reload
+sudo systemctl enable runner-pwm-setup runner-motor runner-encoder \
+  runner-battery runner-telemetry runner-foxglove runner-stop-enforcer \
+  runner-local-control runner-command-authority runner-mode-supervisor \
+  runner-map-executor runner-paddock-web
+```
+
+Do not pass `runner-mode-mapping` / `runner-mode-autonomy` to `enable` or
+`disable`: they carry no `[Install]` section, so `enable` is a no-op and
+`disable` only deletes the symlink you just created. See the note above.
 
 `runner-paddock-web.service` also needs its Python runtime dependencies
 present for `/usr/bin/python3` (one time, from the Ubuntu archive):
@@ -213,12 +258,14 @@ Before enabling any unit, verify that it sources both
 `/opt/ros/jazzy/setup.bash` and `/home/matti/runner_ws/install/setup.bash`, and
 that the workspace overlay is current.
 
-Enable and start the services manually:
+Enable and start the services manually (or just use `install.sh` above):
 
 ```sh
 sudo systemctl enable --now runner-foxglove.service
 sudo systemctl enable --now runner-battery.service
 sudo systemctl enable --now runner-telemetry.service
+sudo systemctl enable --now runner-stop-enforcer.service
+sudo systemctl enable --now runner-map-executor.service
 sudo systemctl enable --now runner-encoder.service
 sudo systemctl enable --now runner-paddock-web.service
 sudo systemctl enable --now runner-command-authority.service
