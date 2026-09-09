@@ -17,6 +17,7 @@ let keyboardRun = false;
 let runTimer = null;
 let catalogRenderKey = null;
 let pendingDeleteName = "";
+let retainedPlan = null;
 
 const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
@@ -147,6 +148,7 @@ function connect() {
       if (["map", "global_costmap", "local_costmap"].includes(frame.type)) {
         updateMapLayer(frame.type, frame);
       } else {
+        rememberPlan(frame);
         renderMap();
       }
     } else if (frame.type === "ack") {
@@ -164,6 +166,7 @@ function connect() {
     role = "observer";
     runHeld = false;
     keyboardRun = false;
+    retainedPlan = null;
     window.clearInterval(heartbeatTimer);
     window.clearInterval(runTimer);
     $("btn-run").classList.remove("armed");
@@ -172,11 +175,26 @@ function connect() {
   });
 }
 
-// --- tabs ---------------------------------------------------------------
+// --- CONTROL / CONFIGURE navigation ------------------------------------
 
-function selectTab(name) {
-  stopRun();
-  document.querySelectorAll(".tab").forEach((tab) => {
+function selectView(name) {
+  if (name !== "control") stopRun();
+  document.body.dataset.view = name;
+  document.querySelectorAll(".primary-tab").forEach((tab) => {
+    const selected = tab.dataset.view === name;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelectorAll(".primary-view").forEach((view) => {
+    const selected = view.id === `view-${name}`;
+    view.hidden = !selected;
+    view.classList.toggle("active", selected);
+  });
+  if (name === "control") window.requestAnimationFrame(resizeMapCanvas);
+}
+
+function selectConfigTab(name) {
+  document.querySelectorAll(".config-tab").forEach((tab) => {
     const selected = tab.dataset.tab === name;
     tab.classList.toggle("active", selected);
     tab.setAttribute("aria-selected", String(selected));
@@ -184,11 +202,19 @@ function selectTab(name) {
     panel.hidden = !selected;
     panel.classList.toggle("active", selected);
   });
-  window.requestAnimationFrame(resizeMapCanvas);
 }
 
-document.querySelectorAll(".tab").forEach((tab) => {
-  tab.addEventListener("click", () => selectTab(tab.dataset.tab));
+document.querySelectorAll(".primary-tab").forEach((tab) => {
+  tab.addEventListener("click", () => selectView(tab.dataset.view));
+});
+document.querySelectorAll(".config-tab").forEach((tab) => {
+  tab.addEventListener("click", () => selectConfigTab(tab.dataset.tab));
+});
+document.querySelectorAll("[data-open-config]").forEach((button) => {
+  button.addEventListener("click", () => {
+    selectConfigTab(button.dataset.openConfig);
+    selectView("configure");
+  });
 });
 
 // --- render -------------------------------------------------------------
@@ -224,7 +250,7 @@ function render() {
   const pose = latest.pose;
 
   setBannerFromState(mode, auth, stop);
-  text("g-backend", health);
+  text("g-backend", `${socketReady ? "connected" : "disconnected"} · ${health}`);
   text("system-health", health);
   text("g-role", role + (gw.lease_held ? "" : " (lease free)"));
   text("g-lease", lease.active
@@ -237,6 +263,7 @@ function render() {
   text("g-stop", stopSummary(stop, auth));
   text("g-dualsense", local.active ? `ACTIVE (${local.mode || ""})` :
     (local.connected ? "connected, idle" : "disconnected"));
+  renderControlState(mode, auth, stop, local, adapter, nav);
 
   const detail = runtimeDetail(mode);
   text("a-runtime-detail", detail);
@@ -286,11 +313,19 @@ function render() {
     button.disabled = !controller || !hasAutonomyMap;
   });
   $("a-map-hint").textContent = hasAutonomyMap ? "" : "Select a completed map in MAPS before AUTONOMY.";
-  const runRelevant = mode.mode === 2 && mode.status === 0 && mode.ready &&
-    Boolean(auth.autonomy_goal_selected);
-  $("run-controls").hidden = !runRelevant;
-  $("run-hint").hidden = !runRelevant;
-  if (!runRelevant) stopRun();
+  const autonomyControl = mode.mode === 2 && mode.status === 0;
+  const stopReady = auth.stop_state_fresh && auth.stop_healthy && auth.stop_clear &&
+    !auth.stop_applied && !stop.stopped;
+  const runAvailable = autonomyControl && mode.ready && stopReady &&
+    !auth.dualsense_active && Boolean(auth.autonomy_goal_selected) && controller;
+  $("run-controls").hidden = !autonomyControl;
+  $("run-hint").hidden = !autonomyControl;
+  $("btn-run").disabled = !runAvailable;
+  $("btn-cancel").disabled = !controller || !autonomyControl;
+  $("btn-goal-mode").hidden = !autonomyControl;
+  $("btn-goal-mode").disabled = !controller || !autonomyControl;
+  $("btn-clear-stop").hidden = !(stop.stopped || stop.clear_pending || auth.stop_applied);
+  if (!runAvailable) stopRun();
 
   const preview = goalInteraction.preview;
   if (preview && goalInteraction.awaiting && auth.autonomy_goal_selected &&
@@ -304,6 +339,54 @@ function render() {
   $("health-debug").textContent = JSON.stringify(latest.health || {}, null, 2);
   renderGoalControls();
   renderMap();
+}
+
+function renderControlState(mode, auth, stop, local, adapter, nav) {
+  const runtime = RUNTIME[mode.mode] ?? "UNKNOWN";
+  const status = RUNTIME_STATUS[mode.status] ?? "WAITING";
+  const stable = mode.status === 0;
+  const autonomy = stable && mode.mode === 2;
+  const mapping = stable && mode.mode === 1;
+  const passive = !autonomy && !mapping;
+
+  text("control-kicker", status === "STABLE" ? "Runtime" : status);
+  text("control-title", status === "FAULT" ? `${runtime} fault` : runtime);
+  text("control-chip", mode.ready ? "READY" : status);
+  text("control-detail", runtimeDetail(mode));
+  $("control-autonomy").hidden = !autonomy;
+  $("control-mapping").hidden = !mapping;
+  $("control-passive").hidden = !passive;
+
+  let inhibit = "Ready for operator input.";
+  if (!socketReady) inhibit = "Backend disconnected — RUN is revoked.";
+  else if (role !== "controller") inhibit = "Observer only — another session holds control.";
+  else if (stop.stopped) inhibit = `STOP asserted — ${stop.reason || "clear STOP when safe"}.`;
+  else if (!auth.stop_state_fresh) inhibit = "STOP status unavailable — motion remains inhibited.";
+  else if (!auth.stop_healthy) inhibit = `STOP enforcer unavailable — ${auth.stop_reason || "motion remains inhibited"}.`;
+  else if (!stable) inhibit = status === "FAULT"
+    ? humanDetail(mode.detail || mode.readiness_reason || "Open CONFIGURE to inspect the fault")
+    : humanDetail(mode.detail || "Runtime transition in progress");
+  else if (!mode.ready && mode.mode !== 0) inhibit = humanDetail(mode.readiness_reason || mode.detail);
+  else if (auth.dualsense_active) inhibit = "DualSense takeover active — Paddock motion is inhibited.";
+  else if (autonomy && !auth.autonomy_goal_selected) inhibit = "Set a goal on the map before holding RUN.";
+  else if (autonomy && auth.brake_intent && auth.reason) inhibit = humanDetail(auth.reason);
+  else if (mapping) inhibit = "Drive with the existing DualSense local controller.";
+  else if (mode.mode === 0) inhibit = "Select MAPPING or AUTONOMY in CONFIGURE.";
+  text("control-inhibit", inhibit);
+  $("control-inhibit").classList.toggle("ready", inhibit === "Ready for operator input.");
+
+  text("control-nav", MISSION[nav.state] ?? "—");
+  text("control-goal", auth.autonomy_goal_selected ? "selected" : "not selected");
+  text("control-speed", fmt(adapter.measured_speed));
+  text("control-yaw", fmt(adapter.measured_yaw_rate));
+  text("control-local", local.active ? `ACTIVE · ${local.mode || "local"}` :
+    (local.connected ? "Connected · controls released" : "DualSense disconnected"));
+
+  let next = "Select a runtime in CONFIGURE.";
+  if (!socketReady) next = "Waiting for backend connection.";
+  else if (mode.status === 1) next = "Wait for the runtime transition to complete.";
+  else if (mode.status === 2) next = "Open CONFIGURE → SYSTEM for backend truth.";
+  text("control-next", next);
 }
 
 function renderMetric(name, target, current, limit) {
@@ -449,14 +532,58 @@ function planIsInMapFrame(plan) {
     plan.poses.every((item) => !item.frame_id || item.frame_id === "map");
 }
 
-function drawPlan() {
-  const plan = latest.plan;
+function rememberPlan(plan) {
+  if (!planIsInMapFrame(plan) || plan.poses.length < 2) return;
+  const nav = latest.navigation_state || {};
+  const mode = latest.mode || {};
+  retainedPlan = {
+    plan,
+    bootId: nav.boot_id || "",
+    actionGeneration: nav.action_generation,
+    missionRevision: nav.mission_revision,
+    runtimeEpoch: mode.runtime_epoch,
+  };
+}
+
+function planDisplayState() {
+  const nav = latest.navigation_state || {};
+  const mode = latest.mode || {};
   const source = ((latest.health || {}).sources || {}).plan;
-  if (!layerSettings.plan.visible || !planIsInMapFrame(plan) ||
-      (source && !source.fresh) || plan.poses.length < 2) return;
+  const inFlight = [1, 2, 3].includes(nav.state);
+  const applicable = mode.mode === 2 && mode.status === 0 && nav.mission_valid && inFlight;
+  if (!applicable) return { plan: null, kind: "none", label: "plan unavailable" };
+
+  const contextMatches = retainedPlan &&
+    retainedPlan.bootId === (nav.boot_id || "") &&
+    retainedPlan.actionGeneration === nav.action_generation &&
+    retainedPlan.missionRevision === nav.mission_revision &&
+    retainedPlan.runtimeEpoch === mode.runtime_epoch;
+  if (!contextMatches) return { plan: null, kind: "none", label: "awaiting plan" };
+
+  const livePlan = latest.plan;
+  const liveAvailable = planIsInMapFrame(livePlan) && livePlan.poses.length >= 2 &&
+    (!source || source.fresh) && livePlan.revision === retainedPlan.plan.revision;
+  if (liveAvailable) {
+    return { plan: retainedPlan.plan, kind: "current", label: `plan ${retainedPlan.plan.poses.length} points` };
+  }
+  return {
+    plan: retainedPlan.plan,
+    kind: "last-known",
+    label: `last known plan ${retainedPlan.plan.poses.length} points · live plan unavailable`,
+  };
+}
+
+function drawPlan() {
+  const display = planDisplayState();
+  const plan = display.plan;
+  if (!layerSettings.plan.visible || !plan) return;
   mapContext.save();
   mapContext.strokeStyle = layerSettings.plan.color;
-  mapContext.lineWidth = 3 * devicePixelRatio;
+  mapContext.lineWidth = (display.kind === "current" ? 3 : 2.5) * devicePixelRatio;
+  mapContext.globalAlpha = display.kind === "current" ? 1 : 0.48;
+  if (display.kind !== "current") {
+    mapContext.setLineDash([8 * devicePixelRatio, 7 * devicePixelRatio]);
+  }
   mapContext.lineJoin = "round";
   mapContext.beginPath();
   plan.poses.forEach((item, index) => {
@@ -498,13 +625,13 @@ function renderMap() {
   const global = mapLayers.map.grid;
   const globalCostmap = mapLayers.global_costmap.grid;
   const local = mapLayers.local_costmap.grid;
-  const plan = latest.plan;
-  let planStatus = "plan unavailable";
-  if (plan) {
-    if (!planIsInMapFrame(plan)) planStatus = `plan frame rejected (${plan.frame_id || "empty"})`;
-    else if (sources.plan && !sources.plan.fresh) planStatus = "plan stale";
-    else planStatus = `plan ${plan.poses.length} points`;
+  const planDisplay = planDisplayState();
+  const rawPlan = latest.plan;
+  let planStatus = planDisplay.label;
+  if (rawPlan && !planIsInMapFrame(rawPlan)) {
+    planStatus = `plan frame rejected (${rawPlan.frame_id || "empty"})`;
   }
+  $("plan-badge").hidden = planDisplay.kind !== "last-known";
   $("map-status").textContent = global
     ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"} · ` +
       `global costmap ${globalCostmap && globalFresh ? "available" : globalCostmap ? "stale" : "unavailable"} · ` +
@@ -520,6 +647,7 @@ function layerSourceStatus(source, available) {
 }
 
 function updateLayerStatuses(sources, auth) {
+  const planDisplay = planDisplayState();
   const statuses = {
     map: layerSourceStatus(sources.map, Boolean(mapLayers.map.grid)),
     global_costmap: layerSourceStatus(
@@ -528,9 +656,8 @@ function updateLayerStatuses(sources, auth) {
     local_costmap: layerSourceStatus(
       sources.local_costmap, Boolean(mapLayers.local_costmap.grid),
     ),
-    plan: layerSourceStatus(
-      sources.plan, planIsInMapFrame(latest.plan) && latest.plan.poses.length > 0,
-    ),
+    plan: planDisplay.kind === "current" ? "available" :
+      (planDisplay.kind === "last-known" ? "last known" : "unavailable"),
     robot: layerSourceStatus(sources.pose, Boolean(latest.pose)),
     goal: layerSourceStatus(
       sources.command_authority, Boolean(auth.autonomy_goal_selected),
@@ -539,7 +666,7 @@ function updateLayerStatuses(sources, auth) {
   Object.entries(statuses).forEach(([kind, status]) => {
     const element = $(`layer-status-${kind}`);
     element.textContent = status;
-    element.classList.toggle("bad", status !== "available");
+    element.classList.toggle("bad", status !== "available" && status !== "last known");
   });
 }
 

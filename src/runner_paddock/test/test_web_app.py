@@ -97,6 +97,11 @@ def test_static_shell_lifecycle_and_two_clients():
         response = client.get('/')
         assert response.status_code == 200
         assert 'operator console' in response.text
+        assert 'data-view="control"' in response.text
+        assert 'data-view="configure"' in response.text
+        assert 'id="view-control"' in response.text
+        assert 'id="view-configure"' in response.text
+        assert 'maximum-scale=1' in response.text
         assert 'role="tablist"' in response.text
         assert 'data-map-mode="view"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
