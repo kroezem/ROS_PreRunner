@@ -1,6 +1,6 @@
 // Bump CACHE on every shell asset change: a same-named cache is never
 // refreshed, so a stale precache would outlive a redeploy.
-const CACHE = 'runner-paddock-shell-v4';
+const CACHE = 'runner-paddock-shell-v5';
 const ASSETS = [
   '/',
   '/static/app.js',

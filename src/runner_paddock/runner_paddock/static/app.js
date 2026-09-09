@@ -24,8 +24,19 @@ const mapGeometry = window.PaddockMapGeometry;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
 const mapLayers = {
   map: { grid: null, raster: null },
+  global_costmap: { grid: null, raster: null },
   local_costmap: { grid: null, raster: null },
 };
+const LAYER_STORAGE_KEY = "runner-paddock-map-layers-v1";
+const LAYER_DEFAULTS = {
+  map: { visible: true, color: "#171717", opacity: 1 },
+  global_costmap: { visible: true, color: "#ff3b30", opacity: 0.58 },
+  local_costmap: { visible: true, color: "#b34cff", opacity: 0.62 },
+  plan: { visible: true, color: "#ffc247" },
+  robot: { visible: true, color: "#00b4d8" },
+  goal: { visible: true, color: "#90e0ef" },
+};
+const layerSettings = loadLayerSettings();
 let mapMode = "view";
 let mapDrag = null;
 const goalInteraction = {
@@ -34,6 +45,60 @@ const goalInteraction = {
   preview: null,
   awaiting: false,
 };
+
+function loadLayerSettings() {
+  let stored = {};
+  try {
+    stored = JSON.parse(window.localStorage.getItem(LAYER_STORAGE_KEY) || "{}");
+  } catch (error) {
+    stored = {};
+  }
+  return Object.fromEntries(Object.entries(LAYER_DEFAULTS).map(([kind, defaults]) => {
+    const candidate = stored && stored[kind] && typeof stored[kind] === "object"
+      ? stored[kind] : {};
+    const color = /^#[0-9a-f]{6}$/i.test(candidate.color) ? candidate.color : defaults.color;
+    const opacity = Number.isFinite(candidate.opacity)
+      ? Math.max(0, Math.min(1, candidate.opacity)) : defaults.opacity;
+    return [kind, { ...defaults, ...candidate, color, opacity, visible: candidate.visible !== false }];
+  }));
+}
+
+function saveLayerSettings() {
+  try {
+    window.localStorage.setItem(LAYER_STORAGE_KEY, JSON.stringify(layerSettings));
+  } catch (error) {
+    // Presentation preferences remain optional when browser storage is blocked.
+  }
+}
+
+function initializeLayerControls() {
+  Object.keys(LAYER_DEFAULTS).forEach((kind) => {
+    const visible = $(`layer-visible-${kind}`);
+    const color = $(`layer-color-${kind}`);
+    const opacity = $(`layer-opacity-${kind}`);
+    visible.checked = layerSettings[kind].visible;
+    color.value = layerSettings[kind].color;
+    if (opacity) opacity.value = String(layerSettings[kind].opacity);
+    visible.addEventListener("change", () => {
+      layerSettings[kind].visible = visible.checked;
+      saveLayerSettings();
+      renderMap();
+    });
+    color.addEventListener("input", () => {
+      layerSettings[kind].color = color.value;
+      if (mapLayers[kind] && mapLayers[kind].grid) {
+        mapLayers[kind].raster = makeGridRaster(mapLayers[kind].grid, kind);
+      }
+      saveLayerSettings();
+      renderMap();
+    });
+    if (opacity) opacity.addEventListener("input", () => {
+      layerSettings[kind].opacity = Number(opacity.value);
+      saveLayerSettings();
+      renderMap();
+    });
+  });
+}
 
 function setBanner(value, kind) {
   banner.textContent = value;
@@ -77,9 +142,9 @@ function connect() {
     if (frame.type === "state") {
       Object.assign(latest, frame);
       render();
-    } else if (frame.type === "map" || frame.type === "local_costmap" || frame.type === "plan") {
+    } else if (["map", "global_costmap", "local_costmap", "plan"].includes(frame.type)) {
       latest[frame.type] = frame;
-      if (frame.type === "map" || frame.type === "local_costmap") {
+      if (["map", "global_costmap", "local_costmap"].includes(frame.type)) {
         updateMapLayer(frame.type, frame);
       } else {
         renderMap();
@@ -208,7 +273,7 @@ function render() {
 
   const controller = role === "controller";
   document.querySelectorAll(
-    "button.mode, #btn-clear-stop, #btn-new-map, #btn-new-map-from-maps, " +
+    "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, #btn-new-map-from-maps, " +
     "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
     "#btn-goal-mode, #btn-confirm-delete",
   ).forEach((button) => {
@@ -262,32 +327,44 @@ function setMetricMark(id, value, limit, available) {
 // --- map ----------------------------------------------------------------
 
 function updateMapLayer(kind, grid) {
-  mapLayers[kind] = { grid, raster: makeGridRaster(grid, kind === "local_costmap") };
+  mapLayers[kind] = { grid, raster: makeGridRaster(grid, kind) };
   if (kind === "map" && !mapView.fitted) fitMap();
   renderMap();
 }
 
-function makeGridRaster(grid, local) {
+function hexChannels(color) {
+  const match = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!match) return [255, 255, 255];
+  const value = Number.parseInt(match[1], 16);
+  return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+function makeGridRaster(grid, kind) {
   if (!grid || grid.width <= 0 || grid.height <= 0 || grid.data.length !== grid.width * grid.height) return null;
   const raster = document.createElement("canvas");
   raster.width = grid.width;
   raster.height = grid.height;
   const context = raster.getContext("2d");
   const image = context.createImageData(grid.width, grid.height);
+  const color = hexChannels(layerSettings[kind].color);
   for (let gy = 0; gy < grid.height; gy += 1) {
     const canvasY = grid.height - 1 - gy;
     for (let gx = 0; gx < grid.width; gx += 1) {
       const value = grid.data[gy * grid.width + gx];
       const offset = (canvasY * grid.width + gx) * 4;
-      if (local) {
-        if (value < 0) image.data.set([130, 92, 180, 65], offset);
-        else if (value === 0) image.data.set([0, 0, 0, 0], offset);
-        else image.data.set([235, 64, 38, Math.round(55 + 180 * value / 100)], offset);
+      if (kind !== "map") {
+        if (value <= 0) image.data.set([0, 0, 0, 0], offset);
+        else image.data.set([...color, Math.round(45 + 210 * value / 100)], offset);
       } else if (value < 0) {
         image.data.set([112, 119, 114, 255], offset);
       } else {
-        const shade = Math.round(235 - 215 * value / 100);
-        image.data.set([shade, shade + 3, shade, 255], offset);
+        const occupied = value / 100;
+        image.data.set([
+          Math.round(235 * (1 - occupied) + color[0] * occupied),
+          Math.round(238 * (1 - occupied) + color[1] * occupied),
+          Math.round(235 * (1 - occupied) + color[2] * occupied),
+          255,
+        ], offset);
       }
     }
   }
@@ -303,14 +380,16 @@ function worldFromScreen(x, y) {
   return mapGeometry.screenToWorld(mapView, mapCanvas.width, mapCanvas.height, x, y);
 }
 
-function drawGridLayer(layer) {
+function drawGridLayer(kind) {
+  const layer = mapLayers[kind];
   const { grid, raster } = layer;
-  if (!grid || !raster) return;
+  if (!grid || !raster || !layerSettings[kind].visible) return;
   const angle = mapGeometry.yawOf(grid.origin.orientation) + mapView.rotation;
   const topLeft = mapGeometry.gridToWorld(grid, 0, grid.height);
   const screen = screenFromWorld(topLeft.x, topLeft.y);
   const cellPixels = mapView.scale * grid.resolution;
   mapContext.save();
+  mapContext.globalAlpha = layerSettings[kind].opacity;
   mapContext.imageSmoothingEnabled = false;
   mapContext.setTransform(
     cellPixels * Math.cos(angle), -cellPixels * Math.sin(angle),
@@ -373,9 +452,10 @@ function planIsInMapFrame(plan) {
 function drawPlan() {
   const plan = latest.plan;
   const source = ((latest.health || {}).sources || {}).plan;
-  if (!planIsInMapFrame(plan) || (source && !source.fresh) || plan.poses.length < 2) return;
+  if (!layerSettings.plan.visible || !planIsInMapFrame(plan) ||
+      (source && !source.fresh) || plan.poses.length < 2) return;
   mapContext.save();
-  mapContext.strokeStyle = "#ffc247";
+  mapContext.strokeStyle = layerSettings.plan.color;
   mapContext.lineWidth = 3 * devicePixelRatio;
   mapContext.lineJoin = "round";
   mapContext.beginPath();
@@ -395,23 +475,28 @@ function renderMap() {
   });
   mapContext.setTransform(1, 0, 0, 1, 0, 0);
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
-  drawGridLayer(mapLayers.map);
+  if (layerSettings.map.visible) drawGridLayer("map");
   const sources = ((latest.health || {}).sources || {});
+  const globalFresh = !sources.global_costmap || sources.global_costmap.fresh;
   const localFresh = !sources.local_costmap || sources.local_costmap.fresh;
   const poseFresh = !sources.pose || sources.pose.fresh;
-  if (localFresh) drawGridLayer(mapLayers.local_costmap);
+  if (globalFresh) drawGridLayer("global_costmap");
+  if (localFresh) drawGridLayer("local_costmap");
   drawPlan();
   const auth = latest.command_authority || {};
-  if (auth.autonomy_goal_selected) {
-    drawDirectionalPose(poseFromXYYaw(auth.goal_x, auth.goal_y, auth.goal_yaw), "#90e0ef", 6 * devicePixelRatio);
+  if (layerSettings.goal.visible && auth.autonomy_goal_selected) {
+    drawDirectionalPose(poseFromXYYaw(auth.goal_x, auth.goal_y, auth.goal_yaw), layerSettings.goal.color, 6 * devicePixelRatio);
   }
-  if (poseFresh) drawDirectionalPose(latest.pose, "#00b4d8", 7 * devicePixelRatio);
-  if (goalInteraction.preview) {
+  if (layerSettings.robot.visible && poseFresh) {
+    drawDirectionalPose(latest.pose, layerSettings.robot.color, 7 * devicePixelRatio);
+  }
+  if (layerSettings.goal.visible && goalInteraction.preview) {
     drawDirectionalPose(poseFromXYYaw(
       goalInteraction.preview.x, goalInteraction.preview.y, goalInteraction.preview.yaw,
-    ), "#ffc247", 6 * devicePixelRatio);
+    ), layerSettings.goal.color, 6 * devicePixelRatio);
   }
   const global = mapLayers.map.grid;
+  const globalCostmap = mapLayers.global_costmap.grid;
   const local = mapLayers.local_costmap.grid;
   const plan = latest.plan;
   let planStatus = "plan unavailable";
@@ -422,9 +507,40 @@ function renderMap() {
   }
   $("map-status").textContent = global
     ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"} · ` +
+      `global costmap ${globalCostmap && globalFresh ? "available" : globalCostmap ? "stale" : "unavailable"} · ` +
       (local && localFresh ? `local costmap from ${local.source_frame_id || local.frame_id}` : `local costmap ${local ? "stale" : "unavailable"}`) +
       ` · ${planStatus}`
     : "Waiting for /map…";
+  updateLayerStatuses(sources, auth);
+}
+
+function layerSourceStatus(source, available) {
+  if (!available || !source || !source.available) return "unavailable";
+  return source.fresh ? "available" : "stale";
+}
+
+function updateLayerStatuses(sources, auth) {
+  const statuses = {
+    map: layerSourceStatus(sources.map, Boolean(mapLayers.map.grid)),
+    global_costmap: layerSourceStatus(
+      sources.global_costmap, Boolean(mapLayers.global_costmap.grid),
+    ),
+    local_costmap: layerSourceStatus(
+      sources.local_costmap, Boolean(mapLayers.local_costmap.grid),
+    ),
+    plan: layerSourceStatus(
+      sources.plan, planIsInMapFrame(latest.plan) && latest.plan.poses.length > 0,
+    ),
+    robot: layerSourceStatus(sources.pose, Boolean(latest.pose)),
+    goal: layerSourceStatus(
+      sources.command_authority, Boolean(auth.autonomy_goal_selected),
+    ),
+  };
+  Object.entries(statuses).forEach(([kind, status]) => {
+    const element = $(`layer-status-${kind}`);
+    element.textContent = status;
+    element.classList.toggle("bad", status !== "available");
+  });
 }
 
 function renderGoalControls() {
@@ -690,6 +806,7 @@ $("btn-stop").addEventListener("click", () => {
   send({ action: "stop" });
 });
 $("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
+$("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
 $("btn-new-map").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-new-map-from-maps").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-save-map").addEventListener("click", () => send({ action: "save_map", name: $("save-name").value.trim() }));
@@ -763,6 +880,7 @@ function debugRender() {
 }
 
 window.setInterval(debugRender, 500);
+initializeLayerControls();
 setMapMode("view");
 connect();
 if ("serviceWorker" in navigator) {

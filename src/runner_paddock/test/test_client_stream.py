@@ -32,15 +32,20 @@ def test_slow_client_is_bounded_and_each_kind_is_latest_wins():
         for index in range(1000):
             client.offer('state', f'state-{index}')
             client.offer('map', f'map-{index}')
+            client.offer('global_costmap', f'global_costmap-{index}')
             client.offer('local_costmap', f'local_costmap-{index}')
             client.offer('plan', f'plan-{index}')
-            assert client.pending_count == 4
+            assert client.pending_count == 5
         assert {
             await client.next_frame(),
             await client.next_frame(),
             await client.next_frame(),
             await client.next_frame(),
-        } == {'state-999', 'map-999', 'local_costmap-999', 'plan-999'}
+            await client.next_frame(),
+        } == {
+            'state-999', 'map-999', 'global_costmap-999',
+            'local_costmap-999', 'plan-999',
+        }
 
     asyncio.run(scenario())
 
@@ -49,14 +54,15 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
     async def scenario():
         cache = StateCache(clock=lambda: 1.0)
         cache.update('map', {'frame_id': 'map', 'data': [0]})
+        cache.update('global_costmap', {'frame_id': 'map', 'data': [100]})
         cache.update('plan', {'frame_id': 'map', 'poses': []})
         hub = ClientHub()
         first = hub.register()
 
         hub.publish(cache)
-        assert first.pending_count == 3
-        types = {_frame_type(await first.next_frame()) for _ in range(3)}
-        assert types == {'state', 'map', 'plan'}
+        assert first.pending_count == 4
+        types = {_frame_type(await first.next_frame()) for _ in range(4)}
+        assert types == {'state', 'map', 'global_costmap', 'plan'}
 
         hub.publish(cache)
         assert first.pending_count == 1
@@ -65,14 +71,14 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         second = hub.register()
         hub.publish(cache)
         assert first.pending_count == 1
-        assert second.pending_count == 3
+        assert second.pending_count == 4
 
         cache.update('map', {'frame_id': 'map', 'data': [100]})
         hub.publish(cache)
         assert first.pending_count == 2
-        assert second.pending_count == 3
-        assert first.pending_count <= 3
-        assert second.pending_count <= 3
+        assert second.pending_count == 4
+        assert first.pending_count <= 4
+        assert second.pending_count <= 4
 
         hub.unregister(first)
         hub.unregister(second)

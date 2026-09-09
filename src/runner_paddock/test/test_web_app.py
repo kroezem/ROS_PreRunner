@@ -63,6 +63,7 @@ class FakeRuntime:
 def _initial_cache():
     cache = StateCache()
     cache.update('map', {'frame_id': 'map', 'data': [0, 100, -1]})
+    cache.update('global_costmap', {'frame_id': 'map', 'data': [0, 100, -1]})
     cache.update('plan', {'frame_id': 'map', 'poses': []})
     return cache
 
@@ -98,19 +99,25 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'operator console' in response.text
         assert 'role="tablist"' in response.text
         assert 'data-map-mode="view"' in response.text
+        assert 'id="layer-visible-global_costmap"' in response.text
+        assert 'id="btn-clear-obstacles"' in response.text
         assert 'id="delete-dialog"' in response.text
         assert runtime.started
 
         with client.websocket_connect('/ws') as first:
             with client.websocket_connect('/ws') as second:
                 first_types = {
-                    first.receive_json()['type'] for _ in range(3)
+                    first.receive_json()['type'] for _ in range(4)
                 }
                 second_types = {
-                    second.receive_json()['type'] for _ in range(3)
+                    second.receive_json()['type'] for _ in range(4)
                 }
-                assert first_types == {'state', 'map', 'plan'}
-                assert second_types == {'state', 'map', 'plan'}
+                assert first_types == {
+                    'state', 'map', 'global_costmap', 'plan'
+                }
+                assert second_types == {
+                    'state', 'map', 'global_costmap', 'plan'
+                }
 
     assert runtime.stopped
     assert len(runtime.disconnected) == 2

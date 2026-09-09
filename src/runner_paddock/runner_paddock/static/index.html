@@ -47,6 +47,8 @@
                 <dt>Nav2 detail</dt><dd id="a-detail">—</dd>
                 <dt>Action</dt><dd id="a-active">—</dd>
               </dl>
+              <button id="btn-clear-obstacles" class="clear">Clear Obstacles</button>
+              <p class="hint">Clears transient global and local Nav2 costmaps. The saved map is unchanged.</p>
 
               <div class="metrics" aria-label="Target and current motion">
                 <div class="metric">
@@ -149,11 +151,17 @@
           <div class="map-viewport" id="map-viewport">
             <canvas id="map-canvas" class="mode-view" aria-label="Global occupancy map with local costmap, global plan, goal, and robot pose"></canvas>
             <div class="map-mode-readout">MODE <strong id="map-mode-label">VIEW</strong></div>
-            <div class="map-legend" aria-hidden="true">
-              <span><i class="free"></i>free</span><span><i class="occupied"></i>occupied</span>
-              <span><i class="unknown"></i>unknown</span><span><i class="cost"></i>local cost</span>
-              <span><i class="path"></i>global plan</span>
-            </div>
+            <details class="layer-controls">
+              <summary>Layers</summary>
+              <div class="layer-list">
+                <label><input id="layer-visible-map" type="checkbox"> Static map <small id="layer-status-map">unavailable</small><input id="layer-color-map" type="color" aria-label="Static map color"><input id="layer-opacity-map" type="range" min="0" max="1" step="0.05" aria-label="Static map opacity"></label>
+                <label><input id="layer-visible-global_costmap" type="checkbox"> Global costmap <small id="layer-status-global_costmap">unavailable</small><input id="layer-color-global_costmap" type="color" aria-label="Global costmap color"><input id="layer-opacity-global_costmap" type="range" min="0" max="1" step="0.05" aria-label="Global costmap opacity"></label>
+                <label><input id="layer-visible-local_costmap" type="checkbox"> Local costmap <small id="layer-status-local_costmap">unavailable</small><input id="layer-color-local_costmap" type="color" aria-label="Local costmap color"><input id="layer-opacity-local_costmap" type="range" min="0" max="1" step="0.05" aria-label="Local costmap opacity"></label>
+                <label><input id="layer-visible-plan" type="checkbox"> Global plan <small id="layer-status-plan">unavailable</small><input id="layer-color-plan" type="color" aria-label="Global plan color"></label>
+                <label><input id="layer-visible-robot" type="checkbox"> Robot <small id="layer-status-robot">unavailable</small><input id="layer-color-robot" type="color" aria-label="Robot color"></label>
+                <label><input id="layer-visible-goal" type="checkbox"> Goal <small id="layer-status-goal">unavailable</small><input id="layer-color-goal" type="color" aria-label="Goal color"></label>
+              </div>
+            </details>
             <div id="goal-preview-controls" class="goal-preview-controls" hidden>
               <strong id="goal-preview-text">Goal preview</strong>
               <button id="btn-confirm-goal" type="button" class="goal-action">Confirm</button>

@@ -56,6 +56,7 @@ from tf2_ros import TransformListener
 
 
 MAP_TOPIC = '/map'
+GLOBAL_COSTMAP_TOPIC = '/global_costmap/costmap'
 LOCAL_COSTMAP_TOPIC = '/local_costmap/costmap'
 GLOBAL_CLEAR_SERVICE = '/global_costmap/clear_entirely_global_costmap'
 LOCAL_CLEAR_SERVICE = '/local_costmap/clear_entirely_local_costmap'
@@ -177,6 +178,12 @@ class RosStateNode(Node):
         )
         self.create_subscription(
             OccupancyGrid,
+            GLOBAL_COSTMAP_TOPIC,
+            self._on_global_costmap,
+            map_qos,
+        )
+        self.create_subscription(
+            OccupancyGrid,
             LOCAL_COSTMAP_TOPIC,
             self._on_local_costmap,
             map_qos,
@@ -250,6 +257,20 @@ class RosStateNode(Node):
             self._cache.update('map', _grid(message))
         except (TypeError, ValueError) as error:
             self.get_logger().warning(f'Rejected invalid {MAP_TOPIC}: {error}')
+
+    def _on_global_costmap(self, message: OccupancyGrid) -> None:
+        """Publish only an authoritative map-frame global costmap."""
+        try:
+            if message.header.frame_id != MAP_FRAME:
+                raise ValueError(
+                    f'expected {MAP_FRAME!r} frame, got '
+                    f'{message.header.frame_id!r}'
+                )
+            self._cache.update('global_costmap', _grid(message))
+        except (TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected invalid {GLOBAL_COSTMAP_TOPIC}: {error}'
+            )
 
     def _on_local_costmap(self, message: OccupancyGrid) -> None:
         """Place the odom-frame rolling costmap in the authoritative map frame."""
