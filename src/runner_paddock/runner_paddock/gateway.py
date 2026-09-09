@@ -63,6 +63,9 @@ MAP_OP_NEW_MAP = 0
 MAP_OP_SAVE_MAP = 1
 MAP_OP_SELECT_MAP = 2
 MAP_OP_DELETE_MAP = 3
+RECORDING_OP_START = 0
+RECORDING_OP_STOP = 1
+RECORDING_OP_DELETE = 2
 
 _MODE_NAMES = {'idle': MODE_IDLE, 'mapping': MODE_MAPPING, 'autonomy': MODE_AUTONOMY}
 
@@ -106,6 +109,16 @@ class MapRequestIntent:
 @dataclass(frozen=True)
 class ClearCostmapsIntent:
     """Request Nav2's existing global and local full-clear services."""
+
+
+@dataclass(frozen=True)
+class RecordingRequestIntent:
+    """One persistent recording-executor request."""
+
+    operation: int
+    lease_id: str
+    name: str = ''
+    profile: str = ''
 
 
 @dataclass(frozen=True)
@@ -308,6 +321,57 @@ class OperatorGateway:
             True,
             'Nav2 costmap clear requested',
             (ClearCostmapsIntent(),),
+            'controller',
+        )
+
+    def _do_start_recording(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        return GatewayResult(
+            True,
+            'recording start requested',
+            (RecordingRequestIntent(
+                RECORDING_OP_START,
+                self._lease_id,
+                name=str(action.get('name', '')).strip(),
+                profile=str(action.get('profile', 'runner_debug')).strip(),
+            ),),
+            'controller',
+        )
+
+    def _do_stop_recording(
+        self, conn_id: str, _action: dict
+    ) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        return GatewayResult(
+            True,
+            'recording stop requested',
+            (RecordingRequestIntent(
+                RECORDING_OP_STOP, self._lease_id
+            ),),
+            'controller',
+        )
+
+    def _do_delete_recording(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        name = str(action.get('name', '')).strip()
+        if not name:
+            return self._reject(conn_id, 'delete requires a recording name')
+        return GatewayResult(
+            True,
+            f'recording delete {name} requested',
+            (RecordingRequestIntent(
+                RECORDING_OP_DELETE, self._lease_id, name=name
+            ),),
             'controller',
         )
 

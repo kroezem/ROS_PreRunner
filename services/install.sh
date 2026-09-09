@@ -31,6 +31,7 @@ PERSISTENT=(
     runner-command-authority.service
     runner-mode-supervisor.service
     runner-map-executor.service
+    runner-recording-executor.service
     runner-paddock-web.service
 )
 # Supervisor-owned: symlinked so systemd can find them, but NEVER enabled --
@@ -48,6 +49,7 @@ RESTART_ORDER=(
     runner-drive-adapter.service
     runner-mode-supervisor.service
     runner-map-executor.service
+    runner-recording-executor.service
     runner-paddock-web.service
 )
 

@@ -34,6 +34,8 @@ setup(
             'mode_launcher = runner_paddock.mode_launcher:main',
             'mode_supervisor = runner_paddock.mode_supervisor_node:main',
             'map_executor = runner_paddock.map_session_node:main',
+            'recording_executor = '
+            'runner_paddock.recording_executor_node:main',
             'web = runner_paddock.web_app:main',
         ],
     },

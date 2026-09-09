@@ -18,7 +18,7 @@ body { margin: 0; background: #252525; overscroll-behavior: none; }
 [hidden] { display: none !important; }
 
 .console { display: grid; grid-template-rows: auto minmax(0, 1fr); width: 100%; height: 100dvh; min-height: 0; padding: .65rem; gap: .65rem; }
-.topbar { z-index: 5; display: grid; grid-template-columns: auto auto minmax(10rem, 1fr) minmax(25rem, 1.8fr) auto auto; gap: .5rem; min-width: 0; padding: .45rem; border: 1px solid var(--border); border-radius: .55rem; background: rgb(29 29 29 / 97%); box-shadow: 0 .35rem 1rem rgb(0 0 0 / 25%); }
+.topbar { z-index: 5; display: grid; grid-template-columns: auto auto minmax(10rem, 1fr) minmax(25rem, 1.8fr) auto auto auto; gap: .5rem; min-width: 0; padding: .45rem; border: 1px solid var(--border); border-radius: .55rem; background: rgb(29 29 29 / 97%); box-shadow: 0 .35rem 1rem rgb(0 0 0 / 25%); }
 .brand { display: flex; flex-direction: column; justify-content: center; padding: 0 .35rem; }
 .brand strong { font-size: 1rem; letter-spacing: .05em; }
 .eyebrow { color: var(--accent); letter-spacing: .12em; font-size: .62rem; text-transform: uppercase; }
@@ -36,9 +36,14 @@ body { margin: 0; background: #252525; overscroll-behavior: none; }
 .critical-strip span, .operational-row span, .mapping-callout > span { color: var(--muted); font-size: .56rem; text-transform: uppercase; }
 .critical-strip strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
 .critical-strip .readiness strong { color: var(--accent); }
-.topbar button.stop, .topbar button.clear-stop { min-width: 6.5rem; margin: 0; }
-.topbar button.clear-stop { grid-column: 5; }
-.topbar button.stop { grid-column: 6; }
+.topbar button.stop, .topbar button.clear-stop, .topbar button.record { min-width: 6.5rem; margin: 0; }
+.topbar button.record { grid-column: 5; }
+.topbar button.clear-stop { grid-column: 6; }
+.topbar button.stop { grid-column: 7; }
+button.record { background: #3b2929; border-color: #8d5555; font-weight: 800; }
+button.record small { display: block; color: var(--muted); font-size: .58rem; }
+button.record.active { background: #941f1f; border-color: #ff6b6b; animation: rec-pulse 1.4s ease-in-out infinite; }
+@keyframes rec-pulse { 50% { box-shadow: 0 0 0 .18rem rgb(255 80 80 / 22%); } }
 
 .primary-view { min-height: 0; min-width: 0; }
 #view-control { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 21rem); gap: .65rem; overflow: hidden; }
@@ -158,6 +163,11 @@ button.clear { width: 100%; }
 .inline { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: .4rem 0; }
 .inline label { font-size: .72rem; }
 input { width: 5rem; min-height: 2.35rem; padding: .38rem; border: 1px solid var(--border); border-radius: .3rem; background: #171717; color: #f1f3f4; font: inherit; }
+select { min-height: 2.35rem; padding: .38rem; border: 1px solid var(--border); border-radius: .3rem; background: #171717; color: #f1f3f4; font: inherit; }
+.recording-form { display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; align-items: end; gap: .5rem; }
+.recording-form label { display: flex; flex-direction: column; gap: .2rem; color: var(--muted); font-size: .7rem; }
+.recording-form input { width: 100%; }
+.config-panel h3 { margin: 1rem 0 .4rem; font-size: .82rem; }
 input#save-name { flex: 1; min-width: 8rem; width: auto; }
 .save-row { flex-wrap: nowrap; }
 .numeric-goal, .health-details, .debug-card { margin: .65rem 0; color: var(--muted); font-size: .74rem; }
@@ -177,7 +187,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: .4rem; }
 
 @media (max-width: 64rem) {
-  .topbar { grid-template-columns: auto auto minmax(8rem, 1fr) minmax(18rem, 1.4fr) auto auto; }
+  .topbar { grid-template-columns: auto auto minmax(8rem, 1fr) minmax(18rem, 1.4fr) auto auto auto; }
   #view-control { grid-template-columns: minmax(0, 1fr) 18rem; }
 }
 
@@ -195,6 +205,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .critical-strip strong { font-size: .55rem; }
   .topbar button.stop { grid-column: 4; grid-row: 1 / 3; min-width: 4.4rem; min-height: 4.6rem; padding: .3rem; }
   .topbar button.clear-stop { grid-column: 3; grid-row: 1; min-width: 4.7rem; min-height: 2.75rem; padding: .25rem; font-size: .58rem; }
+  .topbar button.record { grid-column: 3; grid-row: 2; min-width: 4.7rem; min-height: 1.8rem; padding: .18rem; font-size: .62rem; }
   #view-control { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; gap: .3rem; }
   .map-card { padding: .3rem; }
   .map-heading { padding-bottom: .25rem; }
@@ -230,6 +241,8 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .layer-list label { grid-template-columns: auto minmax(6rem, 1fr) auto auto; }
   .layer-list input[type="range"] { grid-column: 2 / 5; width: 100%; }
   .metrics { grid-template-columns: 1fr; }
+  .recording-form { grid-template-columns: 1fr 1fr; }
+  .recording-form button { grid-column: 1 / 3; }
 }
 
 @media (max-height: 42rem) and (min-width: 46.01rem) {

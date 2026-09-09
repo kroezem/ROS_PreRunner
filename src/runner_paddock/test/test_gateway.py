@@ -23,6 +23,7 @@ from runner_paddock.gateway import (
     MapRequestIntent,
     ModeRequestIntent,
     OperatorGateway,
+    RecordingRequestIntent,
 )
 
 
@@ -182,3 +183,25 @@ def test_manual_samples_keep_si_units_and_release_explicitly():
 
     released = gw.handle('c1', {'action': 'manual', 'active': False})
     assert released.intents[0].event == ControlEvent.MANUAL_INACTIVE
+
+
+def test_recording_requests_are_lease_scoped_but_not_socket_owned():
+    gw = _gateway()
+    assert not gw.handle('observer', {'action': 'start_recording'}).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    start = gw.handle('c1', {
+        'action': 'start_recording', 'name': '', 'profile': 'runner_debug'
+    })
+    assert isinstance(start.intents[0], RecordingRequestIntent)
+    assert start.intents[0].name == ''
+    assert start.intents[0].profile == 'runner_debug'
+    disconnect = gw.on_disconnect('c1')
+    assert not any(
+        isinstance(intent, RecordingRequestIntent)
+        for intent in disconnect.intents
+    )
+
+    gw.handle('c2', {'action': 'acquire'})
+    stop = gw.handle('c2', {'action': 'stop_recording'})
+    assert isinstance(stop.intents[0], RecordingRequestIntent)

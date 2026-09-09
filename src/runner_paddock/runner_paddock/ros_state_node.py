@@ -39,6 +39,7 @@ from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import NavigationState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
+from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
 from runner_paddock.gateway import (
     ClearCostmapsIntent,
@@ -47,6 +48,7 @@ from runner_paddock.gateway import (
     MapRequestIntent,
     ModeRequestIntent,
     OperatorGateway,
+    RecordingRequestIntent,
 )
 from runner_paddock.grid_geometry import compose, PlanarPose
 from runner_paddock.state_cache import StateCache
@@ -69,6 +71,8 @@ LEASE_STATE_TOPIC = '/paddock/control_lease'
 STOP_STATE_TOPIC = '/paddock/stop_state'
 LOCAL_CONTROL_TOPIC = '/teleop/control_state'
 ADAPTER_STATE_TOPIC = '/drive_adapter/state_typed'
+RECORDING_STATE_TOPIC = '/paddock/recording_state'
+RECORDING_REQUEST_TOPIC = '/paddock/recording_request'
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 MODE_REQUEST_TOPIC = '/paddock/mode_request'
 MAP_REQUEST_TOPIC = '/paddock/map_request'
@@ -226,6 +230,12 @@ class RosStateNode(Node):
             AdapterState, ADAPTER_STATE_TOPIC, self._on_adapter_state,
             latest_qos,
         )
+        self.create_subscription(
+            RecordingState,
+            RECORDING_STATE_TOPIC,
+            self._on_recording_state,
+            map_qos,
+        )
 
         # Operator-intent writers. This node is the sole browser-side writer of
         # each of these topics.
@@ -237,6 +247,9 @@ class RosStateNode(Node):
         )
         self._map_request_pub = self.create_publisher(
             MapRequest, MAP_REQUEST_TOPIC, 10
+        )
+        self._recording_request_pub = self.create_publisher(
+            RecordingRequest, RECORDING_REQUEST_TOPIC, 10
         )
         self._global_clear_client = self.create_client(
             ClearEntireCostmap, GLOBAL_CLEAR_SERVICE
@@ -508,6 +521,40 @@ class RosStateNode(Node):
             'mode': message.mode,
         })
 
+    def _on_recording_state(self, message: RecordingState) -> None:
+        try:
+            _finite(message.elapsed_sec)
+            recordings = []
+            for entry in message.recordings:
+                _finite(entry.duration_sec)
+                recordings.append({
+                    'name': entry.name,
+                    'profile': entry.profile,
+                    'start_time': _stamp(entry.start_time),
+                    'duration_sec': float(entry.duration_sec),
+                    'size_bytes': int(entry.size_bytes),
+                    'output_path': entry.output_path,
+                })
+            self._cache.update('recording_state', {
+                'stamp': _stamp(message.stamp),
+                'state': int(message.state),
+                'accepted_request_id': int(message.accepted_request_id),
+                'name': message.name,
+                'profile': message.profile,
+                'start_time': _stamp(message.start_time),
+                'elapsed_sec': float(message.elapsed_sec),
+                'size_bytes': int(message.size_bytes),
+                'output_path': message.output_path,
+                'detail': message.detail,
+                'recorder_pid': int(message.recorder_pid),
+                'process_healthy': bool(message.process_healthy),
+                'recordings': recordings,
+            })
+        except ValueError as error:
+            self.get_logger().warning(
+                f'Rejected invalid {RECORDING_STATE_TOPIC}: {error}'
+            )
+
     # -- operator intent ---------------------------------------------------
 
     def submit(self, conn_id: str, action: dict) -> dict:
@@ -633,6 +680,15 @@ class RosStateNode(Node):
             message.name = intent.name
             message.session_id = intent.session_id or self._mapping_session_id()
             self._map_request_pub.publish(message)
+        elif isinstance(intent, RecordingRequestIntent):
+            message = RecordingRequest()
+            message.stamp = stamp
+            message.request_id = time.time_ns()
+            message.lease_id = intent.lease_id
+            message.operation = int(intent.operation)
+            message.name = intent.name
+            message.profile = intent.profile
+            self._recording_request_pub.publish(message)
 
     def _autonomy_without_map(self, action: dict) -> bool:
         """Return True for a 'select AUTONOMY runtime' action with no map set."""

@@ -46,6 +46,17 @@ is the sole normal supervised writer to `/cmd_vel_auto` and
 `runner-drive-adapter.service` persistently owns the one shared speed PI and
 converts both Nav2 SI Twist and authority-bounded browser manual demand.
 
+`runner-recording-executor.service` is the single Pi-side owner of the
+`ros2 bag record` process. It consumes lease-scoped requests on
+`/paddock/recording_request`, publishes truthful process/catalog state on
+`/paddock/recording_state`, and writes MCAP bags below
+`/home/matti/runner_ws/bags`. Recorder ownership is independent of WebSocket
+connections, so closing or reloading Paddock does not stop an active bag. The
+default `runner_debug` profile is curated in `runner_paddock.recording`; an
+optional `everything` profile records all visible topics. Names are safe
+basenames, existing paths are never overwritten, and active bags cannot be
+deleted.
+
 The supervisor always publishes `TRANSITIONING`, stops both fixed mode units,
 waits for empty cgroups and a graph with no mode resources, then starts and
 checks the requested mode. A failed start is stopped through systemd and is
@@ -204,8 +215,9 @@ sudo services/install.sh --restart      # restart the operator/application tier 
 ```
 
 `--restart` cycles `runner-stop-enforcer → runner-command-authority →
-runner-local-control → runner-mode-supervisor → runner-map-executor →
-runner-paddock-web`. It deliberately does **not** touch `runner-motor` /
+runner-local-control → runner-drive-adapter → runner-mode-supervisor →
+runner-map-executor → runner-recording-executor → runner-paddock-web`.
+It deliberately does **not** touch `runner-motor` /
 `runner-encoder`; restart those yourself, with traction power disconnected, if
 their binaries changed. A reboot achieves the same coherent bring-up.
 
@@ -219,9 +231,11 @@ The persistent tier that `install.sh` enables:
 | `runner-battery` / `runner-telemetry` / `runner-foxglove` | telemetry + diag |
 | `runner-stop-enforcer.service` | persistent global STOP executor + mux lock |
 | `runner-local-control.service` | joy + keyboard bridge + teleop + the one twist_mux |
-| `runner-command-authority.service` | sole supervised `/cmd_vel_auto` writer, lease + RUN |
+| `runner-drive-adapter.service` | one shared Nav2/manual conversion controller |
+| `runner-command-authority.service` | sole supervised `/cmd_vel_auto` and `/cmd_vel_paddock` writer, lease + RUN |
 | `runner-mode-supervisor.service` | sole start/stop owner of the mode units |
 | `runner-map-executor.service` | `/paddock/map_request` → `/paddock/map_state` |
+| `runner-recording-executor.service` | one persistent rosbag2 MCAP process owner + catalog |
 | `runner-paddock-web.service` | browser intent gateway |
 
 Manual equivalent (only if not using the script):
@@ -229,8 +243,9 @@ Manual equivalent (only if not using the script):
 ```sh
 for u in runner-pwm-setup runner-motor runner-encoder runner-battery \
          runner-telemetry runner-foxglove runner-stop-enforcer \
-         runner-local-control runner-command-authority runner-mode-supervisor \
-         runner-map-executor runner-paddock-web runner-mode-mapping \
+         runner-local-control runner-drive-adapter runner-command-authority \
+         runner-mode-supervisor runner-map-executor runner-recording-executor \
+         runner-paddock-web runner-mode-mapping \
          runner-mode-autonomy; do
   sudo ln -sfn "/home/matti/runner_ws/services/$u.service" "/etc/systemd/system/$u.service"
 done
@@ -239,8 +254,9 @@ sudo install -m 0644 /home/matti/runner_ws/services/49-runner-mode-units.rules /
 sudo systemctl daemon-reload
 sudo systemctl enable runner-pwm-setup runner-motor runner-encoder \
   runner-battery runner-telemetry runner-foxglove runner-stop-enforcer \
-  runner-local-control runner-command-authority runner-mode-supervisor \
-  runner-map-executor runner-paddock-web
+  runner-local-control runner-drive-adapter runner-command-authority \
+  runner-mode-supervisor runner-map-executor runner-recording-executor \
+  runner-paddock-web
 ```
 
 Do not pass `runner-mode-mapping` / `runner-mode-autonomy` to `enable` or

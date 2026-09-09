@@ -1,0 +1,19 @@
+uint8 STATE_IDLE=0
+uint8 STATE_STARTING=1
+uint8 STATE_RECORDING=2
+uint8 STATE_STOPPING=3
+uint8 STATE_FAILED=4
+
+builtin_interfaces/Time stamp
+uint8 state
+uint64 accepted_request_id
+string name
+string profile
+builtin_interfaces/Time start_time
+float64 elapsed_sec
+uint64 size_bytes
+string output_path
+string detail
+int64 recorder_pid
+bool process_healthy
+runner_interfaces/RecordingEntry[] recordings

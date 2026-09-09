@@ -23,6 +23,7 @@
       <div class="readiness"><span>Ready</span><strong id="g-ready">—</strong></div>
       <div><span>STOP</span><strong id="g-stop">—</strong></div>
     </div>
+    <button id="btn-record" class="record"><span id="record-action">REC</span><small id="record-elapsed">00:00</small></button>
     <button id="btn-clear-stop" class="clear-stop" hidden>CLEAR STOP</button>
     <button id="btn-stop" class="stop">STOP</button>
   </header>
@@ -95,6 +96,7 @@
       <button class="config-tab" data-tab="mapping" role="tab" aria-selected="false">MAPPING</button>
       <button class="config-tab" data-tab="maps" role="tab" aria-selected="false">MAPS</button>
       <button class="config-tab" data-tab="display" role="tab" aria-selected="false">DISPLAY</button>
+      <button class="config-tab" data-tab="recordings" role="tab" aria-selected="false">RECORDINGS</button>
       <button class="config-tab" data-tab="system" role="tab" aria-selected="false">SYSTEM</button>
     </nav>
     <div class="config-panels">
@@ -139,6 +141,18 @@
         </div>
       </section>
 
+      <section id="panel-recordings" class="config-panel" role="tabpanel" hidden>
+        <div class="panel-heading"><h2>Recordings</h2><span id="recording-chip" class="status-chip">IDLE</span></div>
+        <p id="recording-detail" class="state-detail">Waiting for recording executor…</p>
+        <div class="recording-form">
+          <label>Name <input id="recording-name" type="text" inputmode="latin" autocomplete="off" placeholder="Runner_YYYYMMDD_HHMMSS"></label>
+          <label>Profile <select id="recording-profile"><option value="runner_debug">RUNNER DEBUG</option><option value="everything">EVERYTHING</option></select></label>
+          <button id="btn-recording-form">START RECORDING</button>
+        </div>
+        <dl class="kv"><dt>Active name</dt><dd id="recording-active-name">—</dd><dt>Elapsed / size</dt><dd id="recording-active-size">—</dd><dt>Output path</dt><dd id="recording-path">—</dd><dt>Recorder PID</dt><dd id="recording-pid">—</dd></dl>
+        <h3>Saved MCAP bags</h3><ul id="recording-catalog" class="catalog"></ul>
+      </section>
+
       <section id="panel-system" class="config-panel" role="tabpanel" hidden>
         <div class="panel-heading"><h2>System truth</h2><span id="system-health" class="status-chip">—</span></div>
         <dl class="kv"><dt>Lease role</dt><dd id="g-role">—</dd><dt>Lease</dt><dd id="g-lease">—</dd><dt>Authority / source</dt><dd id="g-authority">—</dd><dt>Inhibit reason</dt><dd id="g-reason">—</dd><dt>DualSense</dt><dd id="g-dualsense">—</dd></dl>
@@ -155,6 +169,7 @@
   </section>
 
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
+  <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
 </main>
 <script src="/static/map_geometry.js" defer></script><script src="/static/app.js" defer></script>
 </body>

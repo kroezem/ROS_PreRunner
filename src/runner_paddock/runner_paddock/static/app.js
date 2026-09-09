@@ -21,6 +21,8 @@ let manualPointerId = null;
 let manualDemand = { speed_mps: 0, steering: 0 };
 let catalogRenderKey = null;
 let pendingDeleteName = "";
+let pendingDeleteRecordingName = "";
+let recordingCatalogKey = null;
 let retainedPlan = null;
 
 const mapCanvas = $("map-canvas");
@@ -228,6 +230,7 @@ const RUNTIME = ["IDLE", "MAPPING", "AUTONOMY"];
 const RUNTIME_STATUS = ["STABLE", "TRANSITIONING", "FAULT"];
 const AUTHORITY = ["NONE", "DUALSENSE", "PADDOCK_MANUAL", "PADDOCK_AUTONOMY"];
 const MISSION = ["IDLE", "DISPATCHING", "ACTIVE", "CANCELING", "SUCCEEDED", "FAILED", "CANCELED"];
+const RECORDING_STATE = ["IDLE", "STARTING", "RECORDING", "STOPPING", "FAILED"];
 
 function text(id, value) { $(id).textContent = value; }
 
@@ -251,6 +254,7 @@ function render() {
   const gw = latest.gateway || {};
   const mapState = latest.map_state || {};
   const nav = latest.navigation_state || {};
+  const recording = latest.recording_state || {};
   const health = (latest.health || {}).status || "?";
   const pose = latest.pose;
 
@@ -269,6 +273,7 @@ function render() {
   text("g-dualsense", local.active ? `ACTIVE (${local.mode || ""})` :
     (local.connected ? "connected, idle" : "disconnected"));
   renderControlState(mode, auth, stop, local, adapter, nav);
+  renderRecording(recording);
 
   const detail = runtimeDetail(mode);
   text("a-runtime-detail", detail);
@@ -307,7 +312,7 @@ function render() {
   document.querySelectorAll(
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, #btn-new-map-from-maps, " +
     "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
-    "#btn-goal-mode, #btn-confirm-delete",
+    "#btn-goal-mode, #btn-confirm-delete, #btn-confirm-delete-recording",
   ).forEach((button) => {
     button.disabled = !controller;
   });
@@ -344,6 +349,82 @@ function render() {
   $("health-debug").textContent = JSON.stringify(latest.health || {}, null, 2);
   renderGoalControls();
   renderMap();
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remainder = total % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes)) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+function renderRecording(recording) {
+  const state = Number.isInteger(recording.state) ? recording.state : null;
+  const active = [1, 2, 3].includes(state);
+  const stopping = state === 3;
+  const stateName = state === null ? "UNAVAILABLE" : RECORDING_STATE[state] || "UNKNOWN";
+  text("record-action", active ? "STOP REC" : "REC");
+  text("record-elapsed", formatDuration(recording.elapsed_sec));
+  text("recording-chip", stateName);
+  text("recording-detail", recording.detail || "Waiting for recording executor…");
+  text("recording-active-name", recording.name || "—");
+  text("recording-active-size", active
+    ? `${formatDuration(recording.elapsed_sec)} · ${formatBytes(recording.size_bytes)}` : "—");
+  text("recording-path", recording.output_path || "—");
+  text("recording-pid", recording.recorder_pid
+    ? `${recording.recorder_pid} · ${recording.process_healthy ? "healthy" : "NOT HEALTHY"}` : "—");
+  $("record-action").parentElement.classList.toggle("active", active);
+  $("btn-record").disabled = !socketReady || role !== "controller" || stopping || state === null;
+  $("btn-recording-form").textContent = active ? "STOP RECORDING" : "START RECORDING";
+  $("btn-recording-form").disabled = role !== "controller" || !socketReady || stopping || state === null;
+  $("recording-name").disabled = active;
+  $("recording-profile").disabled = active;
+  renderRecordingCatalog(recording.recordings || [], active ? recording.name : "");
+}
+
+function renderRecordingCatalog(recordings, activeName) {
+  const key = JSON.stringify([recordings, activeName, role]);
+  if (key === recordingCatalogKey) return;
+  recordingCatalogKey = key;
+  const list = $("recording-catalog");
+  list.replaceChildren();
+  if (!recordings.length) {
+    const empty = document.createElement("li");
+    empty.textContent = "No finalized MCAP recordings.";
+    list.append(empty);
+    return;
+  }
+  recordings.forEach((entry) => {
+    const item = document.createElement("li");
+    const info = document.createElement("div");
+    info.className = "catalog-info";
+    const title = document.createElement("strong");
+    title.textContent = entry.name;
+    const detail = document.createElement("span");
+    const started = entry.start_time && Number.isFinite(entry.start_time.sec)
+      ? new Date(entry.start_time.sec * 1000).toLocaleString() : "unknown time";
+    detail.textContent = `${started} · ${formatDuration(entry.duration_sec)} · ${formatBytes(entry.size_bytes)} · ${(entry.profile || "unknown").toUpperCase()}`;
+    info.append(title, detail);
+    const button = document.createElement("button");
+    button.className = "danger";
+    button.textContent = "Delete";
+    button.disabled = role !== "controller" || entry.name === activeName;
+    button.addEventListener("click", () => confirmRecordingDelete(entry.name));
+    item.append(info, button);
+    list.append(item);
+  });
 }
 
 function renderControlState(mode, auth, stop, local, adapter, nav) {
@@ -908,6 +989,22 @@ $("delete-dialog").addEventListener("close", () => {
   pendingDeleteName = "";
 });
 
+function confirmRecordingDelete(name) {
+  pendingDeleteRecordingName = name;
+  text("delete-recording-name", name);
+  $("delete-recording-dialog").showModal();
+}
+
+$("delete-recording-dialog").addEventListener("close", () => {
+  if (
+    $("delete-recording-dialog").returnValue === "delete" &&
+    pendingDeleteRecordingName
+  ) {
+    send({ action: "delete_recording", name: pendingDeleteRecordingName });
+  }
+  pendingDeleteRecordingName = "";
+});
+
 // --- global state helpers ----------------------------------------------
 
 function setBannerFromState(mode, auth, stop) {
@@ -948,6 +1045,20 @@ $("btn-stop").addEventListener("click", () => {
 });
 $("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
+function toggleRecording() {
+  const state = (latest.recording_state || {}).state;
+  if ([1, 2].includes(state)) {
+    send({ action: "stop_recording" });
+  } else if (state !== 3) {
+    send({
+      action: "start_recording",
+      name: $("recording-name").value.trim(),
+      profile: $("recording-profile").value,
+    });
+  }
+}
+$("btn-record").addEventListener("click", toggleRecording);
+$("btn-recording-form").addEventListener("click", toggleRecording);
 $("btn-new-map").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-new-map-from-maps").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-save-map").addEventListener("click", () => send({ action: "save_map", name: $("save-name").value.trim() }));
