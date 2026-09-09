@@ -2,128 +2,178 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#152118">
     <link rel="manifest" href="/static/manifest.webmanifest">
     <link rel="stylesheet" href="/static/style.css">
     <title>Runner Paddock</title>
   </head>
   <body>
-    <main>
-      <header>
-        <p class="eyebrow">Runner Paddock — operator console</p>
+    <main class="console" aria-label="Paddock operator console">
+      <header class="topbar">
+        <div class="brand"><span class="eyebrow">Runner</span><strong>Paddock</strong></div>
         <div id="banner" class="banner waiting">Connecting…</div>
         <div class="operator-strip">
           <div><span>Runtime</span><strong id="g-runtime">—</strong></div>
           <div class="readiness"><span>Readiness</span><strong id="g-ready">—</strong></div>
           <div><span>Selected map</span><strong id="m-selected">—</strong></div>
-          <div><span>STOP state</span><strong id="g-stop">—</strong></div>
-          <button id="btn-stop" class="stop">STOP</button>
+          <div><span>STOP</span><strong id="g-stop">—</strong></div>
         </div>
+        <button id="btn-stop" class="stop">STOP</button>
       </header>
 
-      <section class="card map-card" aria-labelledby="map-title">
-        <div class="map-heading">
-          <div>
-            <h2 id="map-title">Map</h2>
-            <p id="map-status" class="hint">Waiting for /map…</p>
-          </div>
-          <div class="map-tools" aria-label="Map view controls">
-            <button id="btn-goal-mode" type="button" class="goal-action">Set goal</button>
-            <button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">−</button>
-            <button id="btn-fit-map" type="button" class="view-control">Fit</button>
-            <button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">+</button>
-          </div>
-        </div>
-        <div class="map-viewport" id="map-viewport">
-          <canvas id="map-canvas" aria-label="Global occupancy map with local costmap and robot pose"></canvas>
-          <div class="map-legend" aria-hidden="true">
-            <span><i class="free"></i>free</span>
-            <span><i class="occupied"></i>occupied</span>
-            <span><i class="unknown"></i>unknown</span>
-            <span><i class="cost"></i>local cost</span>
-          </div>
-        </div>
-        <div id="goal-preview-controls" class="goal-preview-controls" hidden>
-          <strong id="goal-preview-text">Goal preview</strong>
-          <button id="btn-confirm-goal" type="button" class="goal-action">Confirm goal</button>
-          <button id="btn-cancel-goal-preview" type="button">Cancel</button>
-        </div>
-        <p class="hint">Drag to pan · wheel or ± to zoom · Set goal, then drag position→heading and confirm</p>
-      </section>
+      <div class="workspace">
+        <aside class="control-dock" aria-label="Operator controls">
+          <nav class="tabs" role="tablist" aria-label="Paddock sections">
+            <button id="tab-autonomy" class="tab active local-control" role="tab" aria-selected="true" aria-controls="panel-autonomy" data-tab="autonomy">AUTONOMY</button>
+            <button id="tab-mapping" class="tab local-control" role="tab" aria-selected="false" aria-controls="panel-mapping" data-tab="mapping">MAPPING</button>
+            <button id="tab-maps" class="tab local-control" role="tab" aria-selected="false" aria-controls="panel-maps" data-tab="maps">MAPS</button>
+            <button id="tab-system" class="tab local-control" role="tab" aria-selected="false" aria-controls="panel-system" data-tab="system">SYSTEM</button>
+          </nav>
 
-      <section class="grid">
-        <div class="card" id="global-card">
-          <h2>Control &amp; safety</h2>
-          <dl class="kv">
-            <dt>Backend</dt><dd id="g-backend">—</dd>
-            <dt>Lease role</dt><dd id="g-role">—</dd>
-            <dt>Lease</dt><dd id="g-lease">—</dd>
-            <dt>Authority / source</dt><dd id="g-authority">—</dd>
-            <dt>Inhibit reason</dt><dd id="g-reason">—</dd>
-            <dt>DualSense</dt><dd id="g-dualsense">—</dd>
-          </dl>
-          <div class="stop-row">
-            <button id="btn-clear-stop" class="clear">CLEAR STOP</button>
-          </div>
-          <p class="hint">CLEAR STOP needs the enforcer healthy, STOP applied, and the car stationary.</p>
-        </div>
+          <div class="panels">
+            <section id="panel-autonomy" class="tab-panel active" role="tabpanel" aria-labelledby="tab-autonomy">
+              <div class="panel-heading"><h2>Autonomy</h2><span id="a-runtime-chip" class="status-chip">—</span></div>
+              <p id="a-runtime-detail" class="state-detail">Waiting for runtime state…</p>
+              <div class="mode-actions">
+                <button data-mode="autonomy" class="mode">Enter AUTONOMY</button>
+                <button data-mode="idle" class="mode ghost">IDLE</button>
+              </div>
+              <p class="hint" id="a-map-hint"></p>
+              <dl class="kv compact">
+                <dt>Active map</dt><dd id="a-map">—</dd>
+                <dt>Mission</dt><dd id="a-mission">—</dd>
+                <dt>Goal state</dt><dd id="a-goal">—</dd>
+                <dt>Nav2 detail</dt><dd id="a-detail">—</dd>
+                <dt>Action</dt><dd id="a-active">—</dd>
+              </dl>
 
-        <div class="card">
-          <h2>Mapping</h2>
-          <button data-mode="mapping" class="mode">Enter MAPPING</button>
-          <dl class="kv">
-            <dt>Session</dt><dd id="m-session">—</dd>
-            <dt>Session state</dt><dd id="m-phase">—</dd>
-            <dt>Unsaved</dt><dd id="m-unsaved">—</dd>
-            <dt>Save result</dt><dd id="m-save">—</dd>
-            <dt>Selection result</dt><dd id="m-selection-result">—</dd>
-          </dl>
-          <button id="btn-new-map" class="warn">NEW MAP</button>
-          <div class="inline">
-            <input id="save-name" type="text" inputmode="latin" autocomplete="off"
-                   placeholder="map basename" pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
-            <button id="btn-save-map">SAVE MAP</button>
-          </div>
-          <h3>Saved maps</h3>
-          <ul id="map-catalog" class="catalog"></ul>
-        </div>
+              <div class="metrics" aria-label="Target and current motion">
+                <div class="metric">
+                  <div><strong>Linear velocity</strong><span>m/s</span></div>
+                  <div class="metric-values"><span>target <b id="a-speed-target">—</b></span><span>current <b id="a-speed-current">—</b></span></div>
+                  <div class="metric-track"><i class="zero"></i><i id="a-speed-target-mark" class="metric-mark target"></i><i id="a-speed-current-mark" class="metric-mark current"></i></div>
+                </div>
+                <div class="metric">
+                  <div><strong>Yaw rate</strong><span>rad/s</span></div>
+                  <div class="metric-values"><span>target <b id="a-yaw-target">—</b></span><span>current <b id="a-yaw-current">—</b></span></div>
+                  <div class="metric-track"><i class="zero"></i><i id="a-yaw-target-mark" class="metric-mark target"></i><i id="a-yaw-current-mark" class="metric-mark current"></i></div>
+                </div>
+              </div>
+              <p id="pose-hint" class="hint">Robot pose: —</p>
+              <p class="hint">No live target-heading signal exists; selected goal yaw is the final orientation, not a steering target.</p>
 
-        <div class="card">
-          <h2>Autonomy</h2>
-          <button data-mode="autonomy" class="mode">Enter AUTONOMY</button>
-          <button data-mode="idle" class="mode ghost">Return to IDLE</button>
-          <p class="hint" id="a-map-hint"></p>
-          <dl class="kv">
-            <dt>Active map</dt><dd id="a-map">—</dd>
-            <dt>Mission</dt><dd id="a-mission">—</dd>
-            <dt>Selected goal</dt><dd id="a-goal">—</dd>
-            <dt>Nav2 detail</dt><dd id="a-detail">—</dd>
-            <dt>Action active</dt><dd id="a-active">—</dd>
-          </dl>
-          <details class="numeric-goal">
-            <summary>Numeric goal fallback</summary>
-            <div class="inline">
-              <label>x <input id="goal-x" type="number" step="0.05" value="0"></label>
-              <label>y <input id="goal-y" type="number" step="0.05" value="0"></label>
-              <label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label>
+              <details class="numeric-goal">
+                <summary>Numeric goal fallback</summary>
+                <div class="inline">
+                  <label>x <input id="goal-x" type="number" step="0.05" value="0"></label>
+                  <label>y <input id="goal-y" type="number" step="0.05" value="0"></label>
+                  <label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label>
+                </div>
+                <button id="btn-select-goal">Select numeric goal</button>
+              </details>
+
+              <div class="run-row" id="run-controls" hidden>
+                <button id="btn-run" class="run">HOLD TO RUN <small>or hold Space</small></button>
+                <button id="btn-cancel" class="warn">CANCEL</button>
+              </div>
+              <p class="hint" id="run-hint" hidden>Release to revoke RUN and cancel. Resuming requires a fresh deliberate hold.</p>
+            </section>
+
+            <section id="panel-mapping" class="tab-panel" role="tabpanel" aria-labelledby="tab-mapping" hidden>
+              <div class="panel-heading"><h2>Mapping</h2><span id="m-runtime-chip" class="status-chip">—</span></div>
+              <p id="m-runtime-detail" class="state-detail">Waiting for runtime state…</p>
+              <button data-mode="mapping" class="mode">Enter MAPPING</button>
+              <button data-mode="idle" class="mode ghost">IDLE</button>
+              <dl class="kv">
+                <dt>Session</dt><dd id="m-session">—</dd>
+                <dt>Session state</dt><dd id="m-phase">—</dd>
+                <dt>Unsaved</dt><dd id="m-unsaved">—</dd>
+                <dt>Save result</dt><dd id="m-save">—</dd>
+              </dl>
+              <button id="btn-new-map" class="warn">NEW MAP</button>
+              <div class="inline save-row">
+                <input id="save-name" type="text" inputmode="latin" autocomplete="off" placeholder="map basename" pattern="[A-Za-z0-9][A-Za-z0-9._-]*">
+                <button id="btn-save-map">SAVE MAP</button>
+              </div>
+              <p class="hint">NEW MAP and SAVE MAP retain the existing STOP and session-safety requirements.</p>
+            </section>
+
+            <section id="panel-maps" class="tab-panel" role="tabpanel" aria-labelledby="tab-maps" hidden>
+              <div class="panel-heading"><h2>Saved maps</h2><span id="map-count" class="status-chip">0</span></div>
+              <div class="mode-actions">
+                <button data-mode="mapping" class="mode">Enter MAPPING</button>
+                <button id="btn-new-map-from-maps" class="warn">NEW MAP</button>
+              </div>
+              <p id="m-selection-result" class="state-detail">—</p>
+              <p id="m-delete-result" class="state-detail">—</p>
+              <ul id="map-catalog" class="catalog"></ul>
+            </section>
+
+            <section id="panel-system" class="tab-panel" role="tabpanel" aria-labelledby="tab-system" hidden>
+              <div class="panel-heading"><h2>System</h2><span id="system-health" class="status-chip">—</span></div>
+              <dl class="kv">
+                <dt>Backend</dt><dd id="g-backend">—</dd>
+                <dt>Lease role</dt><dd id="g-role">—</dd>
+                <dt>Lease</dt><dd id="g-lease">—</dd>
+                <dt>Authority / source</dt><dd id="g-authority">—</dd>
+                <dt>Inhibit reason</dt><dd id="g-reason">—</dd>
+                <dt>DualSense</dt><dd id="g-dualsense">—</dd>
+              </dl>
+              <button id="btn-clear-stop" class="clear">CLEAR STOP</button>
+              <p class="hint">Requires a healthy enforcer, STOP applied, released local controls, and measured stationarity.</p>
+              <details class="health-details"><summary>Health / readiness details</summary><pre id="health-debug">Waiting for state…</pre></details>
+              <details class="debug-card"><summary>Raw backend state</summary><pre id="debug">Waiting for state…</pre></details>
+              <p id="acklog" class="hint"></p>
+            </section>
+          </div>
+        </aside>
+
+        <section class="card map-card" aria-labelledby="map-title">
+          <div class="map-heading">
+            <div><h2 id="map-title">Operator map</h2><p id="map-status" class="hint">Waiting for /map…</p></div>
+            <div class="map-tools" aria-label="Map interaction controls">
+              <div class="mode-tools" role="group" aria-label="Map interaction mode">
+                <button type="button" class="view-control active" data-map-mode="view">View</button>
+                <button type="button" class="view-control" data-map-mode="pan">Pan</button>
+                <button type="button" class="view-control" data-map-mode="rotate">Rotate</button>
+                <button id="btn-goal-mode" type="button" class="goal-action" data-map-mode="goal">Set Goal</button>
+              </div>
+              <div class="zoom-tools" role="group" aria-label="Map zoom controls">
+                <button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">−</button>
+                <button id="btn-fit-map" type="button" class="view-control">Fit</button>
+                <button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">+</button>
+              </div>
             </div>
-            <button id="btn-select-goal">Select numeric goal</button>
-          </details>
-          <p class="hint" id="pose-hint">Robot pose: —</p>
-          <div class="run-row" id="run-controls" hidden>
-            <button id="btn-run" class="run">HOLD&nbsp;TO&nbsp;RUN</button>
-            <button id="btn-cancel" class="warn">CANCEL</button>
           </div>
-          <p class="hint" id="run-hint" hidden>Release HOLD TO RUN to stop and cancel. A new deliberate hold is required to resume.</p>
-        </div>
-      </section>
+          <div class="map-viewport" id="map-viewport">
+            <canvas id="map-canvas" class="mode-view" aria-label="Global occupancy map with local costmap, global plan, goal, and robot pose"></canvas>
+            <div class="map-mode-readout">MODE <strong id="map-mode-label">VIEW</strong></div>
+            <div class="map-legend" aria-hidden="true">
+              <span><i class="free"></i>free</span><span><i class="occupied"></i>occupied</span>
+              <span><i class="unknown"></i>unknown</span><span><i class="cost"></i>local cost</span>
+              <span><i class="path"></i>global plan</span>
+            </div>
+            <div id="goal-preview-controls" class="goal-preview-controls" hidden>
+              <strong id="goal-preview-text">Goal preview</strong>
+              <button id="btn-confirm-goal" type="button" class="goal-action">Confirm</button>
+              <button id="btn-cancel-goal-preview" type="button" class="local-control">Cancel</button>
+            </div>
+          </div>
+        </section>
+      </div>
 
-      <details class="card debug-card">
-        <summary>Backend truth (debug)</summary>
-        <pre id="debug">Waiting for state…</pre>
-      </details>
-      <p id="acklog" class="hint"></p>
+      <dialog id="delete-dialog">
+        <form method="dialog">
+          <h2>Delete saved map?</h2>
+          <p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p>
+          <p class="bad">This cannot be undone.</p>
+          <div class="dialog-actions">
+            <button value="cancel" class="local-control">Keep map</button>
+            <button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button>
+          </div>
+        </form>
+      </dialog>
     </main>
     <script src="/static/map_geometry.js" defer></script>
     <script src="/static/app.js" defer></script>

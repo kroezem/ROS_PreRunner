@@ -40,3 +40,31 @@ test("goal click pixel converts to map coordinates and back", () => {
     { x: 500, y: 100 },
   );
 });
+
+test("viewport rotation preserves the exact world-screen inverse", () => {
+  const view = { x: -0.7, y: 1.2, scale: 83, rotation: Math.PI / 3 };
+  const point = { x: 2.4, y: -3.1 };
+  const screen = geometry.worldToScreen(view, 913, 517, point.x, point.y);
+  const restored = geometry.screenToWorld(
+    view, 913, 517, screen.x, screen.y,
+  );
+
+  assert.ok(Math.abs(restored.x - point.x) < 1e-12);
+  assert.ok(Math.abs(restored.y - point.y) < 1e-12);
+});
+
+test("rotated map fit bounds use all occupancy-grid corners", () => {
+  const grid = {
+    width: 10,
+    height: 5,
+    resolution: 1,
+    origin: {
+      position: { x: 0, y: 0 },
+      orientation: { x: 0, y: 0, z: 0, w: 1 },
+    },
+  };
+  const bounds = geometry.rotatedGridBounds(grid, Math.PI / 2);
+
+  assert.ok(Math.abs(bounds.maxX - bounds.minX - 5) < 1e-12);
+  assert.ok(Math.abs(bounds.maxY - bounds.minY - 10) < 1e-12);
+});

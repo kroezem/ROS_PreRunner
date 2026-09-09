@@ -96,6 +96,9 @@ def test_static_shell_lifecycle_and_two_clients():
         response = client.get('/')
         assert response.status_code == 200
         assert 'operator console' in response.text
+        assert 'role="tablist"' in response.text
+        assert 'data-map-mode="view"' in response.text
+        assert 'id="delete-dialog"' in response.text
         assert runtime.started
 
         with client.websocket_connect('/ws') as first:

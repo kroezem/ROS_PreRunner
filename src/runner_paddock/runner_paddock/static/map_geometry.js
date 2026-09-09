@@ -56,20 +56,51 @@
   }
 
   function screenToWorld(view, width, height, x, y) {
+    const rotation = Number(view.rotation) || 0;
+    const cosine = Math.cos(rotation);
+    const sine = Math.sin(rotation);
+    const rotatedX = (x - width / 2) / view.scale;
+    const rotatedY = -(y - height / 2) / view.scale;
     return {
-      x: view.x + (x - width / 2) / view.scale,
-      y: view.y - (y - height / 2) / view.scale,
+      x: view.x + cosine * rotatedX + sine * rotatedY,
+      y: view.y - sine * rotatedX + cosine * rotatedY,
     };
   }
 
   function worldToScreen(view, width, height, x, y) {
+    const rotation = Number(view.rotation) || 0;
+    const cosine = Math.cos(rotation);
+    const sine = Math.sin(rotation);
+    const dx = x - view.x;
+    const dy = y - view.y;
     return {
-      x: width / 2 + (x - view.x) * view.scale,
-      y: height / 2 - (y - view.y) * view.scale,
+      x: width / 2 + (cosine * dx - sine * dy) * view.scale,
+      y: height / 2 - (sine * dx + cosine * dy) * view.scale,
+    };
+  }
+
+  function rotatedGridBounds(grid, rotation) {
+    const cosine = Math.cos(rotation || 0);
+    const sine = Math.sin(rotation || 0);
+    const corners = [
+      gridToWorld(grid, 0, 0),
+      gridToWorld(grid, grid.width, 0),
+      gridToWorld(grid, 0, grid.height),
+      gridToWorld(grid, grid.width, grid.height),
+    ].map((point) => ({
+      x: cosine * point.x - sine * point.y,
+      y: sine * point.x + cosine * point.y,
+    }));
+    return {
+      minX: Math.min(...corners.map((p) => p.x)),
+      maxX: Math.max(...corners.map((p) => p.x)),
+      minY: Math.min(...corners.map((p) => p.y)),
+      maxY: Math.max(...corners.map((p) => p.y)),
     };
   }
 
   return {
-    yawOf, gridToWorld, worldToGrid, gridBounds, screenToWorld, worldToScreen,
+    yawOf, gridToWorld, worldToGrid, gridBounds, rotatedGridBounds,
+    screenToWorld, worldToScreen,
   };
 }));
