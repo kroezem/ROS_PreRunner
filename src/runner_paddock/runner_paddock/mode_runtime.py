@@ -65,6 +65,7 @@ COMMON_NODES = frozenset({
     '/slam_toolbox',
 })
 PERSISTENT_LOCAL_NODES = frozenset({
+    '/drive_adapter',
     '/joy_node',
     '/keyboard_bridge',
     '/runner_teleop',
@@ -82,7 +83,6 @@ AUTONOMY_ONLY_NODES = frozenset({
     '/local_costmap/local_costmap',
     '/lifecycle_manager_navigation',
     '/runner_navigation_runtime',
-    '/drive_adapter',
     '/speed_envelope_observer',
 })
 MODE_NODES = COMMON_NODES | AUTONOMY_ONLY_NODES

@@ -25,6 +25,7 @@ from runner_paddock.mode_runtime import AUTONOMY_UNIT
 from runner_paddock.mode_runtime import COMMON_NODES
 from runner_paddock.mode_runtime import Lifecycle
 from runner_paddock.mode_runtime import MAPPING_UNIT
+from runner_paddock.mode_runtime import MODE_NODES
 from runner_paddock.mode_runtime import ModeRuntime
 from runner_paddock.mode_runtime import OP_NEW_MAP
 from runner_paddock.mode_runtime import PERSISTENT_LOCAL_NODES
@@ -104,6 +105,37 @@ def runtime(tmp_path, graph=None, capability_ready=None):
         session_id_factory=next_session_id,
     )
     return value, systemd, graph, published
+
+
+def test_drive_adapter_is_persistent_not_mode_scoped(tmp_path):
+    assert '/drive_adapter' in PERSISTENT_LOCAL_NODES
+    assert '/drive_adapter' not in AUTONOMY_ONLY_NODES
+    assert '/drive_adapter' not in MODE_NODES
+
+    value, _systemd, graph, _published = runtime(tmp_path)
+
+    # Persistent control nodes are valid while no application mode unit owns
+    # the graph and must not block mode-resource cleanup.
+    assert value._resources_gone()
+    idle = value.reconcile()
+    assert idle.mode == Mode.IDLE
+    assert idle.lifecycle == Lifecycle.STABLE
+
+    mapping = value.transition(Mode.MAPPING, 1)
+    assert mapping.mode == Mode.MAPPING
+    assert mapping.lifecycle == Lifecycle.STABLE
+    assert '/drive_adapter' in graph
+
+
+def test_autonomy_requires_persistent_drive_adapter(tmp_path):
+    complete_map(tmp_path)
+    value, systemd, graph, _published = runtime(tmp_path)
+    systemd.start(AUTONOMY_UNIT)
+    graph.pop('/drive_adapter')
+
+    assert value._structural_reason(Mode.AUTONOMY) == (
+        'missing node(s): /drive_adapter'
+    )
 
 
 def test_runtime_epoch_increments_per_successful_application_start(tmp_path):
