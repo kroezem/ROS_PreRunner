@@ -28,6 +28,7 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from runner_interfaces.msg import AdapterState
 from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import MapRequest
@@ -62,6 +63,7 @@ AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
 LEASE_STATE_TOPIC = '/paddock/control_lease'
 STOP_STATE_TOPIC = '/paddock/stop_state'
 LOCAL_CONTROL_TOPIC = '/teleop/control_state'
+ADAPTER_STATE_TOPIC = '/drive_adapter/state_typed'
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 MODE_REQUEST_TOPIC = '/paddock/mode_request'
 MAP_REQUEST_TOPIC = '/paddock/map_request'
@@ -209,6 +211,10 @@ class RosStateNode(Node):
             self._on_local_control,
             latest_qos,
         )
+        self.create_subscription(
+            AdapterState, ADAPTER_STATE_TOPIC, self._on_adapter_state,
+            latest_qos,
+        )
 
         # Operator-intent writers. This node is the sole browser-side writer of
         # each of these topics.
@@ -338,6 +344,10 @@ class RosStateNode(Node):
                 'selected_map_requested': message.selected_map_requested,
                 'selected_map_applied': message.selected_map_applied,
                 'selected_map_reason': message.selected_map_reason,
+                'delete_state': int(message.delete_state),
+                'delete_request_id': int(message.delete_request_id),
+                'delete_name': message.delete_name,
+                'delete_detail': message.delete_detail,
                 'catalog': catalog,
             })
         except (TypeError, ValueError) as error:
@@ -445,6 +455,25 @@ class RosStateNode(Node):
             'neutral': bool(message.neutral),
             'released': bool(message.released),
             'sample_age_sec': float(message.sample_age_sec),
+            'mode': message.mode,
+        })
+
+    def _on_adapter_state(self, message: AdapterState) -> None:
+        try:
+            _finite(
+                message.commanded_speed, message.effective_speed,
+                message.measured_speed, message.commanded_yaw_rate,
+                message.measured_yaw_rate,
+            )
+        except ValueError:
+            return
+        self._cache.update('adapter_state', {
+            'stamp': _stamp(message.stamp),
+            'commanded_speed': float(message.commanded_speed),
+            'effective_speed': float(message.effective_speed),
+            'measured_speed': float(message.measured_speed),
+            'commanded_yaw_rate': float(message.commanded_yaw_rate),
+            'measured_yaw_rate': float(message.measured_yaw_rate),
             'mode': message.mode,
         })
 

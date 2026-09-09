@@ -136,6 +136,14 @@ def test_goal_and_map_intents():
         'c1', {'action': 'select_map', 'name': '  '}
     ).accepted
 
+    delete = gw.handle('c1', {'action': 'delete_map', 'name': 'studio2'})
+    assert delete.accepted
+    assert isinstance(delete.intents[0], MapRequestIntent)
+    assert delete.intents[0].name == 'studio2'
+    assert not gw.handle(
+        'c1', {'action': 'delete_map', 'name': '  '}
+    ).accepted
+
     mode = gw.handle('c1', {'action': 'select_mode', 'mode': 'mapping'})
     assert isinstance(mode.intents[0], ModeRequestIntent)
 

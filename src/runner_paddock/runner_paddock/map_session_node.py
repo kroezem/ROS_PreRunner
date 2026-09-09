@@ -43,6 +43,8 @@ from runner_interfaces.msg import (
     StopState,
 )
 from runner_paddock.map_session import (
+    delete_bundle,
+    DeleteState,
     MapError,
     MapSaveTransaction,
     MapSessionModel,
@@ -52,6 +54,7 @@ from runner_paddock.map_session import (
     SaveState,
     SessionPhase,
     validate_bundle,
+    validate_delete_candidate,
 )
 from slam_toolbox.srv import SerializePoseGraph
 
@@ -89,6 +92,7 @@ class MapSessionNode(Node):
         self._mode = 0
         self._mode_status = 0
         self._mode_ready = False
+        self._active_autonomy_map = ''
         self._last_request_id = 0
         self._new_map_request_seq = int(time.time())
         self._stop_state: StopState | None = None
@@ -181,6 +185,7 @@ class MapSessionNode(Node):
         self._mode = int(message.mode)
         self._mode_status = int(message.status)
         self._mode_ready = bool(message.ready)
+        self._active_autonomy_map = message.active_autonomy_map
         mapping_active = (
             int(message.mode) == ModeState.MODE_MAPPING
             and int(message.status) == ModeState.STATUS_STABLE
@@ -253,6 +258,8 @@ class MapSessionNode(Node):
                 self._handle_save_map(message)
             elif operation == MapRequest.OP_SELECT_MAP:
                 self._handle_select_map(message)
+            elif operation == MapRequest.OP_DELETE_MAP:
+                self._handle_delete_map(message)
             else:
                 self.get_logger().warning(
                     f'rejected unknown map operation {operation}'
@@ -314,6 +321,33 @@ class MapSessionNode(Node):
                     message.name, previous, reason
                 )
             self.get_logger().warning(f'map selection rejected: {reason}')
+
+    def _handle_delete_map(self, message: MapRequest) -> None:
+        name = message.name
+        try:
+            name = safe_basename(name)
+            validate_delete_candidate(
+                MAP_DIRECTORY, name,
+                selected=self._model.selected_applied,
+                active_autonomy_map=self._active_autonomy_map,
+            )
+            info = delete_bundle(MAP_DIRECTORY, name)
+        except (MapError, OSError) as error:
+            detail = str(error)
+            with self._lock:
+                self._model.record_delete(
+                    int(message.request_id), name,
+                    DeleteState.FAILED, detail,
+                )
+            self.get_logger().warning(f'DELETE MAP {name} rejected: {detail}')
+            return
+        detail = f'deleted saved bundle {info.name}'
+        with self._lock:
+            self._model.record_delete(
+                int(message.request_id), info.name,
+                DeleteState.SUCCEEDED, detail,
+            )
+        self.get_logger().info(f'DELETE MAP {info.name}: {detail}')
 
     def _handle_save_map(self, message: MapRequest) -> None:
         cached = self._model.cached_save(int(message.request_id))
@@ -474,6 +508,10 @@ class MapSessionNode(Node):
             message.selected_map_requested = model.selected_requested
             message.selected_map_applied = model.selected_applied
             message.selected_map_reason = model.selected_reason
+            message.delete_state = int(model.delete_state)
+            message.delete_request_id = model.delete_request_id
+            message.delete_name = model.delete_name
+            message.delete_detail = model.delete_detail
             message.catalog = [
                 self._catalog_entry(entry) for entry in model.catalog()
             ]

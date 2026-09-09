@@ -62,6 +62,7 @@ MODE_OP_NEW_MAP = 1
 MAP_OP_NEW_MAP = 0
 MAP_OP_SAVE_MAP = 1
 MAP_OP_SELECT_MAP = 2
+MAP_OP_DELETE_MAP = 3
 
 _MODE_NAMES = {'idle': MODE_IDLE, 'mapping': MODE_MAPPING, 'autonomy': MODE_AUTONOMY}
 
@@ -295,6 +296,19 @@ class OperatorGateway:
         return GatewayResult(
             True, f'SELECT MAP {name} requested',
             (MapRequestIntent(MAP_OP_SELECT_MAP, self._lease_id, name=name),),
+            'controller',
+        )
+
+    def _do_delete_map(self, conn_id: str, action: dict) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        name = str(action.get('name', '')).strip()
+        if not name:
+            return self._reject(conn_id, 'delete requires a map basename')
+        return GatewayResult(
+            True, f'DELETE MAP {name} requested',
+            (MapRequestIntent(MAP_OP_DELETE_MAP, self._lease_id, name=name),),
             'controller',
         )
 

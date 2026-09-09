@@ -28,6 +28,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import time
 from typing import Optional
 
@@ -60,6 +62,14 @@ class SaveState(IntEnum):
     RUNNING = 1
     SUCCEEDED = 2
     FAILED = 3
+
+
+class DeleteState(IntEnum):
+    """Values mirror runner_interfaces/MapState.DELETE_* constants."""
+
+    IDLE = 0
+    SUCCEEDED = 1
+    FAILED = 2
 
 
 class MapError(ValueError):
@@ -216,6 +226,57 @@ def validate_bundle(map_dir: Path, name: str) -> BundleInfo:
         width=width,
         height=height,
     )
+
+
+def delete_bundle(map_dir: Path, name: str) -> BundleInfo:
+    """
+    Remove one validated bundle after staging every artifact atomically.
+
+    Each rename is atomic within ``map_dir``. If staging fails, already moved
+    files are restored before the rejection is returned. Once every artifact
+    is staged, the bundle has left catalog truth and best-effort cleanup of the
+    private tombstone cannot expose a partial saved map.
+    """
+    info = validate_bundle(map_dir, name)
+    paths = list(_bundle_paths(map_dir, name).values())
+    manifest = map_dir / f'{name}{MANIFEST_SUFFIX}'
+    if manifest.exists():
+        paths.append(manifest)
+    tombstone = Path(tempfile.mkdtemp(prefix=f'.delete-{name}-', dir=map_dir))
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for source in paths:
+            destination = tombstone / source.name
+            os.replace(source, destination)
+            moved.append((source, destination))
+    except OSError as error:
+        rollback_errors = []
+        for source, destination in reversed(moved):
+            try:
+                os.replace(destination, source)
+            except OSError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        shutil.rmtree(tombstone, ignore_errors=True)
+        detail = f'could not stage complete bundle deletion: {error}'
+        if rollback_errors:
+            detail += f'; rollback incomplete: {"; ".join(rollback_errors)}'
+        raise MapError(detail) from error
+    shutil.rmtree(tombstone, ignore_errors=True)
+    return info
+
+
+def validate_delete_candidate(
+    map_dir: Path, name: str, *, selected: str, active_autonomy_map: str
+) -> BundleInfo:
+    """Reject a bundle that selection or the live runtime still references."""
+    safe_basename(name)
+    if name == selected:
+        raise MapError(
+            'cannot delete the selected map; select another map first'
+        )
+    if name == active_autonomy_map:
+        raise MapError('cannot delete the map used by AUTONOMY')
+    return validate_bundle(map_dir, name)
 
 
 @dataclass(frozen=True)
@@ -506,6 +567,10 @@ class MapSessionModel:
     selected_requested: str = ''
     selected_applied: str = ''
     selected_reason: str = ''
+    delete_state: DeleteState = DeleteState.IDLE
+    delete_request_id: int = 0
+    delete_name: str = ''
+    delete_detail: str = ''
     # request_id -> SaveOutcome, for idempotent retries within one process.
     _save_results: dict = field(default_factory=dict)
 
@@ -581,6 +646,15 @@ class MapSessionModel:
         self.selected_requested = requested
         self.selected_applied = applied
         self.selected_reason = reason
+
+    def record_delete(
+        self, request_id: int, name: str, state: DeleteState, detail: str
+    ) -> None:
+        """Record the authoritative result of one delete request."""
+        self.delete_request_id = request_id
+        self.delete_name = name
+        self.delete_state = state
+        self.delete_detail = detail
 
     def catalog(self) -> list[CatalogEntry]:
         return scan_catalog(self.map_dir, selected=self.selected_applied)

@@ -11,6 +11,10 @@ uint8 SAVE_RUNNING=1
 uint8 SAVE_SUCCEEDED=2
 uint8 SAVE_FAILED=3
 
+uint8 DELETE_IDLE=0
+uint8 DELETE_SUCCEEDED=1
+uint8 DELETE_FAILED=2
+
 builtin_interfaces/Time stamp
 
 # Current mapping session identity, mirrored from ModeState. Empty when the
@@ -41,3 +45,10 @@ MapCatalogEntry[] catalog
 string selected_map_requested
 string selected_map_applied
 string selected_map_reason
+
+# Last completed DELETE MAP operation. Deletion is synchronous in the map
+# executor, so there is no in-flight state.
+uint8 delete_state
+uint64 delete_request_id
+string delete_name
+string delete_detail

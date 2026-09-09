@@ -21,6 +21,7 @@ import pytest
 from runner_paddock.map_session import (
     build_manifest,
     CORE_EXTENSIONS,
+    delete_bundle,
     MapError,
     MapSaveTransaction,
     MapSessionModel,
@@ -31,6 +32,7 @@ from runner_paddock.map_session import (
     scan_catalog,
     SessionPhase,
     validate_bundle,
+    validate_delete_candidate,
 )
 
 
@@ -159,6 +161,44 @@ def test_save_transaction_rejects_empty_serialized_artifacts(tmp_path):
     txn.staged_path('data').write_bytes(b'data')
     with pytest.raises(MapError, match='non-empty .posegraph'):
         txn.check_serialized()
+
+
+def test_delete_bundle_removes_only_a_complete_named_bundle(tmp_path):
+    write_bundle(tmp_path, 'keep')
+    write_bundle(tmp_path, 'remove')
+
+    deleted = delete_bundle(tmp_path, 'remove')
+
+    assert deleted.name == 'remove'
+    assert [entry.name for entry in scan_catalog(tmp_path)] == ['keep']
+    assert not list(tmp_path.glob('remove.*'))
+
+
+def test_delete_bundle_rejects_invalid_or_incomplete_bundle(tmp_path):
+    write_bundle(tmp_path, 'broken')
+    (tmp_path / 'broken.data').unlink()
+
+    with pytest.raises(MapError, match='missing or empty .data'):
+        delete_bundle(tmp_path, 'broken')
+
+    assert (tmp_path / 'broken.posegraph').exists()
+
+
+def test_delete_policy_rejects_selected_and_active_autonomy_maps(tmp_path):
+    write_bundle(tmp_path, 'selected')
+    write_bundle(tmp_path, 'active')
+
+    with pytest.raises(MapError, match='selected map'):
+        validate_delete_candidate(
+            tmp_path, 'selected', selected='selected', active_autonomy_map=''
+        )
+    with pytest.raises(MapError, match='used by AUTONOMY'):
+        validate_delete_candidate(
+            tmp_path, 'active', selected='', active_autonomy_map='active'
+        )
+
+    assert validate_bundle(tmp_path, 'selected')
+    assert validate_bundle(tmp_path, 'active')
 
 
 def test_session_id_change_discards_prior_session_state(tmp_path):
