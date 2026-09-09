@@ -1,6 +1,6 @@
 [Unit]
-Description=Runner Paddock command authority (sole supervised /cmd_vel_auto writer)
-After=network.target runner-stop-enforcer.service
+Description=Runner Paddock command authority (sole supervised normal command writer)
+After=network.target runner-stop-enforcer.service runner-drive-adapter.service
 
 [Service]
 Type=simple

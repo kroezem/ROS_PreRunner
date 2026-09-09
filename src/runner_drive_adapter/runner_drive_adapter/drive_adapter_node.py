@@ -30,7 +30,8 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from runner_drive_adapter.drive_adapter import AdapterConfig, DriveAdapter
-from runner_interfaces.msg import AdapterState, EncoderState
+from runner_interfaces.msg import AdapterState, ConvertedCommand, EncoderState
+from runner_interfaces.msg import ManualDemand
 from std_msgs.msg import String
 
 
@@ -100,6 +101,9 @@ class DriveAdapterNode(Node):
         # converted autonomy command. runner_command_authority validates and
         # supervises it before anything reaches /cmd_vel_auto and the mux.
         self._cmd_pub = self.create_publisher(Twist, '/cmd_vel_auto_raw', 10)
+        self._manual_pub = self.create_publisher(
+            ConvertedCommand, '/cmd_vel_paddock_manual_raw', 10
+        )
         self._state_pub = self.create_publisher(
             String, '/drive_adapter/state', 10
         )
@@ -107,8 +111,16 @@ class DriveAdapterNode(Node):
             AdapterState, '/drive_adapter/state_typed', 10
         )
         self._measured_yaw_rate = 0.0
+        self._manual_active = False
+        self._manual_provenance = None
         self.create_subscription(
             Twist, '/cmd_vel_nav', self._on_command, 10
+        )
+        self.create_subscription(
+            ManualDemand,
+            '/paddock/manual_demand',
+            self._on_manual_demand,
+            10,
         )
         self.create_subscription(
             Odometry, '/odometry/filtered', self._on_motion, 10
@@ -129,9 +141,30 @@ class DriveAdapterNode(Node):
         self._log_startup()
 
     def _on_command(self, message: Twist) -> None:
+        if self._manual_active:
+            return
         self.adapter.update_command(
             message.linear.x,
             message.angular.z,
+            time.monotonic(),
+        )
+
+    def _on_manual_demand(self, message: ManualDemand) -> None:
+        """Select or explicitly revoke the authority-selected manual source."""
+        if not message.active:
+            self._manual_active = False
+            self._manual_provenance = None
+            self.adapter.invalidate_command()
+            return
+        self._manual_active = True
+        self._manual_provenance = (
+            int(message.sequence),
+            int(message.lease_generation),
+            int(message.runtime_epoch),
+        )
+        self.adapter.update_manual_command(
+            float(message.signed_speed_mps),
+            float(message.steering_normalized),
             time.monotonic(),
         )
 
@@ -192,7 +225,18 @@ class DriveAdapterNode(Node):
         output = Twist()
         output.linear.x = decision.final_throttle
         output.angular.z = decision.normalized_steering
-        self._cmd_pub.publish(output)
+        if self._manual_active and self._manual_provenance is not None:
+            sequence, lease_generation, runtime_epoch = self._manual_provenance
+            converted = ConvertedCommand()
+            converted.stamp = self.get_clock().now().to_msg()
+            converted.source = ConvertedCommand.SOURCE_PADDOCK_MANUAL
+            converted.sequence = sequence
+            converted.lease_generation = lease_generation
+            converted.runtime_epoch = runtime_epoch
+            converted.command = output
+            self._manual_pub.publish(converted)
+        else:
+            self._cmd_pub.publish(output)
         self.adapter.update_adapter_output(
             output.linear.x,
             output.angular.z,
@@ -202,7 +246,10 @@ class DriveAdapterNode(Node):
     def _typed_state(self, decision) -> AdapterState:
         """Build the plot-friendly view of one adapter decision."""
         command = self.adapter.latest_command
-        commanded_yaw_rate = command[1] if command is not None else 0.0
+        commanded_yaw_rate = (
+            command[1]
+            if command is not None and not self._manual_active else 0.0
+        )
         curvature = 0.0
         if (
             command is not None
@@ -244,6 +291,7 @@ class DriveAdapterNode(Node):
             f'active_mode_fresh='
             f'{str(decision.active_mode_fresh).lower()};'
             f'active_mode={decision.active_mode};'
+            f'demand_source={"manual" if self._manual_active else "autonomy"};'
             f'preempted={str(decision.preempted).lower()};'
             f'integral_decay_active='
             f'{str(decision.integral_decay_active).lower()}'
@@ -270,6 +318,13 @@ class DriveAdapterNode(Node):
                 now,
             )
         if decision.steering_saturated:
+            if self._manual_active:
+                self._warning(
+                    'steering_saturated',
+                    f'Clamping manual steering demand {yaw_rate:.9f} to [-1, 1]',
+                    now,
+                )
+                return
             curvature = yaw_rate / speed
             self._warning(
                 'steering_saturated',

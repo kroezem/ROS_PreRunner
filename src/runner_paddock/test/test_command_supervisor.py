@@ -39,6 +39,8 @@ def control(supervisor, event, sequence, now, **kwargs):
         lease_id=kwargs.get('lease_id', LEASE),
         sequence=sequence,
         now=now,
+        manual_speed_mps=kwargs.get('manual_speed_mps', 0.0),
+        manual_steering=kwargs.get('manual_steering', 0.0),
     )
 
 
@@ -368,6 +370,50 @@ def test_no_raw_command_is_republished_without_a_new_input_sample():
     assert forwarded.autonomy_command == COMMAND
     assert periodic.autonomy_command is None
     assert not periodic.snapshot.brake_intent
+
+
+def test_manual_demand_is_bounded_converted_and_stale_revoked():
+    supervisor = CommandSupervisor(
+        active_autonomy_map=MAP, control_liveness_sec=0.5
+    )
+    control(supervisor, ControlEvent.LEASE_ACQUIRED, 1, 0.0)
+    supervisor.set_runtime_mode(
+        Mode.MAPPING, '', 0.0, runtime_stable=True
+    )
+
+    demand = control(
+        supervisor, ControlEvent.MANUAL_ACTIVE, 2, 0.01,
+        manual_speed_mps=0.30, manual_steering=0.4,
+    )
+    assert demand.manual_demand.signed_speed_mps == pytest.approx(0.30)
+    assert demand.manual_demand.steering_normalized == pytest.approx(0.4)
+    converted = VelocityCommand(linear_x=0.06, angular_z=0.4)
+    forwarded = supervisor.receive_raw_manual(converted, 2, 0.02)
+    assert forwarded.manual_command == converted
+
+    stale = supervisor.tick(0.261)
+    assert stale.snapshot.reason == 'MANUAL_INPUT_STALE'
+    assert stale.snapshot.state.authority == Authority.NONE
+    assert stale.manual_command is None
+
+
+def test_manual_floor_and_autonomy_takeover_require_new_run():
+    supervisor = autonomy_ready()
+    demand = control(
+        supervisor, ControlEvent.MANUAL_ACTIVE, 4, 0.01,
+        manual_speed_mps=-0.10, manual_steering=2.0,
+    )
+    assert demand.snapshot.state.authority == Authority.PADDOCK_MANUAL
+    assert demand.manual_demand.signed_speed_mps == pytest.approx(-0.25)
+    assert demand.manual_demand.steering_normalized == pytest.approx(1.0)
+    assert not demand.snapshot.state.run_held
+    assert not demand.snapshot.state.navigation_active
+
+    released = control(
+        supervisor, ControlEvent.MANUAL_INACTIVE, 5, 0.02
+    )
+    assert released.snapshot.state.authority == Authority.NONE
+    assert not released.snapshot.state.navigation_active
 
 
 @pytest.mark.parametrize(

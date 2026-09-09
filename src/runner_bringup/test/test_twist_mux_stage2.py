@@ -46,7 +46,9 @@ def test_mux_configuration_has_autonomy_local_and_stop_inputs():
     assert parameters['use_stamped'] is False
     # v1.3 autonomy cutover adds exactly one autonomy input, below local
     # DualSense teleop and below the global STOP zero.
-    assert set(parameters['topics']) == {'autonomy', 'teleop', 'global_stop'}
+    assert set(parameters['topics']) == {
+        'autonomy', 'paddock_manual', 'teleop', 'global_stop'
+    }
     assert parameters['topics']['autonomy'] == {
         'topic': '/cmd_vel_auto',
         'timeout': 0.30,
@@ -57,6 +59,11 @@ def test_mux_configuration_has_autonomy_local_and_stop_inputs():
         'timeout': 0.15,
         'priority': 100,
     }
+    assert parameters['topics']['paddock_manual'] == {
+        'topic': '/cmd_vel_paddock',
+        'timeout': 0.30,
+        'priority': 75,
+    }
     assert parameters['topics']['global_stop'] == {
         'topic': '/cmd_vel_stop',
         'timeout': 0.10,
@@ -64,6 +71,7 @@ def test_mux_configuration_has_autonomy_local_and_stop_inputs():
     }
     assert (
         parameters['topics']['autonomy']['priority']
+        < parameters['topics']['paddock_manual']['priority']
         < parameters['topics']['teleop']['priority']
         < parameters['locks']['global_stop']['priority']
         < parameters['topics']['global_stop']['priority']

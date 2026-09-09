@@ -116,7 +116,7 @@ class PaddockState:
             return Authority.NONE
         if self.dualsense_active:
             return Authority.DUALSENSE
-        if self.mode == Mode.MAPPING and self.lease_active:
+        if self.mode in (Mode.MAPPING, Mode.AUTONOMY) and self.lease_active:
             if self.manual_active:
                 return Authority.PADDOCK_MANUAL
         if self.autonomy_permitted:
@@ -321,9 +321,21 @@ def transition(
         )
 
     if event == Event.MANUAL_ACTIVE:
-        if state.mode != Mode.MAPPING or state.dualsense_active:
+        if (
+            state.mode not in (Mode.MAPPING, Mode.AUTONOMY)
+            or state.dualsense_active
+        ):
             return Transition(state)
-        return Transition(replace(state, manual_active=True))
+        effects = ()
+        if state.navigation_active:
+            effects = (Effect.BRAKE, Effect.CANCEL_NAVIGATION)
+        return Transition(replace(
+            state,
+            manual_active=True,
+            run_held=False,
+            run_blocked_until_release=False,
+            navigation_active=False,
+        ), effects)
 
     if event == Event.MANUAL_INACTIVE:
         if not state.manual_active:

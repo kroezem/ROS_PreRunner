@@ -27,6 +27,7 @@ PERSISTENT=(
     runner-foxglove.service
     runner-stop-enforcer.service
     runner-local-control.service
+    runner-drive-adapter.service
     runner-command-authority.service
     runner-mode-supervisor.service
     runner-map-executor.service
@@ -44,6 +45,7 @@ RESTART_ORDER=(
     runner-stop-enforcer.service
     runner-command-authority.service
     runner-local-control.service
+    runner-drive-adapter.service
     runner-mode-supervisor.service
     runner-map-executor.service
     runner-paddock-web.service

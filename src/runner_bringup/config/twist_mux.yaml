@@ -13,6 +13,12 @@ twist_mux:
         topic: /cmd_vel_auto
         timeout: 0.30
         priority: 50
+      # Supervised browser manual output. The command authority is its sole
+      # writer and sends a bounded brake transition before becoming silent.
+      paddock_manual:
+        topic: /cmd_vel_paddock
+        timeout: 0.30
+        priority: 75
       teleop:
         topic: /cmd_vel_teleop
         timeout: 0.15

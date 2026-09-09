@@ -12,8 +12,9 @@ mode composites.
 `runner_teleop`, and the existing `twist_mux` in IDLE, MAPPING, and AUTONOMY.
 The STOP executor remains its separate persistent service. Application launches
 contain no local-control or mux nodes. Inactive teleop publishes status but no
-velocity; release emits a bounded brake before becoming silent. The legacy
-autonomy input is absent from the mux until the later supervised cutover.
+velocity; release emits a bounded brake before becoming silent. The mux
+precedence is STOP (255/lock 200), DualSense (100), supervised Paddock manual
+(75), then supervised autonomy (50).
 
 ## Stage 4 application-mode supervision
 
@@ -40,8 +41,10 @@ touch PWM/motor/hardware privilege services.
 command-grant supervisor alive so only the current typed Paddock lease can
 request a mode. It now follows authoritative `ModeState`; `TRANSITIONING` and
 `FAULT` immediately reduce its effective mode to IDLE and revoke grants. It
-remains offline from the production mux: `/cmd_vel_paddock` and supervised
-autonomy are not added to `twist_mux.yaml`, and no command priority changes.
+is the sole normal supervised writer to `/cmd_vel_auto` and
+`/cmd_vel_paddock`; neither it nor the browser writes `/cmd_vel` directly.
+`runner-drive-adapter.service` persistently owns the one shared speed PI and
+converts both Nav2 SI Twist and authority-bounded browser manual demand.
 
 The supervisor always publishes `TRANSITIONING`, stops both fixed mode units,
 waits for empty cgroups and a graph with no mode resources, then starts and
@@ -57,7 +60,7 @@ and no `[Install]` section, so they cannot be enabled at boot:
   TF tier, one estimation tier, and mapping slam_toolbox.
 - `runner-mode-autonomy.service`: `autonomy.launch.py`, containing the same
   common owners once, localization slam_toolbox remapped to `/slam_map`,
-  map_server as the sole `/map` publisher, Nav2, the drive adapter, and
+  map_server as the sole `/map` publisher, Nav2, and
   `runner_navigation_runtime` (Stage 5) as the sole Nav2 mission/action owner.
 
 ## Stage 5 navigation runtime

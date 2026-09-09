@@ -80,13 +80,17 @@ def test_persistent_local_control_is_boot_enabled_and_mode_independent():
         assert 'teleop.launch.py' not in application
 
 
-def test_command_authority_remains_persistent_but_offline_from_mux():
+def test_command_authority_and_shared_adapter_are_persistent_mux_owners():
     authority = source('runner-command-authority.service')
     mux = (ROOT / 'src/runner_bringup/config/twist_mux.yaml').read_text()
 
     assert 'command_authority' in authority
     assert 'WantedBy=multi-user.target' in authority
-    assert '/cmd_vel_paddock' not in mux
+    adapter = source('runner-drive-adapter.service')
+    assert 'drive_adapter' in adapter
+    assert 'WantedBy=multi-user.target' in adapter
+    assert 'topic: /cmd_vel_paddock' in mux
+    assert 'priority: 75' in mux
 
 
 def test_install_docs_do_not_disable_authoritative_static_links():

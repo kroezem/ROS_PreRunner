@@ -74,7 +74,13 @@
         <p class="hint" id="run-hint" hidden>Release revokes RUN immediately. A new deliberate hold is required to resume.</p>
       </section>
       <section id="control-mapping" class="runtime-control" hidden>
-        <div class="mapping-callout"><span>Drive control</span><strong id="control-local">DualSense status unavailable</strong><p>Mapping motion uses the existing local controller. Browser driving is not installed.</p></div>
+        <div class="joystick-heading"><span>Manual drive</span><strong>MAX 0.30 m/s</strong></div>
+        <div id="manual-joystick" class="joystick" role="application" aria-label="Manual driving joystick">
+          <div class="joystick-crosshair"></div><div id="joystick-knob" class="joystick-knob"></div>
+        </div>
+        <div class="manual-feedback"><span>Applied speed <strong id="manual-speed">0.00</strong> m/s</span><span>Steering <strong id="manual-steering">0.00</strong></span></div>
+        <p class="hint">Touch and hold to drive. Center actively brakes; release becomes silent. DualSense remains available and takes priority.</p>
+        <span id="control-local" class="local-status">DualSense status unavailable</span>
       </section>
       <section id="control-passive" class="runtime-control">
         <p id="control-next" class="next-action">Connect to the backend to begin.</p>

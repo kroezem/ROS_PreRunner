@@ -45,7 +45,7 @@ def test_composite_has_application_nodes_only():
     """Persistent local control is absent from the AUTONOMY application."""
     packages = _node_packages(AUTONOMY_LAUNCH)
 
-    assert packages == ['runner_drive_adapter', 'runner_bringup']
+    assert packages == ['runner_bringup']
     assert 'runner_encoder' not in packages
     assert 'robot_localization' not in packages
     assert not any(package.startswith('nav2_') for package in packages)
@@ -94,8 +94,7 @@ def test_local_control_parameters_live_only_in_persistent_launch():
         assert fragment in local
         assert fragment in bench
 
-    assert "package='runner_drive_adapter'" in autonomy
-    assert 'parameters=[adapter_parameters, speed_envelope]' in autonomy
+    assert "package='runner_drive_adapter'" not in autonomy
 
     assert "executable='speed_envelope_observer'" in autonomy
     assert "executable='speed_envelope_observer'" not in bench
@@ -134,7 +133,11 @@ def test_shared_speed_origin_is_layered_only_on_its_consumers():
     assert "'speed_envelope.yaml'" in autonomy
     assert "'speed_envelope.yaml'" in nav2
     assert 'parameters=[nav2_params, speed_envelope]' in nav2
-    assert 'parameters=[adapter_parameters, speed_envelope]' in autonomy
+    adapter_unit = (
+        PACKAGE.parents[1] / 'services' / 'runner-drive-adapter.service'
+    ).read_text()
+    assert 'runner_drive_adapter drive_adapter' in adapter_unit
+    assert 'speed_envelope.yaml' in adapter_unit
     assert 'parameters=[mux_parameters, speed_envelope]' not in autonomy
 
 

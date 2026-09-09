@@ -15,6 +15,10 @@ let heartbeatTimer = null;
 let runHeld = false;
 let keyboardRun = false;
 let runTimer = null;
+let manualTimer = null;
+let manualEngaged = false;
+let manualPointerId = null;
+let manualDemand = { speed_mps: 0, steering: 0 };
 let catalogRenderKey = null;
 let pendingDeleteName = "";
 let retainedPlan = null;
@@ -169,6 +173,7 @@ function connect() {
     retainedPlan = null;
     window.clearInterval(heartbeatTimer);
     window.clearInterval(runTimer);
+    resetManualLocal();
     $("btn-run").classList.remove("armed");
     setBanner("Disconnected — retrying (RUN is revoked)", "waiting");
     window.setTimeout(connect, 1000);
@@ -370,7 +375,7 @@ function renderControlState(mode, auth, stop, local, adapter, nav) {
   else if (auth.dualsense_active) inhibit = "DualSense takeover active — Paddock motion is inhibited.";
   else if (autonomy && !auth.autonomy_goal_selected) inhibit = "Set a goal on the map before holding RUN.";
   else if (autonomy && auth.brake_intent && auth.reason) inhibit = humanDetail(auth.reason);
-  else if (mapping) inhibit = "Drive with the existing DualSense local controller.";
+  else if (mapping) inhibit = "Touch and hold the joystick to drive; release brakes.";
   else if (mode.mode === 0) inhibit = "Select MAPPING or AUTONOMY in CONFIGURE.";
   text("control-inhibit", inhibit);
   $("control-inhibit").classList.toggle("ready", inhibit === "Ready for operator input.");
@@ -381,6 +386,14 @@ function renderControlState(mode, auth, stop, local, adapter, nav) {
   text("control-yaw", fmt(adapter.measured_yaw_rate));
   text("control-local", local.active ? `ACTIVE · ${local.mode || "local"}` :
     (local.connected ? "Connected · controls released" : "DualSense disconnected"));
+  text("manual-speed", fmt(auth.manual_applied_speed_mps));
+  text("manual-steering", fmt(auth.manual_applied_steering));
+  const manualAvailable = mapping && mode.ready && socketReady &&
+    role === "controller" && auth.stop_state_fresh && auth.stop_healthy &&
+    auth.stop_clear && !stop.stopped && !auth.dualsense_active;
+  $("manual-joystick").classList.toggle("disabled", !manualAvailable);
+  $("manual-joystick").setAttribute("aria-disabled", String(!manualAvailable));
+  if (!manualAvailable) releaseManual();
 
   let next = "Select a runtime in CONFIGURE.";
   if (!socketReady) next = "Waiting for backend connection.";
@@ -930,6 +943,7 @@ function fmt(value) {
 
 $("btn-stop").addEventListener("click", () => {
   stopRun();
+  releaseManual();
   send({ action: "stop" });
 });
 $("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
@@ -977,6 +991,81 @@ function cancelRun() {
   else send({ action: "run", held: false });
 }
 
+const joystick = $("manual-joystick");
+const joystickKnob = $("joystick-knob");
+
+function manualIsAvailable() {
+  return socketReady && role === "controller" &&
+    joystick.getAttribute("aria-disabled") !== "true";
+}
+
+function updateManualFromPointer(event) {
+  const bounds = joystick.getBoundingClientRect();
+  const radius = Math.min(bounds.width, bounds.height) / 2;
+  let x = (event.clientX - (bounds.left + bounds.width / 2)) / radius;
+  let y = (event.clientY - (bounds.top + bounds.height / 2)) / radius;
+  const magnitude = Math.hypot(x, y);
+  if (magnitude > 1) { x /= magnitude; y /= magnitude; }
+  manualDemand = {
+    speed_mps: Math.max(-0.30, Math.min(0.30, -y * 0.30)),
+    steering: Math.max(-1, Math.min(1, x)),
+  };
+  joystickKnob.style.left = `${50 + x * 36}%`;
+  joystickKnob.style.top = `${50 + y * 36}%`;
+}
+
+function sendManualSample() {
+  if (!manualEngaged || !manualIsAvailable()) return;
+  send({ action: "manual", active: true, ...manualDemand });
+}
+
+function engageManual(event) {
+  if (!manualIsAvailable() || manualEngaged) return;
+  event.preventDefault();
+  stopRun();
+  manualEngaged = true;
+  manualPointerId = event.pointerId;
+  joystick.setPointerCapture(event.pointerId);
+  joystick.classList.add("engaged");
+  updateManualFromPointer(event);
+  sendManualSample();
+  manualTimer = window.setInterval(sendManualSample, 100);
+}
+
+function resetManualLocal() {
+  manualEngaged = false;
+  manualPointerId = null;
+  manualDemand = { speed_mps: 0, steering: 0 };
+  window.clearInterval(manualTimer);
+  manualTimer = null;
+  if (joystick) {
+    joystick.classList.remove("engaged");
+    joystickKnob.style.left = "50%";
+    joystickKnob.style.top = "50%";
+  }
+}
+
+function releaseManual() {
+  if (!manualEngaged) return;
+  const pointerId = manualPointerId;
+  resetManualLocal();
+  send({ action: "manual", active: false, speed_mps: 0, steering: 0 });
+  if (pointerId !== null && joystick.hasPointerCapture(pointerId)) {
+    joystick.releasePointerCapture(pointerId);
+  }
+}
+
+joystick.addEventListener("pointerdown", engageManual);
+joystick.addEventListener("pointermove", (event) => {
+  if (!manualEngaged || event.pointerId !== manualPointerId) return;
+  event.preventDefault();
+  updateManualFromPointer(event);
+  sendManualSample();
+});
+joystick.addEventListener("pointerup", releaseManual);
+joystick.addEventListener("pointercancel", releaseManual);
+joystick.addEventListener("lostpointercapture", releaseManual);
+
 function isEditableOrInteractive(target) {
   return target instanceof Element && Boolean(target.closest(
     "input, textarea, select, button, [contenteditable='true'], [role='textbox']",
@@ -997,9 +1086,9 @@ window.addEventListener("keyup", (event) => {
   if (!isEditableOrInteractive(event.target)) event.preventDefault();
   stopRun();
 });
-window.addEventListener("blur", stopRun);
+window.addEventListener("blur", () => { stopRun(); releaseManual(); });
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopRun();
+  if (document.hidden) { stopRun(); releaseManual(); }
 });
 
 function debugRender() {

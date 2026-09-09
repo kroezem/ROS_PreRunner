@@ -33,6 +33,9 @@ from runner_paddock.state_machine import transition
 DEFAULT_LEASE_TIMEOUT_SEC = 0.150
 DEFAULT_CONTROL_LIVENESS_SEC = 3.0
 DEFAULT_RAW_AUTONOMY_TIMEOUT_SEC = 0.150
+DEFAULT_MANUAL_TIMEOUT_SEC = 0.250
+DEFAULT_MANUAL_MAX_SPEED_MPS = 0.30
+DEFAULT_MINIMUM_MOVING_SPEED_MPS = 0.25
 UINT64_MODULUS = 1 << 64
 UINT64_HALF_RANGE = 1 << 63
 
@@ -83,6 +86,15 @@ class VelocityCommand:
 
 
 @dataclass(frozen=True)
+class ManualDemand:
+    """One authority-bounded browser manual demand."""
+
+    sequence: int
+    signed_speed_mps: float
+    steering_normalized: float
+
+
+@dataclass(frozen=True)
 class SupervisorSnapshot:
     """One queryable authority and timing snapshot."""
 
@@ -92,6 +104,10 @@ class SupervisorSnapshot:
     lease_age_sec: Optional[float]
     raw_autonomy_fresh: bool
     raw_autonomy_age_sec: Optional[float]
+    manual_input_fresh: bool
+    manual_input_age_sec: Optional[float]
+    manual_applied_speed_mps: float
+    manual_applied_steering: float
     last_control_sequence: Optional[int]
     reason: str
 
@@ -102,6 +118,8 @@ class SupervisorResult:
 
     snapshot: SupervisorSnapshot
     autonomy_command: Optional[VelocityCommand] = None
+    manual_demand: Optional[ManualDemand] = None
+    manual_command: Optional[VelocityCommand] = None
     accepted: bool = True
 
 
@@ -119,6 +137,9 @@ class CommandSupervisor:
         lease_timeout_sec: float = DEFAULT_LEASE_TIMEOUT_SEC,
         raw_autonomy_timeout_sec: float = DEFAULT_RAW_AUTONOMY_TIMEOUT_SEC,
         control_liveness_sec: Optional[float] = None,
+        manual_timeout_sec: float = DEFAULT_MANUAL_TIMEOUT_SEC,
+        manual_max_speed_mps: float = DEFAULT_MANUAL_MAX_SPEED_MPS,
+        minimum_moving_speed_mps: float = DEFAULT_MINIMUM_MOVING_SPEED_MPS,
         active_autonomy_map: str = '',
     ) -> None:
         if not math.isfinite(lease_timeout_sec) or lease_timeout_sec <= 0.0:
@@ -151,11 +172,24 @@ class CommandSupervisor:
         self.lease_timeout_sec = lease_timeout_sec
         self.control_liveness_sec = control_liveness_sec
         self.raw_autonomy_timeout_sec = raw_autonomy_timeout_sec
+        if not math.isfinite(manual_timeout_sec) or manual_timeout_sec <= 0.0:
+            raise ValueError('manual_timeout_sec must be finite and positive')
+        if (
+            not math.isfinite(manual_max_speed_mps)
+            or manual_max_speed_mps < minimum_moving_speed_mps
+        ):
+            raise ValueError('manual speed ceiling must reach the moving floor')
+        self.manual_timeout_sec = manual_timeout_sec
+        self.manual_max_speed_mps = manual_max_speed_mps
+        self.minimum_moving_speed_mps = minimum_moving_speed_mps
         self.state = PaddockState(
             active_autonomy_map=active_autonomy_map
         )
         self.last_lease_receive_at: Optional[float] = None
         self.last_raw_autonomy_at: Optional[float] = None
+        self.last_manual_input_at: Optional[float] = None
+        self.last_raw_manual_at: Optional[float] = None
+        self._manual_demand: Optional[ManualDemand] = None
         self.last_control_sequence: Optional[int] = None
         # (client_id, lease_id) of a lease that lapsed the liveness backstop;
         # a matching heartbeat from the same still-connected browser reinstates
@@ -194,6 +228,36 @@ class CommandSupervisor:
         age = self._raw_age(now)
         return age is not None and age <= self.raw_autonomy_timeout_sec
 
+    def _manual_age(self, now: float) -> Optional[float]:
+        if self.last_manual_input_at is None:
+            return None
+        return max(0.0, now - self.last_manual_input_at)
+
+    def _manual_is_fresh(self, now: float) -> bool:
+        age = self._manual_age(now)
+        return age is not None and age <= self.manual_timeout_sec
+
+    def _raw_manual_is_fresh(self, now: float) -> bool:
+        return (
+            self.last_raw_manual_at is not None
+            and now - self.last_raw_manual_at <= self.raw_autonomy_timeout_sec
+        )
+
+    def _expire_manual(self, now: float) -> bool:
+        if self.state.manual_active and not self._manual_is_fresh(now):
+            self.state = transition(
+                self.state, Event.MANUAL_INACTIVE, lease_id=self.state.lease_id
+            ).state
+            self._manual_demand = None
+            self.last_manual_input_at = None
+            return True
+        return False
+
+    def _clear_manual_if_inactive(self) -> None:
+        if not self.state.manual_active:
+            self._manual_demand = None
+            self.last_manual_input_at = None
+
     def _expire_lease(self, now: float) -> bool:
         # Only the forgiving liveness backstop drops the lease. The tight motion
         # deadman (_lease_is_fresh) still gates autonomous motion every tick via
@@ -209,6 +273,7 @@ class CommandSupervisor:
             ).state
             self.last_control_sequence = None
             self._lapsed_lease = (client_id, lease_id)
+            self._clear_manual_if_inactive()
             return True
         return False
 
@@ -220,13 +285,28 @@ class CommandSupervisor:
         lease_live = self._lease_is_live(now)
         raw_fresh = self._raw_is_fresh(now)
         autonomy_open = self.state.autonomy_permitted and motion_fresh
+        manual_fresh = self._manual_is_fresh(now)
+        manual_open = (
+            self.state.authority == Authority.PADDOCK_MANUAL
+            and manual_fresh
+            and self._raw_manual_is_fresh(now)
+        )
+        demand = self._manual_demand
         return SupervisorSnapshot(
             state=self.state,
-            brake_intent=not (autonomy_open and raw_fresh),
+            brake_intent=not ((autonomy_open and raw_fresh) or manual_open),
             lease_fresh=lease_live,
             lease_age_sec=self._lease_age(now),
             raw_autonomy_fresh=raw_fresh,
             raw_autonomy_age_sec=self._raw_age(now),
+            manual_input_fresh=manual_fresh,
+            manual_input_age_sec=self._manual_age(now),
+            manual_applied_speed_mps=(
+                demand.signed_speed_mps if demand is not None else 0.0
+            ),
+            manual_applied_steering=(
+                demand.steering_normalized if demand is not None else 0.0
+            ),
             last_control_sequence=self.last_control_sequence,
             reason=reason,
         )
@@ -234,7 +314,11 @@ class CommandSupervisor:
     def tick(self, now: float) -> SupervisorResult:
         """Expire time-bounded state and produce periodic brake intent."""
         expired = self._expire_lease(now)
-        reason = 'LEASE_EXPIRED' if expired else self._reason(now)
+        manual_expired = self._expire_manual(now)
+        reason = (
+            'LEASE_EXPIRED' if expired else
+            'MANUAL_INPUT_STALE' if manual_expired else self._reason(now)
+        )
         return SupervisorResult(self._snapshot(now, reason))
 
     def set_runtime_mode(
@@ -265,6 +349,7 @@ class CommandSupervisor:
             goal=None if changed else self.state.goal,
             navigation_active=False if changed else self.state.navigation_active,
         )
+        self._clear_manual_if_inactive()
         reason = 'RUNTIME_MODE' if runtime_stable else 'RUNTIME_NOT_STABLE'
         return SupervisorResult(self._snapshot(now, reason))
 
@@ -275,6 +360,12 @@ class CommandSupervisor:
             return 'DUALSENSE_TAKEOVER'
         if not self._lease_is_live(now):
             return 'NO_FRESH_LEASE'
+        if self.state.manual_active:
+            if not self._manual_is_fresh(now):
+                return 'MANUAL_INPUT_STALE'
+            if not self._raw_manual_is_fresh(now):
+                return 'RAW_MANUAL_STALE'
+            return 'MANUAL_ACTIVE'
         if self.state.run_blocked_until_release:
             return 'RUN_REARM_REQUIRED'
         if self.state.mode != Mode.AUTONOMY:
@@ -303,6 +394,8 @@ class CommandSupervisor:
         goal_x: float = 0.0,
         goal_y: float = 0.0,
         goal_yaw: float = 0.0,
+        manual_speed_mps: float = 0.0,
+        manual_steering: float = 0.0,
     ) -> SupervisorResult:
         """Validate ownership/order, refresh the lease, and reduce an event."""
         self._expire_lease(now)
@@ -436,9 +529,48 @@ class CommandSupervisor:
                 event_map[event],
                 lease_id=lease_id,
             ).state
+            if event == ControlEvent.MANUAL_ACTIVE:
+                if not all(math.isfinite(value) for value in (
+                    manual_speed_mps, manual_steering
+                )):
+                    self.state = transition(
+                        self.state, Event.MANUAL_INACTIVE, lease_id=lease_id
+                    ).state
+                    return SupervisorResult(
+                        self._snapshot(now, 'INVALID_MANUAL_DEMAND'),
+                        accepted=False,
+                    )
+                if self.state.authority != Authority.PADDOCK_MANUAL:
+                    return SupervisorResult(
+                        self._snapshot(now, 'MANUAL_NOT_ELIGIBLE'),
+                        accepted=False,
+                    )
+                speed = max(
+                    -self.manual_max_speed_mps,
+                    min(self.manual_max_speed_mps, float(manual_speed_mps)),
+                )
+                if 0.0 < abs(speed) < self.minimum_moving_speed_mps:
+                    speed = math.copysign(self.minimum_moving_speed_mps, speed)
+                demand = ManualDemand(
+                    sequence=sequence,
+                    signed_speed_mps=speed,
+                    steering_normalized=max(
+                        -1.0, min(1.0, float(manual_steering))
+                    ),
+                )
+                self._manual_demand = demand
+                self.last_manual_input_at = now
+                return SupervisorResult(
+                    self._snapshot(now, 'MANUAL_ACTIVE'),
+                    manual_demand=demand,
+                )
+            if event == ControlEvent.MANUAL_INACTIVE:
+                self._manual_demand = None
+                self.last_manual_input_at = None
         if event == ControlEvent.LEASE_RELEASED:
             self.last_lease_receive_at = None
             self.last_control_sequence = None
+        self._clear_manual_if_inactive()
         return SupervisorResult(self._snapshot(now, self._reason(now)))
 
     def request_mode(
@@ -477,6 +609,7 @@ class CommandSupervisor:
             else Event.DUALSENSE_INACTIVE
         )
         self.state = transition(self.state, event).state
+        self._clear_manual_if_inactive()
         return SupervisorResult(self._snapshot(now, self._reason(now)))
 
     def receive_raw_autonomy(
@@ -501,11 +634,38 @@ class CommandSupervisor:
             return SupervisorResult(snapshot, autonomy_command=command)
         return SupervisorResult(snapshot)
 
+    def receive_raw_manual(
+        self,
+        command: VelocityCommand,
+        sequence: int,
+        now: float,
+    ) -> SupervisorResult:
+        """Forward a converted manual sample only for its current demand."""
+        self._expire_lease(now)
+        self._expire_manual(now)
+        demand = self._manual_demand
+        if not command.valid or demand is None or sequence != demand.sequence:
+            return SupervisorResult(
+                self._snapshot(now, 'INVALID_RAW_MANUAL'), accepted=False
+            )
+        self.last_raw_manual_at = now
+        snapshot = self._snapshot(now, self._reason(now))
+        if (
+            snapshot.state.authority == Authority.PADDOCK_MANUAL
+            and snapshot.manual_input_fresh
+            and not snapshot.brake_intent
+        ):
+            return SupervisorResult(snapshot, manual_command=command)
+        return SupervisorResult(snapshot)
+
     def restart(self, now: float) -> SupervisorResult:
         """Model process restart: no lease, RUN, goal, or raw sample survives."""
         self.state = transition(self.state, Event.RESTART).state
         self.last_lease_receive_at = None
         self.last_raw_autonomy_at = None
+        self.last_manual_input_at = None
+        self.last_raw_manual_at = None
+        self._manual_demand = None
         self.last_control_sequence = None
         self._lapsed_lease = None
         return SupervisorResult(self._snapshot(now, 'RESTART_BRAKE'))

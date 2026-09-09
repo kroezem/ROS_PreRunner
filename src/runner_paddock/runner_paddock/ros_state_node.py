@@ -612,6 +612,8 @@ class RosStateNode(Node):
             message.goal_x = float(intent.goal_x)
             message.goal_y = float(intent.goal_y)
             message.goal_yaw = float(intent.goal_yaw)
+            message.manual_speed_mps = float(intent.manual_speed_mps)
+            message.manual_steering = float(intent.manual_steering)
             self._control_event_pub.publish(message)
         elif isinstance(intent, ModeRequestIntent):
             message = ModeRequest()

@@ -30,17 +30,12 @@ def generate_launch_description():
         'launch',
         'nav2.launch.py',
     )
-    adapter_parameters = os.path.join(
-        adapter_share,
-        'config',
-        'drive_adapter.yaml',
-    )
+    map_name = LaunchConfiguration('map_name')
     speed_envelope = os.path.join(
         adapter_share,
         'config',
         'speed_envelope.yaml',
     )
-    map_name = LaunchConfiguration('map_name')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -50,13 +45,6 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav2_launch),
             launch_arguments={'map_name': map_name}.items(),
-        ),
-        Node(
-            package='runner_drive_adapter',
-            executable='drive_adapter',
-            name='drive_adapter',
-            output='screen',
-            parameters=[adapter_parameters, speed_envelope],
         ),
         Node(
             package='runner_bringup',

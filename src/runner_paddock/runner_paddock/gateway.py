@@ -79,6 +79,8 @@ class ControlEventIntent:
     goal_x: float = 0.0
     goal_y: float = 0.0
     goal_yaw: float = 0.0
+    manual_speed_mps: float = 0.0
+    manual_steering: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,7 @@ class OperatorGateway:
     _client_id: str = ''
     _lease_id: str = ''
     _run_pressed: bool = False
+    _manual_active: bool = False
     _uuid_factory: object = field(default=None)
 
     def __post_init__(self) -> None:
@@ -166,6 +169,7 @@ class OperatorGateway:
         self._client_id = ''
         self._lease_id = ''
         self._run_pressed = False
+        self._manual_active = False
         return GatewayResult(True, 'lease released on disconnect', (intent,))
 
     # -- actions -----------------------------------------------------------
@@ -191,6 +195,7 @@ class OperatorGateway:
         self._client_id = self._uuid_factory()
         self._lease_id = self._uuid_factory()
         self._run_pressed = False
+        self._manual_active = False
         return GatewayResult(
             True,
             'control lease acquired',
@@ -242,6 +247,7 @@ class OperatorGateway:
         if owned is not None:
             return owned
         self._run_pressed = False
+        self._manual_active = False
         return GatewayResult(
             True, 'STOP requested',
             (self._control(ControlEvent.STOP),), 'controller',
@@ -254,6 +260,42 @@ class OperatorGateway:
         return GatewayResult(
             True, 'CLEAR STOP requested',
             (self._control(ControlEvent.CLEAR_STOP),), 'controller',
+        )
+
+    def _do_manual(self, conn_id: str, action: dict) -> GatewayResult:
+        """Validate one fresh joystick sample or explicit release."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        active = bool(action.get('active'))
+        if not active:
+            if not self._manual_active:
+                return GatewayResult(True, 'manual idle', (), 'controller')
+            self._manual_active = False
+            return GatewayResult(
+                True,
+                'manual released',
+                (self._control(ControlEvent.MANUAL_INACTIVE),),
+                'controller',
+            )
+        try:
+            speed = float(action['speed_mps'])
+            steering = float(action['steering'])
+        except (KeyError, TypeError, ValueError):
+            return self._reject(conn_id, 'manual needs finite speed and steering')
+        if not all(math.isfinite(value) for value in (speed, steering)):
+            return self._reject(conn_id, 'manual needs finite speed and steering')
+        self._manual_active = True
+        self._run_pressed = False
+        return GatewayResult(
+            True,
+            'manual demand',
+            (self._control(
+                ControlEvent.MANUAL_ACTIVE,
+                manual_speed_mps=speed,
+                manual_steering=steering,
+            ),),
+            'controller',
         )
 
     def _do_clear_obstacles(
@@ -364,12 +406,12 @@ class OperatorGateway:
     def _reject(self, conn_id: str, reason: str) -> GatewayResult:
         return GatewayResult(False, reason, (), self.role_for(conn_id))
 
-    def _control(self, event: ControlEvent, **goal) -> ControlEventIntent:
+    def _control(self, event: ControlEvent, **fields) -> ControlEventIntent:
         self._sequence += 1
         return ControlEventIntent(
             event=event,
             sequence=self._sequence,
             client_id=self._client_id,
             lease_id=self._lease_id,
-            **goal,
+            **fields,
         )

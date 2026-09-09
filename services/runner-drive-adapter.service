@@ -1,0 +1,18 @@
+[Unit]
+Description=Runner shared remote drive adapter (sole speed PI/conversion owner)
+After=runner-encoder.service runner-local-control.service
+
+[Service]
+Type=simple
+User=matti
+Group=matti
+WorkingDirectory=/home/matti/runner_ws
+ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash && source /home/matti/runner_ws/install/setup.bash && exec ros2 run runner_drive_adapter drive_adapter --ros-args --params-file /home/matti/runner_ws/install/runner_drive_adapter/share/runner_drive_adapter/config/drive_adapter.yaml --params-file /home/matti/runner_ws/install/runner_drive_adapter/share/runner_drive_adapter/config/speed_envelope.yaml'
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -166,3 +166,19 @@ def test_unknown_action_is_rejected():
     gw.handle('c1', {'action': 'acquire'})
     assert not gw.handle('c1', {'action': 'launch_missiles'}).accepted
     assert not gw.handle('c1', 'nope').accepted
+
+
+def test_manual_samples_keep_si_units_and_release_explicitly():
+    gw = _gateway()
+    gw.handle('c1', {'action': 'acquire'})
+    active = gw.handle('c1', {
+        'action': 'manual', 'active': True,
+        'speed_mps': 0.30, 'steering': -0.5,
+    })
+    intent = active.intents[0]
+    assert intent.event == ControlEvent.MANUAL_ACTIVE
+    assert intent.manual_speed_mps == 0.30
+    assert intent.manual_steering == -0.5
+
+    released = gw.handle('c1', {'action': 'manual', 'active': False})
+    assert released.intents[0].event == ControlEvent.MANUAL_INACTIVE

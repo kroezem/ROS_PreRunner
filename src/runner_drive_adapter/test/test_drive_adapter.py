@@ -106,6 +106,32 @@ def test_feedforward_passes_through_at_zero_error():
     assert decision.final_throttle == pytest.approx(_feedforward(0.30))
 
 
+def test_manual_uses_same_speed_controller_with_direct_steering():
+    adapter = DriveAdapter(AdapterConfig())
+    adapter.update_manual_command(0.30, -0.75, 0.0)
+    adapter.update_encoder(
+        False, 0.30 / adapter.config.encoder_metres_per_edge, 1, 0.0, 1.0
+    )
+    adapter.update_motion(0.30, 0.0)
+    decision = adapter.step(0.0)
+
+    assert decision.effective_speed == pytest.approx(0.30)
+    assert decision.final_throttle == pytest.approx(_feedforward(0.30))
+    assert decision.normalized_steering == pytest.approx(-0.75)
+
+
+def test_manual_center_brakes_with_steering_and_stale_becomes_silent():
+    adapter = DriveAdapter(AdapterConfig(cmd_vel_nav_timeout=0.20))
+    adapter.update_manual_command(0.0, 0.5, 0.0)
+    centered = adapter.step(0.0)
+    stale = adapter.step(0.21)
+
+    assert centered.publish_command
+    assert centered.final_throttle == 0.0
+    assert centered.normalized_steering == pytest.approx(0.5)
+    assert not stale.publish_command
+
+
 def test_positive_output_saturates_at_compatibility_ceiling():
     config = AdapterConfig(proportional_gain=0.60)
     adapter = DriveAdapter(config)

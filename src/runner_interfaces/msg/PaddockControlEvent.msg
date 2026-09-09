@@ -25,3 +25,8 @@ string goal_frame
 float64 goal_x
 float64 goal_y
 float64 goal_yaw
+
+# Manual demand, meaningful only for EVENT_MANUAL_ACTIVE. Speed is signed m/s;
+# steering is a direct normalized front-wheel steering demand in [-1, 1].
+float64 manual_speed_mps
+float64 manual_steering

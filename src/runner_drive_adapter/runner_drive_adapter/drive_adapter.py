@@ -254,6 +254,7 @@ class DriveAdapter:
         self.config = config
         self._command: Optional[tuple[float, float]] = None
         self._command_time: Optional[float] = None
+        self._command_uses_direct_steering = False
         self._motion_speed = 0.0
         self._motion_time: Optional[float] = None
         self._encoder_edge_rate = 0.0
@@ -321,6 +322,23 @@ class DriveAdapter:
         """Store the latest Nav2 command and monotonic receive time."""
         self._command = (linear_speed, yaw_rate)
         self._command_time = now
+        self._command_uses_direct_steering = False
+
+    def update_manual_command(
+        self,
+        signed_speed_mps: float,
+        steering_normalized: float,
+        now: float,
+    ) -> None:
+        """Select a manual SI-speed/direct-steering demand for conversion."""
+        self._command = (signed_speed_mps, steering_normalized)
+        self._command_time = now
+        self._command_uses_direct_steering = True
+
+    def invalidate_command(self) -> None:
+        """Discard the selected remote source without resetting PI state."""
+        self._command = None
+        self._command_time = None
 
     def update_motion(self, forward_speed: float, now: float) -> None:
         """Store EKF body-forward velocity for the wheelspin guard."""
@@ -426,7 +444,7 @@ class DriveAdapter:
                 IntegratorFreezeReason.NO_COMMAND,
                 **preemption_fields,
             )
-        speed, yaw_rate = self._command
+        speed, lateral_demand = self._command
         if now - self._command_time > self.config.cmd_vel_nav_timeout:
             self._reset_transient_state()
             return self._silence(
@@ -436,7 +454,7 @@ class DriveAdapter:
                 **preemption_fields,
             )
 
-        if not math.isfinite(speed) or not math.isfinite(yaw_rate):
+        if not math.isfinite(speed) or not math.isfinite(lateral_demand):
             return self._brake(
                 'nonfinite_input',
                 IntegratorFreezeReason.INVALID_COMMAND,
@@ -444,16 +462,36 @@ class DriveAdapter:
                 **preemption_fields,
             )
         if speed == 0.0:
+            if self._command_uses_direct_steering:
+                steering = max(-1.0, min(1.0, lateral_demand))
+                return self._brake(
+                    'explicit_stop',
+                    IntegratorFreezeReason.ZERO_COMMAND,
+                    commanded_speed=speed,
+                    normalized_steering=steering,
+                    steering_saturated=abs(lateral_demand) > 1.0,
+                    **preemption_fields,
+                )
             return self._brake(
                 'explicit_stop',
                 IntegratorFreezeReason.ZERO_COMMAND,
                 commanded_speed=speed,
                 **preemption_fields,
             )
-        requested_curvature = yaw_rate / speed
-        steering_saturated = (
-            abs(requested_curvature) > self.config.maximum_curvature
-        )
+        requested_curvature = 0.0
+        if self._command_uses_direct_steering:
+            steering_saturated = abs(lateral_demand) > 1.0
+            steering = max(-1.0, min(1.0, lateral_demand))
+        else:
+            requested_curvature = lateral_demand / speed
+            steering_saturated = (
+                abs(requested_curvature) > self.config.maximum_curvature
+            )
+            delta = math.atan(self.config.wheelbase * requested_curvature)
+            steering = max(
+                -1.0,
+                min(1.0, delta / self.config.max_steering_angle),
+            )
 
         command_sign = 1.0 if speed > 0.0 else -1.0
         speed_magnitude = abs(speed)
@@ -470,12 +508,6 @@ class DriveAdapter:
         feedforward_floor_violation = (
             feedforward < MINIMUM_EXPECTED_FEEDFORWARD
         )
-        delta = math.atan(self.config.wheelbase * requested_curvature)
-        steering = max(
-            -1.0,
-            min(1.0, delta / self.config.max_steering_angle),
-        )
-
         measured_speed = 0.0
         if math.isfinite(self._encoder_edge_rate):
             measured_speed = (

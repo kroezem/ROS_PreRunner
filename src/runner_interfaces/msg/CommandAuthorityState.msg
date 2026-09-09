@@ -25,6 +25,10 @@ bool lease_fresh
 float32 lease_age_sec
 bool raw_autonomy_fresh
 float32 raw_autonomy_age_sec
+bool manual_input_fresh
+float32 manual_input_age_sec
+float64 manual_applied_speed_mps
+float64 manual_applied_steering
 uint64 last_control_sequence
 string reason
 bool stop_state_fresh

@@ -13,22 +13,27 @@
 # limitations under the License.
 
 """
-Command authority: sole supervised writer of /cmd_vel_auto for the mux.
+Command authority: sole supervised writer of normal Paddock mux inputs.
 
-v1.3 autonomous command path (Part A cutover):
+v1.3 supervised command paths:
 
 ``Nav2 -> /cmd_vel_nav -> drive_adapter -> /cmd_vel_auto_raw ->
 command_authority -> /cmd_vel_auto -> twist_mux -> /cmd_vel -> motor``
 
+``browser -> control_event -> command_authority -> /paddock/manual_demand ->
+drive_adapter -> /cmd_vel_paddock_manual_raw -> command_authority ->
+/cmd_vel_paddock -> twist_mux -> /cmd_vel -> motor``
+
 The drive adapter is the sole writer of ``/cmd_vel_auto_raw``. This node is
 the sole writer of the supervised ``/cmd_vel_auto`` and forwards a raw sample
-only while every current-state autonomy interlock holds (runtime AUTONOMY and
+only while every current-state interlock holds (runtime AUTONOMY and
 ready, matching epoch/map, fresh lease, STOP clear, no DualSense takeover /
 unresolved rearm, RUN held, fresh raw input, mission lifecycle compatible).
 On revoke it emits a bounded brake transition on ``/cmd_vel_auto`` and then
 goes silent; the mux (autonomy priority 50) is always overridden by local
 DualSense teleop (100) and the global STOP zero (255). It never writes
-``/cmd_vel``.
+``/cmd_vel``. Manual uses the same controller and has mux priority 75, below
+DualSense (100) and STOP (255), and above autonomy (50).
 """
 
 import math
@@ -43,7 +48,9 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
+from runner_interfaces.msg import ConvertedCommand
 from runner_interfaces.msg import LocalControlState
+from runner_interfaces.msg import ManualDemand as ManualDemandMessage
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import NavigationRequest
 from runner_interfaces.msg import NavigationState
@@ -61,7 +68,9 @@ from runner_paddock.state_machine import Mode
 
 RAW_AUTONOMY_TOPIC = '/cmd_vel_auto_raw'
 SUPERVISED_AUTONOMY_TOPIC = '/cmd_vel_auto'
-PADDOCK_OUTPUT_TOPIC = '/paddock/private/cmd_vel_paddock'
+PADDOCK_OUTPUT_TOPIC = '/cmd_vel_paddock'
+MANUAL_DEMAND_TOPIC = '/paddock/manual_demand'
+RAW_MANUAL_TOPIC = '/cmd_vel_paddock_manual_raw'
 # Bounded brake transition emitted on /cmd_vel_auto after a revoke, then the
 # publisher goes silent. Covers one full mux autonomy input timeout (0.30 s)
 # so the deliberate zero is arbitrated before the input ages out.
@@ -186,6 +195,14 @@ def _authority_message(
         if snapshot.raw_autonomy_age_sec is None
         else snapshot.raw_autonomy_age_sec
     )
+    message.manual_input_fresh = snapshot.manual_input_fresh
+    message.manual_input_age_sec = (
+        -1.0
+        if snapshot.manual_input_age_sec is None
+        else snapshot.manual_input_age_sec
+    )
+    message.manual_applied_speed_mps = snapshot.manual_applied_speed_mps
+    message.manual_applied_steering = snapshot.manual_applied_steering
     message.last_control_sequence = (
         0
         if snapshot.last_control_sequence is None
@@ -291,11 +308,18 @@ class CommandAuthorityNode(Node):
         self._auto_output_gate = _AutonomyOutputGate(
             self._auto_brake_window
         )
+        self._manual_output_gate = _AutonomyOutputGate(
+            self._auto_brake_window
+        )
+        self._manual_demand_asserted = False
         self._auto_pub = self.create_publisher(
             Twist, SUPERVISED_AUTONOMY_TOPIC, 10
         )
         self._paddock_pub = self.create_publisher(
             Twist, PADDOCK_OUTPUT_TOPIC, 10
+        )
+        self._manual_demand_pub = self.create_publisher(
+            ManualDemandMessage, MANUAL_DEMAND_TOPIC, 10
         )
         self._authority_pub = self.create_publisher(
             CommandAuthorityState, AUTHORITY_STATE_TOPIC, 10
@@ -314,6 +338,9 @@ class CommandAuthorityNode(Node):
         )
         self.create_subscription(
             Twist, RAW_AUTONOMY_TOPIC, self._on_raw_autonomy, 10
+        )
+        self.create_subscription(
+            ConvertedCommand, RAW_MANUAL_TOPIC, self._on_raw_manual, 10
         )
         self.create_subscription(
             PaddockControlEvent,
@@ -382,6 +409,8 @@ class CommandAuthorityNode(Node):
             goal_x=message.goal_x,
             goal_y=message.goal_y,
             goal_yaw=message.goal_yaw,
+            manual_speed_mps=message.manual_speed_mps,
+            manual_steering=message.manual_steering,
         )
         if not result.accepted:
             self.get_logger().warning(result.snapshot.reason)
@@ -396,6 +425,22 @@ class CommandAuthorityNode(Node):
                 self.get_logger().warning('CLEAR_STOP_NOT_APPLIED')
             else:
                 self._request_stop(False)
+        self._apply(result)
+
+    def _on_raw_manual(self, message: ConvertedCommand) -> None:
+        """Validate adapter provenance before supervising manual output."""
+        if (
+            message.source != ConvertedCommand.SOURCE_PADDOCK_MANUAL
+            or int(message.runtime_epoch) != self._runtime_epoch
+            or int(message.lease_generation)
+            != self._supervisor.state.lease_generation
+        ):
+            return
+        result = self._supervisor.receive_raw_manual(
+            _from_twist(message.command),
+            int(message.sequence),
+            time.monotonic(),
+        )
         self._apply(result)
 
     def _stop_is_fresh(self, now: float) -> bool:
@@ -587,6 +632,33 @@ class CommandAuthorityNode(Node):
 
     def _apply(self, result: SupervisorResult) -> None:
         now = time.monotonic()
+        demand = result.manual_demand
+        if demand is not None:
+            message = ManualDemandMessage()
+            message.stamp = self.get_clock().now().to_msg()
+            message.active = True
+            message.sequence = demand.sequence
+            message.lease_generation = (
+                result.snapshot.state.lease_generation
+            )
+            message.runtime_epoch = self._runtime_epoch
+            message.signed_speed_mps = demand.signed_speed_mps
+            message.steering_normalized = demand.steering_normalized
+            self._manual_demand_pub.publish(message)
+            self._manual_demand_asserted = True
+        elif (
+            self._manual_demand_asserted
+            and not result.snapshot.state.manual_active
+        ):
+            message = ManualDemandMessage()
+            message.stamp = self.get_clock().now().to_msg()
+            message.active = False
+            message.lease_generation = (
+                result.snapshot.state.lease_generation
+            )
+            message.runtime_epoch = self._runtime_epoch
+            self._manual_demand_pub.publish(message)
+            self._manual_demand_asserted = False
         # Mission lifecycle must be compatible with motion: a real, current,
         # accepted/executing Nav2 action. DISPATCHING / CANCELING / terminal
         # states, or a stale navigation_state, forbid autonomous output even
@@ -606,10 +678,19 @@ class CommandAuthorityNode(Node):
         )
         if auto_output is not None:
             self._auto_pub.publish(_to_twist(auto_output))
-        if result.snapshot.brake_intent:
-            # /paddock private manual brake channel (manual path not yet cut
-            # over); harmless and never reaches the mux.
-            self._paddock_pub.publish(Twist())
+        manual_permitted = (
+            self._stop_clear(now)
+            and result.snapshot.state.authority
+            == CommandAuthorityState.AUTHORITY_PADDOCK_MANUAL
+            and result.snapshot.manual_input_fresh
+        )
+        manual_output = self._manual_output_gate.update(
+            now=now,
+            permitted=manual_permitted,
+            command=result.manual_command,
+        )
+        if manual_output is not None:
+            self._paddock_pub.publish(_to_twist(manual_output))
         self._sync_navigation(result.snapshot)
         self._publish_state(result)
 
