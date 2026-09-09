@@ -460,11 +460,9 @@ class RosStateNode(Node):
     def _selected_map(self) -> str:
         snapshot = self._cache.state_snapshot()
         map_state = snapshot.get('map_state') or {}
-        return (
-            map_state.get('selected_map_applied')
-            or map_state.get('selected_map_requested')
-            or ''
-        )
+        # Only executor-applied state is authoritative. A rejected request is
+        # retained separately for diagnosis and must never become a runtime map.
+        return map_state.get('selected_map_applied') or ''
 
     def _mapping_session_id(self) -> str:
         snapshot = self._cache.state_snapshot()

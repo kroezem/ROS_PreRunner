@@ -14,6 +14,7 @@ const latest = {};          // last state snapshot fields
 let heartbeatTimer = null;
 let runHeld = false;
 let runTimer = null;
+let catalogRenderKey = null;
 
 function setBanner(text, kind) {
   banner.textContent = text;
@@ -124,6 +125,11 @@ function render() {
   text("m-unsaved", mapState.unsaved ? "unsaved content" : "—");
   text("m-save", `${["idle", "running", "succeeded", "failed"][mapState.save_state] ?? "—"} · ${mapState.save_detail || ""}`);
   text("m-selected", mapState.selected_map_applied || "(none)");
+  text("m-selection-result", mapState.selected_map_reason
+    ? `REJECTED ${mapState.selected_map_requested || "(unnamed)"} — ${mapState.selected_map_reason}`
+    : (mapState.selected_map_applied
+      ? `applied — ${mapState.selected_map_applied}`
+      : "—"));
   renderCatalog(mapState.catalog || [], mapState.selected_map_applied);
 
   text("a-map", mode.active_autonomy_map || "(none)");
@@ -171,6 +177,13 @@ function stopSummary(stop, auth) {
 }
 
 function renderCatalog(catalog, selected) {
+  // State arrives at 10 Hz. Keep the actual buttons mounted while their
+  // backend-derived content is unchanged so a pointer/touch gesture cannot
+  // lose its click target between press and release.
+  const renderKey = JSON.stringify([role, selected, catalog]);
+  if (renderKey === catalogRenderKey) return;
+  catalogRenderKey = renderKey;
+
   const list = $("map-catalog");
   list.innerHTML = "";
   if (!catalog.length) {

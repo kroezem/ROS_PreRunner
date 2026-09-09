@@ -123,6 +123,15 @@ def test_goal_and_map_intents():
     assert save.intents[0].name == 'studio2'
     assert not gw.handle('c1', {'action': 'save_map', 'name': '  '}).accepted
 
+    select = gw.handle('c1', {'action': 'select_map', 'name': 'studio2'})
+    assert select.accepted
+    assert len(select.intents) == 1
+    assert isinstance(select.intents[0], MapRequestIntent)
+    assert select.intents[0].name == 'studio2'
+    assert not gw.handle(
+        'c1', {'action': 'select_map', 'name': '  '}
+    ).accepted
+
     mode = gw.handle('c1', {'action': 'select_mode', 'mode': 'mapping'})
     assert isinstance(mode.intents[0], ModeRequestIntent)
 

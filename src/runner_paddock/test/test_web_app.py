@@ -112,6 +112,14 @@ def test_ws_action_round_trip_and_lease_role():
             first.send_json({'action': 'stop'})
             assert _drain_until(first, 'ack')['accepted']
 
+            first.send_json({'action': 'select_map', 'name': 'studio'})
+            select_ack = _drain_until(first, 'ack')
+            assert select_ack['accepted']
+            assert select_ack['name'] == 'select_map'
+            assert runtime.actions[-1][1] == {
+                'action': 'select_map', 'name': 'studio'
+            }
+
             with client.websocket_connect('/ws') as second:
                 second.send_json({'action': 'acquire'})
                 ack2 = _drain_until(second, 'ack')

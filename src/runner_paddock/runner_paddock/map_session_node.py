@@ -233,11 +233,15 @@ class MapSessionNode(Node):
 
     def _on_map_request(self, message: MapRequest) -> None:
         if not self._authorized(message):
-            self.get_logger().warning('rejected map request from non-owner lease')
+            reason = 'request does not hold the active control lease'
+            self._record_select_rejection(message, reason)
+            self.get_logger().warning(f'rejected map request: {reason}')
             return
         if message.request_id <= self._last_request_id:
+            reason = f'stale/replayed map request {message.request_id}'
+            self._record_select_rejection(message, reason)
             self.get_logger().warning(
-                f'rejected stale/replayed map request {message.request_id}'
+                f'rejected {reason}'
             )
             return
         self._last_request_id = int(message.request_id)
@@ -255,6 +259,18 @@ class MapSessionNode(Node):
                 )
         finally:
             self._publish_state()
+
+    def _record_select_rejection(
+        self, message: MapRequest, reason: str
+    ) -> None:
+        """Expose an executor-level SELECT rejection in authoritative state."""
+        if int(message.operation) != MapRequest.OP_SELECT_MAP:
+            return
+        with self._lock:
+            self._model.set_selection(
+                message.name, self._model.selected_applied, reason
+            )
+        self._publish_state()
 
     def _handle_new_map(self, message: MapRequest) -> None:
         if not self._stop_inhibited():
@@ -288,12 +304,16 @@ class MapSessionNode(Node):
             with self._lock:
                 self._model.set_selection(name, name, '')
             self.get_logger().info(f'selected map {name}')
-        except MapError as error:
+        except (MapError, OSError) as error:
+            reason = (
+                str(error) if isinstance(error, MapError)
+                else f'could not persist selected map: {error}'
+            )
             with self._lock:
                 self._model.set_selection(
-                    message.name, previous, str(error)
+                    message.name, previous, reason
                 )
-            self.get_logger().warning(f'map selection rejected: {error}')
+            self.get_logger().warning(f'map selection rejected: {reason}')
 
     def _handle_save_map(self, message: MapRequest) -> None:
         cached = self._model.cached_save(int(message.request_id))
