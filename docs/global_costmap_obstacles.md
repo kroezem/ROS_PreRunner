@@ -1,7 +1,8 @@
 # Dynamic global obstacles
 
-The global costmap loads `obstacle_layer`, but the configured default is
-disabled. Enable or disable it in a running Nav2 process with:
+The global costmap loads `obstacle_layer`, and the configured default is
+enabled so live `/scan` observations participate in path validity checks and
+global replanning. Enable or disable it in a running Nav2 process with:
 
 ```bash
 ros2 param set /global_costmap/global_costmap obstacle_layer.enabled true

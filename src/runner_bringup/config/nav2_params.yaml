@@ -136,7 +136,7 @@ global_costmap:
         subscribe_to_updates: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
-        enabled: false
+        enabled: true
         combination_method: 0
         observation_sources: scan
         scan:

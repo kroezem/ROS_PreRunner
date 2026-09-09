@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any
 
+from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path
 import rclpy
@@ -40,6 +41,7 @@ from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import StopState
 from runner_paddock.gateway import (
+    ClearCostmapsIntent,
     ControlEventIntent,
     GatewayResult,
     MapRequestIntent,
@@ -55,6 +57,8 @@ from tf2_ros import TransformListener
 
 MAP_TOPIC = '/map'
 LOCAL_COSTMAP_TOPIC = '/local_costmap/costmap'
+GLOBAL_CLEAR_SERVICE = '/global_costmap/clear_entirely_global_costmap'
+LOCAL_CLEAR_SERVICE = '/local_costmap/clear_entirely_local_costmap'
 PLAN_TOPIC = '/plan'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
@@ -226,6 +230,12 @@ class RosStateNode(Node):
         )
         self._map_request_pub = self.create_publisher(
             MapRequest, MAP_REQUEST_TOPIC, 10
+        )
+        self._global_clear_client = self.create_client(
+            ClearEntireCostmap, GLOBAL_CLEAR_SERVICE
+        )
+        self._local_clear_client = self.create_client(
+            ClearEntireCostmap, LOCAL_CLEAR_SERVICE
         )
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -495,6 +505,9 @@ class RosStateNode(Node):
                     result.role,
                 )
             for intent in result.intents:
+                if isinstance(intent, ClearCostmapsIntent):
+                    result = self._clear_costmaps(result)
+                    break
                 self._publish_intent(intent)
             self._publish_gateway_state()
         if not result.accepted:
@@ -507,6 +520,55 @@ class RosStateNode(Node):
             'reason': result.reason,
             'role': result.role,
         }
+
+    def _clear_costmaps(self, result: GatewayResult) -> GatewayResult:
+        """Call both authoritative Nav2 clear services and await their replies."""
+        clients = (
+            ('global', self._global_clear_client),
+            ('local', self._local_clear_client),
+        )
+        unavailable = [
+            name for name, client in clients if not client.service_is_ready()
+        ]
+        if unavailable:
+            return GatewayResult(
+                False,
+                f"Nav2 {' and '.join(unavailable)} costmap clear service "
+                'unavailable',
+                (),
+                result.role,
+            )
+
+        futures = [
+            (name, client.call_async(ClearEntireCostmap.Request()))
+            for name, client in clients
+        ]
+        deadline = time.monotonic() + 2.0
+        failed = []
+        for name, future in futures:
+            remaining = max(0.0, deadline - time.monotonic())
+            done = threading.Event()
+            future.add_done_callback(lambda _future, event=done: event.set())
+            if not done.wait(remaining):
+                failed.append(f'{name} timed out')
+                continue
+            try:
+                future.result()
+            except Exception as error:  # rclpy service transport/backend error
+                failed.append(f'{name} failed: {error}')
+        if failed:
+            return GatewayResult(
+                False,
+                'Nav2 costmap clear failed (' + '; '.join(failed) + ')',
+                (),
+                result.role,
+            )
+        return GatewayResult(
+            True,
+            'Nav2 global and local costmaps cleared',
+            (),
+            result.role,
+        )
 
     def disconnect(self, conn_id: str) -> None:
         """Release the lease if this browser connection held it."""

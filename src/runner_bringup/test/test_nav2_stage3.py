@@ -175,8 +175,8 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     )
 
 
-def test_global_costmap_obstacle_layer_is_runtime_opt_in_and_overwrites():
-    """Dynamic global obstacles start off and can clear transient marks."""
+def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
+    """Dynamic global obstacles feed planning and can clear transient marks."""
     global_params = _params()['global_costmap']['global_costmap'][
         'ros__parameters'
     ]
@@ -195,7 +195,7 @@ def test_global_costmap_obstacle_layer_is_runtime_opt_in_and_overwrites():
     )
     assert global_params['footprint_padding'] == 0.0
     assert obstacle['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
-    assert obstacle['enabled'] is False
+    assert obstacle['enabled'] is True
     assert obstacle['combination_method'] == 0
     assert obstacle['observation_sources'] == 'scan'
     assert obstacle['scan'] == {

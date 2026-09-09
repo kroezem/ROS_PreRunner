@@ -102,6 +102,11 @@ class MapRequestIntent:
 
 
 @dataclass(frozen=True)
+class ClearCostmapsIntent:
+    """Request Nav2's existing global and local full-clear services."""
+
+
+@dataclass(frozen=True)
 class GatewayResult:
     """Outcome of one browser action."""
 
@@ -249,6 +254,19 @@ class OperatorGateway:
         return GatewayResult(
             True, 'CLEAR STOP requested',
             (self._control(ControlEvent.CLEAR_STOP),), 'controller',
+        )
+
+    def _do_clear_obstacles(
+        self, conn_id: str, _action: dict
+    ) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        return GatewayResult(
+            True,
+            'Nav2 costmap clear requested',
+            (ClearCostmapsIntent(),),
+            'controller',
         )
 
     def _do_select_mode(self, conn_id: str, action: dict) -> GatewayResult:

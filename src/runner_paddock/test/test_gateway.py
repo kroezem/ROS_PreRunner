@@ -17,6 +17,7 @@
 import itertools
 
 from runner_paddock.gateway import (
+    ClearCostmapsIntent,
     ControlEvent,
     ControlEventIntent,
     MapRequestIntent,
@@ -85,6 +86,18 @@ def test_stop_clears_local_run_latch():
     assert gw.handle('c1', {'action': 'run', 'held': True}).intents[0].event == (
         ControlEvent.RUN_PRESSED
     )
+
+
+def test_clear_obstacles_requires_lease_and_requests_nav2_services():
+    gw = _gateway()
+    assert not gw.handle('observer', {'action': 'clear_obstacles'}).accepted
+
+    gw.handle('c1', {'action': 'acquire'})
+    result = gw.handle('c1', {'action': 'clear_obstacles'})
+
+    assert result.accepted
+    assert result.role == 'controller'
+    assert result.intents == (ClearCostmapsIntent(),)
 
 
 def test_disconnect_releases_the_lease_and_reconnect_starts_clean():
