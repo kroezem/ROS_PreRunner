@@ -81,6 +81,46 @@ NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
 DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC = 1.0
 
 
+class _AutonomyOutputGate:
+    """Forward fresh samples once and brake only on an output revoke edge."""
+
+    def __init__(self, brake_window_sec: float) -> None:
+        self._brake_window_sec = brake_window_sec
+        self._was_forwarding = False
+        self._brake_deadline = None
+
+    def update(
+        self,
+        *,
+        now: float,
+        permitted: bool,
+        command: VelocityCommand | None,
+    ) -> VelocityCommand | None:
+        """Return one sample to publish, or None when output must be silent."""
+        if permitted and command is not None:
+            self._was_forwarding = True
+            self._brake_deadline = None
+            return command
+
+        if permitted:
+            # A supervision tick between fresh raw samples is not a revoke.
+            # It must neither replay the last command nor inject a brake zero.
+            self._brake_deadline = None
+            return None
+
+        if self._was_forwarding:
+            self._was_forwarding = False
+            self._brake_deadline = now + self._brake_window_sec
+
+        if self._brake_deadline is None:
+            return None
+        if now <= self._brake_deadline:
+            return VelocityCommand()
+
+        self._brake_deadline = None
+        return None
+
+
 def _from_twist(message: Twist) -> VelocityCommand:
     return VelocityCommand(
         linear_x=message.linear.x,
@@ -248,9 +288,9 @@ class CommandAuthorityNode(Node):
             or self._auto_brake_window <= 0.0
         ):
             raise ValueError('auto_brake_window_sec must be finite and positive')
-        # Monotonic deadline until which a bounded brake zero is still
-        # published on /cmd_vel_auto after a revoke; None means silent.
-        self._auto_brake_deadline = None
+        self._auto_output_gate = _AutonomyOutputGate(
+            self._auto_brake_window
+        )
         self._auto_pub = self.create_publisher(
             Twist, SUPERVISED_AUTONOMY_TOPIC, 10
         )
@@ -554,23 +594,18 @@ class CommandAuthorityNode(Node):
         nav_motion_ok = (
             self._nav_action_active and self._navigation_state_fresh(now)
         )
-        forwarded = (
-            result.autonomy_command is not None
+        permitted = (
+            not result.snapshot.brake_intent
             and self._stop_clear(now)
             and nav_motion_ok
         )
-        if forwarded:
-            self._auto_pub.publish(_to_twist(result.autonomy_command))
-            # Arm the bounded brake window off every forwarded sample; a
-            # non-None deadline is exactly "was forwarding until recently".
-            self._auto_brake_deadline = now + self._auto_brake_window
-        elif self._auto_brake_deadline is not None:
-            if now <= self._auto_brake_deadline:
-                # Revoke transition: explicit zero on /cmd_vel_auto ...
-                self._auto_pub.publish(Twist())
-            else:
-                # ... then the publisher goes silent (input ages out of mux).
-                self._auto_brake_deadline = None
+        auto_output = self._auto_output_gate.update(
+            now=now,
+            permitted=permitted,
+            command=result.autonomy_command,
+        )
+        if auto_output is not None:
+            self._auto_pub.publish(_to_twist(auto_output))
         if result.snapshot.brake_intent:
             # /paddock private manual brake channel (manual path not yet cut
             # over); harmless and never reaches the mux.

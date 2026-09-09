@@ -21,6 +21,7 @@ from geometry_msgs.msg import Twist
 from runner_interfaces.msg import PaddockControlEvent
 
 from runner_paddock.command_authority_node import _authority_message
+from runner_paddock.command_authority_node import _AutonomyOutputGate
 from runner_paddock.command_authority_node import _from_twist
 from runner_paddock.command_authority_node import _to_twist
 from runner_paddock.command_authority_node import DEFAULT_SUPERVISION_PERIOD_SEC
@@ -30,6 +31,7 @@ from runner_paddock.command_authority_node import SUPERVISED_AUTONOMY_TOPIC
 from runner_paddock.command_supervisor import CommandSupervisor
 from runner_paddock.command_supervisor import ControlEvent
 from runner_paddock.command_supervisor import SupervisorResult
+from runner_paddock.command_supervisor import VelocityCommand
 from runner_paddock.state_machine import GoalIntent
 
 
@@ -102,3 +104,58 @@ def test_authority_message_exposes_selected_goal_as_backend_truth():
     assert (message.goal_x, message.goal_y, message.goal_yaw) == (
         1.25, -0.75, 0.4,
     )
+
+
+def test_steady_20_hz_autonomy_has_no_injected_zeros_between_samples():
+    gate = _AutonomyOutputGate(brake_window_sec=0.30)
+    command = VelocityCommand(linear_x=0.4, angular_z=0.2)
+    outputs = []
+
+    for sample_index in range(5):
+        sample_at = sample_index * 0.050
+        outputs.append(gate.update(
+            now=sample_at, permitted=True, command=command,
+        ))
+        for tick_index in range(1, 5):
+            outputs.append(gate.update(
+                now=sample_at + tick_index * 0.010,
+                permitted=True,
+                command=None,
+            ))
+
+    published = [output for output in outputs if output is not None]
+    assert published == [command] * 5
+    assert all(output != VelocityCommand() for output in published)
+
+
+def test_raw_timeout_transition_brakes_then_goes_silent():
+    gate = _AutonomyOutputGate(brake_window_sec=0.30)
+    command = VelocityCommand(linear_x=0.4)
+
+    assert gate.update(now=0.0, permitted=True, command=command) == command
+    assert gate.update(now=0.150, permitted=True, command=None) is None
+    assert gate.update(
+        now=0.150000001, permitted=False, command=None,
+    ) == VelocityCommand()
+    assert gate.update(
+        now=0.300, permitted=False, command=None,
+    ) == VelocityCommand()
+    assert gate.update(now=0.450000002, permitted=False, command=None) is None
+    assert gate.update(now=0.500, permitted=False, command=None) is None
+
+
+def test_run_or_stop_revoke_brakes_without_rearming_the_window():
+    gate = _AutonomyOutputGate(brake_window_sec=0.30)
+    command = VelocityCommand(linear_x=0.4)
+
+    assert gate.update(now=1.0, permitted=True, command=command) == command
+    assert gate.update(
+        now=1.01, permitted=False, command=None,
+    ) == VelocityCommand()
+    assert gate.update(
+        now=1.30, permitted=False, command=None,
+    ) == VelocityCommand()
+    assert gate.update(now=1.310000001, permitted=False, command=None) is None
+
+    # Remaining revoked cannot start another brake window.
+    assert gate.update(now=2.0, permitted=False, command=None) is None
