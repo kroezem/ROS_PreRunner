@@ -354,7 +354,7 @@ A typed allowlist separates supported settings from arbitrary ROS parameters. Au
 | `autonomy_speed_ceiling_mps` | 0 or [0.30, 0.60]; desired ≤ ceiling | Authority/conversion demand bound; no expansion of frozen maximum |
 | `selected_map` | Complete verified catalog bundle ID/revision | No active-runtime hot swap; stopped runtime transition |
 | NEW MAP / SAVE MAP | Named session operations, not parameters | §13 |
-| `global_obstacle_layer_enabled` | Boolean, current default false; existing overwrite semantics unchanged | Named dynamic parameter, stopped apply + readback; display known low-obstacle limitation |
+| `global_obstacle_layer_enabled` | Boolean, default true for obstacle-aware AUTONOMY; existing overwrite semantics unchanged | Named dynamic parameter, stopped apply + readback; display known low-obstacle limitation |
 | Local obstacle-layer status | Read-only in first release; retains current enabled/marking/clearing configuration | Exposing disable requires explicit operational-envelope decision |
 | Initial pose | Finite map-frame pose and valid covariance | STOP/stationary, current map, new localization-readiness check; no TF writer change |
 | Goal/route/queue operations | Validated real poses, bounded supported mission types and finite queue size | Navigation runtime through authority |
