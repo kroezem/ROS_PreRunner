@@ -351,8 +351,10 @@ class ModeRuntime:
     def _new_session_id(self) -> str:
         return f'{self.state.runtime_epoch + 1}-{self.session_id_factory()}'
 
-    def _stop_all(self) -> None:
+    def _stop_all(self, progress: Callable[[str], None] | None = None) -> None:
         # Always issue both stops: this also collapses ambiguous/conflicting state.
+        if progress is not None:
+            progress('Stopping previous runtime — requesting service stop')
         errors = []
         for unit in MODE_UNITS:
             try:
@@ -361,8 +363,36 @@ class ModeRuntime:
                 errors.append(str(error))
         if errors:
             raise RuntimeError('; '.join(errors))
+        if progress is not None:
+            progress('Stopping previous runtime — waiting for mode cgroups')
         self._wait(self._all_units_clean, 'empty mode cgroups')
+        if progress is not None:
+            progress('Stopping previous runtime — waiting for ROS graph cleanup')
         self._wait(self._resources_gone, 'mode-scoped ROS resources to disappear')
+
+    def _transition_progress(self, detail: str) -> None:
+        """Publish one truthful, non-percentage transition phase."""
+        if detail != self.state.detail:
+            self._set(detail=detail, readiness_reason=detail)
+
+    def _wait_for_readiness(self, mode: Mode) -> None:
+        """Wait for runtime evidence while publishing its changing blocker."""
+        deadline = time.monotonic() + self.transition_timeout
+        last_reason = ''
+        while time.monotonic() < deadline:
+            ok, reason = self._fully_ready(mode)
+            if ok:
+                return
+            if reason != last_reason:
+                self._transition_progress(
+                    f'Starting {mode.name} — {reason}'
+                )
+                last_reason = reason
+            time.sleep(self.poll_period)
+        suffix = f': {last_reason}' if last_reason else ''
+        raise RuntimeError(
+            f'timed out waiting for {mode.name} readiness{suffix}'
+        )
 
     def _fail(self, detail: str) -> RuntimeState:
         cleanup = ''
@@ -503,7 +533,7 @@ class ModeRuntime:
             mapping_session_id='',
         )
         try:
-            self._stop_all()
+            self._stop_all(self._transition_progress)
             if requested == Mode.IDLE:
                 self._set(
                     mode=Mode.IDLE,
@@ -515,6 +545,9 @@ class ModeRuntime:
                 )
                 return self.state
             if requested == Mode.AUTONOMY:
+                self._transition_progress(
+                    f'Validating selected map — {autonomy_map}'
+                )
                 validate_map_bundle(
                     autonomy_map,
                     map_directory=self.map_directory,
@@ -523,11 +556,14 @@ class ModeRuntime:
                 unit = AUTONOMY_UNIT
             else:
                 unit = MAPPING_UNIT
-            self.systemd.start(unit)
-            self._wait(
-                lambda: self._fully_ready(requested)[0],
-                f'{requested.name} readiness',
+            self._transition_progress(
+                f'Starting {requested.name} — requesting {unit}'
             )
+            self.systemd.start(unit)
+            self._transition_progress(
+                f'Starting {requested.name} — waiting for runtime readiness'
+            )
+            self._wait_for_readiness(requested)
             ok, reason = self._fully_ready(requested)
             epoch = self.state.runtime_epoch + 1
             session_id = (

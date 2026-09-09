@@ -15,6 +15,7 @@
 """Tests for fail-closed systemd mode orchestration without ROS/systemd."""
 
 from collections import Counter
+from itertools import groupby
 from pathlib import Path
 
 import pytest
@@ -236,12 +237,34 @@ def test_mapping_idle_autonomy_idle_is_serial_and_exclusive(tmp_path):
     assert final.mode == Mode.IDLE
     assert graph == Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
     assert all(not state.active for state in systemd.units.values())
-    assert [state.lifecycle for state in published] == [
+    lifecycle_changes = [
+        lifecycle for lifecycle, _group in groupby(
+            state.lifecycle for state in published
+        )
+    ]
+    assert lifecycle_changes == [
         Lifecycle.TRANSITIONING, Lifecycle.STABLE,
         Lifecycle.TRANSITIONING, Lifecycle.STABLE,
         Lifecycle.TRANSITIONING, Lifecycle.STABLE,
         Lifecycle.TRANSITIONING, Lifecycle.STABLE,
     ]
+
+
+def test_transition_publishes_truthful_runtime_phases(tmp_path):
+    complete_map(tmp_path)
+    value, _systemd, _graph, published = runtime(tmp_path)
+
+    value.transition(Mode.AUTONOMY, 1, autonomy_map='studio')
+
+    details = [state.detail for state in published]
+    assert 'Stopping previous runtime — requesting service stop' in details
+    assert 'Stopping previous runtime — waiting for mode cgroups' in details
+    assert 'Stopping previous runtime — waiting for ROS graph cleanup' in details
+    assert 'Validating selected map — studio' in details
+    assert any(
+        detail.startswith('Starting AUTONOMY — requesting ') for detail in details
+    )
+    assert 'Starting AUTONOMY — waiting for runtime readiness' in details
 
 
 def test_start_failure_cleans_partial_graph_and_faults_idle(tmp_path):
