@@ -49,6 +49,49 @@ main {
 .card h2 { margin: 0 0 0.6rem; font-size: 1.05rem; }
 .card h3 { margin: 0.9rem 0 0.3rem; font-size: 0.9rem; color: #91b79a; }
 
+.map-card { padding: 0.75rem; }
+.map-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.1rem 0.25rem 0.55rem;
+}
+.map-heading h2, .map-heading p { margin: 0; }
+.map-tools { display: flex; flex: 0 0 auto; }
+.map-tools button { min-width: 2.7rem; margin: 0 0 0 0.35rem; }
+.map-viewport {
+  position: relative;
+  height: clamp(22rem, 58vh, 48rem);
+  min-height: 18rem;
+  overflow: hidden;
+  border: 1px solid #304137;
+  border-radius: 0.45rem;
+  background: #252a27;
+  touch-action: none;
+}
+#map-canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+#map-canvas.dragging { cursor: grabbing; }
+.map-legend {
+  position: absolute;
+  left: 0.55rem;
+  bottom: 0.55rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.35rem;
+  background: rgb(8 13 10 / 82%);
+  font-size: 0.69rem;
+  pointer-events: none;
+}
+.map-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
+.map-legend i { width: 0.7rem; height: 0.7rem; border: 1px solid #55625a; }
+.map-legend .free { background: #e8ece9; }
+.map-legend .occupied { background: #172019; }
+.map-legend .unknown { background: #777d79; }
+.map-legend .cost { background: #e54b32; }
+
 dl.kv {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -124,4 +167,10 @@ pre {
   background: #0d130f;
   max-height: 22rem;
   font-size: 0.78rem;
+}
+
+@media (max-width: 40rem) {
+  main { width: min(100% - 1rem, 78rem); padding-top: 0.7rem; }
+  .map-viewport { height: 55vh; }
+  .map-legend { right: 0.55rem; }
 }

@@ -11,9 +11,33 @@
   <body>
     <main>
       <header>
-        <p class="eyebrow">Runner Paddock — operator console (first integration draft)</p>
+        <p class="eyebrow">Runner Paddock — operator console</p>
         <div id="banner" class="banner waiting">Connecting…</div>
       </header>
+
+      <section class="card map-card" aria-labelledby="map-title">
+        <div class="map-heading">
+          <div>
+            <h2 id="map-title">Map</h2>
+            <p id="map-status" class="hint">Waiting for /map…</p>
+          </div>
+          <div class="map-tools" aria-label="Map view controls">
+            <button id="btn-zoom-out" type="button" aria-label="Zoom out">−</button>
+            <button id="btn-fit-map" type="button">Fit</button>
+            <button id="btn-zoom-in" type="button" aria-label="Zoom in">+</button>
+          </div>
+        </div>
+        <div class="map-viewport" id="map-viewport">
+          <canvas id="map-canvas" aria-label="Global occupancy map with local costmap and robot pose"></canvas>
+          <div class="map-legend" aria-hidden="true">
+            <span><i class="free"></i>free</span>
+            <span><i class="occupied"></i>occupied</span>
+            <span><i class="unknown"></i>unknown</span>
+            <span><i class="cost"></i>local cost</span>
+          </div>
+        </div>
+        <p class="hint">Drag to pan · wheel/pinch controls use the view buttons</p>
+      </section>
 
       <section class="grid">
         <div class="card" id="global-card">
@@ -89,6 +113,7 @@
       </section>
       <p id="acklog" class="hint"></p>
     </main>
+    <script src="/static/map_geometry.js" defer></script>
     <script src="/static/app.js" defer></script>
   </body>
 </html>

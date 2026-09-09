@@ -43,6 +43,7 @@ class StateCache:
         'map_state': 3.0,
         'navigation_state': 2.0,
         'plan': 2.0,
+        'local_costmap': 1.0,
     }
 
     _SMALL_SOURCES = (
@@ -65,6 +66,7 @@ class StateCache:
             'navigation_state': _Entry(),
             'map': _Entry(),
             'plan': _Entry(),
+            'local_costmap': _Entry(),
         }
 
     def update(self, source: str, value: dict[str, Any]) -> bool:
@@ -120,7 +122,7 @@ class StateCache:
         value. The stable reference avoids copying a potentially large grid
         while holding the cache lock.
         """
-        if source not in ('map', 'plan'):
+        if source not in ('map', 'plan', 'local_costmap'):
             raise KeyError(source)
         with self._lock:
             entry = self._entries[source]

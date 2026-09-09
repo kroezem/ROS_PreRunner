@@ -16,6 +16,16 @@ let runHeld = false;
 let runTimer = null;
 let catalogRenderKey = null;
 
+const mapCanvas = $("map-canvas");
+const mapContext = mapCanvas.getContext("2d");
+const mapGeometry = window.PaddockMapGeometry;
+const mapView = { x: 0, y: 0, scale: 50, fitted: false };
+const mapLayers = {
+  map: { grid: null, raster: null },
+  local_costmap: { grid: null, raster: null },
+};
+let mapDrag = null;
+
 function setBanner(text, kind) {
   banner.textContent = text;
   banner.className = `banner ${kind}`;
@@ -59,8 +69,9 @@ function connect() {
     if (frame.type === "state") {
       Object.assign(latest, frame);
       render();
-    } else if (frame.type === "map" || frame.type === "plan") {
+    } else if (frame.type === "map" || frame.type === "local_costmap" || frame.type === "plan") {
       latest[frame.type] = frame;
+      if (frame.type === "map" || frame.type === "local_costmap") updateMapLayer(frame.type, frame);
     } else if (frame.type === "ack") {
       if (typeof frame.role === "string") role = frame.role;
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
@@ -131,6 +142,7 @@ function render() {
       ? `applied — ${mapState.selected_map_applied}`
       : "—"));
   renderCatalog(mapState.catalog || [], mapState.selected_map_applied);
+  renderMap();
 
   text("a-map", mode.active_autonomy_map || "(none)");
   text("a-mission", `${MISSION[nav.state] ?? "—"}${nav.mission_valid ? " · mission valid" : ""} · rev ${nav.mission_revision ?? 0}`);
@@ -157,6 +169,201 @@ function render() {
     ? ""
     : "Select a completed map (Mapping ▸ Saved maps) before AUTONOMY.";
 }
+
+// --- map -----------------------------------------------------------------
+
+function updateMapLayer(kind, grid) {
+  mapLayers[kind] = { grid, raster: makeGridRaster(grid, kind === "local_costmap") };
+  if (kind === "map" && !mapView.fitted) fitMap();
+  renderMap();
+}
+
+function makeGridRaster(grid, local) {
+  if (!grid || grid.width <= 0 || grid.height <= 0 ||
+      grid.data.length !== grid.width * grid.height) return null;
+  const raster = document.createElement("canvas");
+  raster.width = grid.width;
+  raster.height = grid.height;
+  const context = raster.getContext("2d");
+  const image = context.createImageData(grid.width, grid.height);
+  for (let gy = 0; gy < grid.height; gy += 1) {
+    const canvasY = grid.height - 1 - gy;
+    for (let gx = 0; gx < grid.width; gx += 1) {
+      const value = grid.data[gy * grid.width + gx];
+      const offset = (canvasY * grid.width + gx) * 4;
+      if (local) {
+        if (value < 0) {
+          image.data.set([130, 92, 180, 65], offset);
+        } else if (value === 0) {
+          image.data.set([0, 0, 0, 0], offset);
+        } else {
+          const alpha = Math.round(55 + 180 * value / 100);
+          image.data.set([235, 64, 38, alpha], offset);
+        }
+      } else if (value < 0) {
+        image.data.set([112, 119, 114, 255], offset);
+      } else {
+        const shade = Math.round(235 - 215 * value / 100);
+        image.data.set([shade, shade + 3, shade, 255], offset);
+      }
+    }
+  }
+  context.putImageData(image, 0, 0);
+  return raster;
+}
+
+function screenFromWorld(x, y) {
+  return {
+    x: mapCanvas.width / 2 + (x - mapView.x) * mapView.scale,
+    y: mapCanvas.height / 2 - (y - mapView.y) * mapView.scale,
+  };
+}
+
+function worldFromScreen(x, y) {
+  return {
+    x: mapView.x + (x - mapCanvas.width / 2) / mapView.scale,
+    y: mapView.y - (y - mapCanvas.height / 2) / mapView.scale,
+  };
+}
+
+function drawGridLayer(layer) {
+  const { grid, raster } = layer;
+  if (!grid || !raster) return;
+  const yaw = mapGeometry.yawOf(grid.origin.orientation);
+  const topLeft = mapGeometry.gridToWorld(grid, 0, grid.height);
+  const screen = screenFromWorld(topLeft.x, topLeft.y);
+  const cellPixels = mapView.scale * grid.resolution;
+  const cosine = Math.cos(yaw);
+  const sine = Math.sin(yaw);
+  mapContext.save();
+  mapContext.imageSmoothingEnabled = false;
+  mapContext.setTransform(
+    cellPixels * cosine,
+    -cellPixels * sine,
+    cellPixels * sine,
+    cellPixels * cosine,
+    screen.x,
+    screen.y,
+  );
+  mapContext.drawImage(raster, 0, 0);
+  mapContext.restore();
+}
+
+function drawDirectionalPose(pose, color, radiusPixels) {
+  if (!pose || !pose.position || !pose.orientation) return;
+  const center = screenFromWorld(pose.position.x, pose.position.y);
+  const yaw = mapGeometry.yawOf(pose.orientation);
+  const length = Math.max(radiusPixels * 2.8, 28 * devicePixelRatio);
+  const tip = {
+    x: center.x + Math.cos(yaw) * length,
+    y: center.y - Math.sin(yaw) * length,
+  };
+  mapContext.save();
+  mapContext.strokeStyle = "#07100a";
+  mapContext.fillStyle = color;
+  mapContext.lineWidth = 5 * devicePixelRatio;
+  mapContext.beginPath();
+  mapContext.arc(center.x, center.y, radiusPixels, 0, Math.PI * 2);
+  mapContext.fill();
+  mapContext.stroke();
+  mapContext.strokeStyle = color;
+  mapContext.lineWidth = 4 * devicePixelRatio;
+  mapContext.beginPath();
+  mapContext.moveTo(center.x, center.y);
+  mapContext.lineTo(tip.x, tip.y);
+  mapContext.stroke();
+  mapContext.fillStyle = color;
+  mapContext.beginPath();
+  mapContext.moveTo(tip.x, tip.y);
+  mapContext.lineTo(tip.x - Math.cos(yaw - 0.55) * 10 * devicePixelRatio,
+                    tip.y + Math.sin(yaw - 0.55) * 10 * devicePixelRatio);
+  mapContext.lineTo(tip.x - Math.cos(yaw + 0.55) * 10 * devicePixelRatio,
+                    tip.y + Math.sin(yaw + 0.55) * 10 * devicePixelRatio);
+  mapContext.closePath();
+  mapContext.fill();
+  mapContext.restore();
+}
+
+function renderMap() {
+  mapContext.setTransform(1, 0, 0, 1, 0, 0);
+  mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  drawGridLayer(mapLayers.map);
+  drawGridLayer(mapLayers.local_costmap);
+  drawDirectionalPose(latest.pose, "#36d77b", 7 * devicePixelRatio);
+  const global = mapLayers.map.grid;
+  const local = mapLayers.local_costmap.grid;
+  $("map-status").textContent = global
+    ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"}` +
+      (local ? ` · local costmap aligned from ${local.source_frame_id || local.frame_id}` : " · local costmap unavailable")
+    : "Waiting for /map…";
+}
+
+function resizeMapCanvas() {
+  const bounds = mapCanvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(bounds.width * ratio));
+  const height = Math.max(1, Math.round(bounds.height * ratio));
+  if (mapCanvas.width !== width || mapCanvas.height !== height) {
+    mapCanvas.width = width;
+    mapCanvas.height = height;
+    if (mapLayers.map.grid && !mapView.fitted) fitMap();
+    renderMap();
+  }
+}
+
+function fitMap() {
+  const grid = mapLayers.map.grid;
+  if (!grid || !mapCanvas.width || !mapCanvas.height) return;
+  const bounds = mapGeometry.gridBounds(grid);
+  const width = Math.max(bounds.maxX - bounds.minX, grid.resolution);
+  const height = Math.max(bounds.maxY - bounds.minY, grid.resolution);
+  mapView.x = (bounds.minX + bounds.maxX) / 2;
+  mapView.y = (bounds.minY + bounds.maxY) / 2;
+  mapView.scale = Math.max(2, 0.9 * Math.min(mapCanvas.width / width, mapCanvas.height / height));
+  mapView.fitted = true;
+  renderMap();
+}
+
+function zoomMap(factor, screenX = mapCanvas.width / 2, screenY = mapCanvas.height / 2) {
+  const anchor = worldFromScreen(screenX, screenY);
+  mapView.scale = Math.min(5000, Math.max(2, mapView.scale * factor));
+  mapView.x = anchor.x - (screenX - mapCanvas.width / 2) / mapView.scale;
+  mapView.y = anchor.y + (screenY - mapCanvas.height / 2) / mapView.scale;
+  renderMap();
+}
+
+mapCanvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const rect = mapCanvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  zoomMap(event.deltaY < 0 ? 1.15 : 1 / 1.15,
+          (event.clientX - rect.left) * ratio, (event.clientY - rect.top) * ratio);
+}, { passive: false });
+mapCanvas.addEventListener("pointerdown", (event) => {
+  mapCanvas.setPointerCapture(event.pointerId);
+  mapDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  mapCanvas.classList.add("dragging");
+});
+mapCanvas.addEventListener("pointermove", (event) => {
+  if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
+  const ratio = window.devicePixelRatio || 1;
+  mapView.x -= (event.clientX - mapDrag.x) * ratio / mapView.scale;
+  mapView.y += (event.clientY - mapDrag.y) * ratio / mapView.scale;
+  mapDrag.x = event.clientX;
+  mapDrag.y = event.clientY;
+  renderMap();
+});
+function endMapDrag(event) {
+  if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
+  mapDrag = null;
+  mapCanvas.classList.remove("dragging");
+}
+mapCanvas.addEventListener("pointerup", endMapDrag);
+mapCanvas.addEventListener("pointercancel", endMapDrag);
+$("btn-fit-map").addEventListener("click", fitMap);
+$("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
+$("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
+new ResizeObserver(resizeMapCanvas).observe($("map-viewport"));
 
 function setBannerFromState(mode, auth, stop) {
   if (stop.stopped) setBanner("STOP ASSERTED — global inhibit latched", "stop");

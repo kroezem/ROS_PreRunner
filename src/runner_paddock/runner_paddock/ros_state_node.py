@@ -45,6 +45,7 @@ from runner_paddock.gateway import (
     ModeRequestIntent,
     OperatorGateway,
 )
+from runner_paddock.grid_geometry import compose, PlanarPose
 from runner_paddock.state_cache import StateCache
 from tf2_ros import Buffer
 from tf2_ros import TransformException
@@ -52,6 +53,7 @@ from tf2_ros import TransformListener
 
 
 MAP_TOPIC = '/map'
+LOCAL_COSTMAP_TOPIC = '/local_costmap/costmap'
 PLAN_TOPIC = '/plan'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
@@ -102,6 +104,48 @@ def _pose(pose: Any) -> dict[str, Any]:
     }
 
 
+def _yaw(orientation: Any) -> float:
+    """Return planar yaw from a finite ROS quaternion."""
+    _finite(orientation.x, orientation.y, orientation.z, orientation.w)
+    return math.atan2(
+        2.0 * (orientation.w * orientation.z
+               + orientation.x * orientation.y),
+        1.0 - 2.0 * (orientation.y * orientation.y
+                     + orientation.z * orientation.z),
+    )
+
+
+def _planar_pose(pose: Any) -> PlanarPose:
+    return PlanarPose(
+        float(pose.position.x), float(pose.position.y), _yaw(pose.orientation)
+    )
+
+
+def _grid(message: OccupancyGrid, *, origin: dict | None = None) -> dict:
+    """Validate and serialize ROS OccupancyGrid map semantics."""
+    info = message.info
+    _finite(info.resolution)
+    if info.resolution <= 0.0:
+        raise ValueError('OccupancyGrid resolution must be positive')
+    width = int(info.width)
+    height = int(info.height)
+    data = [int(value) for value in message.data]
+    if width * height != len(data):
+        raise ValueError('OccupancyGrid dimensions do not match data')
+    if any(value < -1 or value > 100 for value in data):
+        raise ValueError('OccupancyGrid data is outside [-1, 100]')
+    return {
+        'stamp': _stamp(message.header.stamp),
+        'frame_id': message.header.frame_id,
+        'map_load_time': _stamp(info.map_load_time),
+        'resolution': info.resolution,
+        'width': width,
+        'height': height,
+        'origin': origin if origin is not None else _pose(info.origin),
+        'data': data,
+    }
+
+
 class RosStateNode(Node):
     """Read established state topics and TF; write validated operator intent."""
 
@@ -124,6 +168,12 @@ class RosStateNode(Node):
         )
         self.create_subscription(
             OccupancyGrid, MAP_TOPIC, self._on_map, map_qos
+        )
+        self.create_subscription(
+            OccupancyGrid,
+            LOCAL_COSTMAP_TOPIC,
+            self._on_local_costmap,
+            map_qos,
         )
         self.create_subscription(Path, PLAN_TOPIC, self._on_plan, latest_qos)
         self.create_subscription(
@@ -181,29 +231,43 @@ class RosStateNode(Node):
 
     def _on_map(self, message: OccupancyGrid) -> None:
         try:
-            info = message.info
-            _finite(info.resolution)
-            if info.resolution <= 0.0:
-                raise ValueError('OccupancyGrid resolution must be positive')
-            width = int(info.width)
-            height = int(info.height)
-            data = [int(value) for value in message.data]
-            if width * height != len(data):
-                raise ValueError('OccupancyGrid dimensions do not match data')
-            if any(value < -1 or value > 100 for value in data):
-                raise ValueError('OccupancyGrid data is outside [-1, 100]')
-            self._cache.update('map', {
-                'stamp': _stamp(message.header.stamp),
-                'frame_id': message.header.frame_id,
-                'map_load_time': _stamp(info.map_load_time),
-                'resolution': info.resolution,
-                'width': width,
-                'height': height,
-                'origin': _pose(info.origin),
-                'data': data,
-            })
+            self._cache.update('map', _grid(message))
         except (TypeError, ValueError) as error:
             self.get_logger().warning(f'Rejected invalid {MAP_TOPIC}: {error}')
+
+    def _on_local_costmap(self, message: OccupancyGrid) -> None:
+        """Place the odom-frame rolling costmap in the authoritative map frame."""
+        try:
+            source_frame = message.header.frame_id
+            if not source_frame:
+                raise ValueError('local costmap frame is empty')
+            transform = self._tf_buffer.lookup_transform(
+                MAP_FRAME, source_frame, rclpy.time.Time()
+            )
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            map_from_source = PlanarPose(
+                float(translation.x), float(translation.y), _yaw(rotation)
+            )
+            map_origin = compose(map_from_source, _planar_pose(message.info.origin))
+            half_yaw = 0.5 * map_origin.yaw
+            origin = {
+                'position': {'x': map_origin.x, 'y': map_origin.y, 'z': 0.0},
+                'orientation': {
+                    'x': 0.0, 'y': 0.0,
+                    'z': math.sin(half_yaw), 'w': math.cos(half_yaw),
+                },
+            }
+            value = _grid(message, origin=origin)
+            value['source_frame_id'] = source_frame
+            value['frame_id'] = MAP_FRAME
+            value['transform_stamp'] = _stamp(transform.header.stamp)
+            self._cache.update('local_costmap', value)
+        except (TransformException, TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected unaligned {LOCAL_COSTMAP_TOPIC}: {error}',
+                throttle_duration_sec=5.0,
+            )
 
     def _on_plan(self, message: Path) -> None:
         try:

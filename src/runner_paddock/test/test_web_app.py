@@ -79,6 +79,7 @@ def test_frontend_assets_are_packaged_at_runtime_location():
     expected = {
         'index.html',
         'app.js',
+        'map_geometry.js',
         'style.css',
         'service-worker.js',
     }

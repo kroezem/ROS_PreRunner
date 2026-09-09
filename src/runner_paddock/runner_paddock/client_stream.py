@@ -23,7 +23,7 @@ from runner_paddock.state_cache import StateCache
 
 LOGGER = logging.getLogger(__name__)
 STREAM_HZ = 10.0
-_FRAME_KINDS = ('map', 'plan', 'state')
+_FRAME_KINDS = ('map', 'local_costmap', 'plan', 'state')
 
 
 class ClientConnection:
@@ -33,7 +33,7 @@ class ClientConnection:
         self._pending: dict[str, str] = {}
         self._available = asyncio.Event()
         self._closed = False
-        self.revisions = {'map': 0, 'plan': 0}
+        self.revisions = {'map': 0, 'local_costmap': 0, 'plan': 0}
 
     @property
     def pending_count(self) -> int:
@@ -103,7 +103,7 @@ class ClientHub:
             for client in self._clients:
                 client.offer('state', state_frame)
 
-        for kind in ('map', 'plan'):
+        for kind in ('map', 'local_costmap', 'plan'):
             revision, value = cache.large_snapshot(kind)
             recipients = [
                 client for client in self._clients

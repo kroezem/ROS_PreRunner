@@ -32,13 +32,15 @@ def test_slow_client_is_bounded_and_each_kind_is_latest_wins():
         for index in range(1000):
             client.offer('state', f'state-{index}')
             client.offer('map', f'map-{index}')
+            client.offer('local_costmap', f'local_costmap-{index}')
             client.offer('plan', f'plan-{index}')
-        assert client.pending_count == 3
+            assert client.pending_count == 4
         assert {
             await client.next_frame(),
             await client.next_frame(),
             await client.next_frame(),
-        } == {'state-999', 'map-999', 'plan-999'}
+            await client.next_frame(),
+        } == {'state-999', 'map-999', 'local_costmap-999', 'plan-999'}
 
     asyncio.run(scenario())
 
