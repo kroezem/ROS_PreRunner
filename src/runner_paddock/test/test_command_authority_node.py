@@ -14,6 +14,8 @@
 
 """ROS-plumbing contract tests that do not launch production behavior."""
 
+from dataclasses import replace
+
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
 from runner_interfaces.msg import PaddockControlEvent
@@ -28,6 +30,7 @@ from runner_paddock.command_authority_node import SUPERVISED_AUTONOMY_TOPIC
 from runner_paddock.command_supervisor import CommandSupervisor
 from runner_paddock.command_supervisor import ControlEvent
 from runner_paddock.command_supervisor import SupervisorResult
+from runner_paddock.state_machine import GoalIntent
 
 
 def test_topic_contract_never_names_live_cmd_vel_as_an_output():
@@ -82,3 +85,20 @@ def test_authority_message_exposes_monotonic_ages_and_brake_state():
     assert not message.raw_autonomy_fresh
     assert message.raw_autonomy_age_sec == -1.0
     assert message.reason == 'IDLE_BRAKE'
+
+
+def test_authority_message_exposes_selected_goal_as_backend_truth():
+    supervisor = CommandSupervisor(active_autonomy_map='studio')
+    snapshot = supervisor.tick(4.0).snapshot
+    goal = GoalIntent('studio', 1.25, -0.75, 0.4)
+    state = replace(snapshot.state, goal=goal)
+    snapshot = replace(snapshot, state=state)
+
+    message = _authority_message(SupervisorResult(snapshot), Time(sec=9))
+
+    assert message.autonomy_goal_selected
+    assert message.goal_frame == 'map'
+    assert message.goal_map == 'studio'
+    assert (message.goal_x, message.goal_y, message.goal_yaw) == (
+        1.25, -0.75, 0.4,
+    )

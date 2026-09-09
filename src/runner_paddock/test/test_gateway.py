@@ -117,6 +117,10 @@ def test_goal_and_map_intents():
                                 'y': 0.0}).accepted
     assert not gw.handle('c1', {'action': 'select_goal', 'x': float('nan'),
                                 'y': 0.0}).accepted
+    non_map = gw.handle('c1', {'action': 'select_goal', 'frame': 'odom',
+                               'x': 1.0, 'y': 2.0, 'yaw': 0.0})
+    assert not non_map.accepted
+    assert non_map.reason == 'goal frame must be map'
 
     save = gw.handle('c1', {'action': 'save_map', 'name': 'studio2'})
     assert isinstance(save.intents[0], MapRequestIntent)

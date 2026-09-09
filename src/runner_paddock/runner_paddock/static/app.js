@@ -25,6 +25,13 @@ const mapLayers = {
   local_costmap: { grid: null, raster: null },
 };
 let mapDrag = null;
+const goalInteraction = {
+  active: false,
+  dragging: false,
+  pointerId: null,
+  preview: null,
+  awaiting: false,
+};
 
 function setBanner(text, kind) {
   banner.textContent = text;
@@ -74,6 +81,7 @@ function connect() {
       if (frame.type === "map" || frame.type === "local_costmap") updateMapLayer(frame.type, frame);
     } else if (frame.type === "ack") {
       if (typeof frame.role === "string") role = frame.role;
+      if (frame.name === "select_goal" && !frame.accepted) goalInteraction.awaiting = false;
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
       render();
     }
@@ -146,6 +154,9 @@ function render() {
 
   text("a-map", mode.active_autonomy_map || "(none)");
   text("a-mission", `${MISSION[nav.state] ?? "—"}${nav.mission_valid ? " · mission valid" : ""} · rev ${nav.mission_revision ?? 0}`);
+  text("a-goal", auth.autonomy_goal_selected
+    ? `map · x ${fmt(auth.goal_x)} · y ${fmt(auth.goal_y)} · yaw ${fmt(auth.goal_yaw)} rad`
+    : "none");
   text("a-detail", nav.detail || nav.error_meaning || "—");
   text("a-active", auth.autonomy_action_active ? "yes (Nav2 executing)" : "no");
   $("pose-hint").textContent = pose
@@ -154,6 +165,7 @@ function render() {
 
   const controller = role === "controller";
   document.querySelectorAll("button").forEach((b) => {
+    if (b.classList.contains("view-control")) return;
     if (b.id === "btn-stop") return;               // STOP stays enabled when possible
     b.disabled = !controller;
   });
@@ -168,6 +180,21 @@ function render() {
   $("a-map-hint").textContent = hasAutonomyMap
     ? ""
     : "Select a completed map (Mapping ▸ Saved maps) before AUTONOMY.";
+  const runRelevant = mode.mode === 2 && mode.status === 0 &&
+    Boolean(auth.autonomy_goal_selected);
+  $("run-controls").hidden = !runRelevant;
+  $("run-hint").hidden = !runRelevant;
+
+  const preview = goalInteraction.preview;
+  if (preview && goalInteraction.awaiting && auth.autonomy_goal_selected &&
+      Math.abs(auth.goal_x - preview.x) < 1e-6 &&
+      Math.abs(auth.goal_y - preview.y) < 1e-6 &&
+      Math.abs(auth.goal_yaw - preview.yaw) < 1e-6) {
+    goalInteraction.active = false;
+    goalInteraction.awaiting = false;
+    goalInteraction.preview = null;
+  }
+  renderGoalControls();
 }
 
 // --- map -----------------------------------------------------------------
@@ -284,18 +311,55 @@ function drawDirectionalPose(pose, color, radiusPixels) {
   mapContext.restore();
 }
 
+function poseFromXYYaw(x, y, yaw) {
+  return {
+    position: { x, y, z: 0 },
+    orientation: { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) },
+  };
+}
+
+function drawGoalPreview(preview) {
+  if (!preview) return;
+  const pose = poseFromXYYaw(preview.x, preview.y, preview.yaw);
+  drawDirectionalPose(pose, "#ffc247", 6 * devicePixelRatio);
+}
+
 function renderMap() {
   mapContext.setTransform(1, 0, 0, 1, 0, 0);
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
   drawGridLayer(mapLayers.map);
   drawGridLayer(mapLayers.local_costmap);
-  drawDirectionalPose(latest.pose, "#36d77b", 7 * devicePixelRatio);
+  const auth = latest.command_authority || {};
+  if (auth.autonomy_goal_selected) {
+    drawDirectionalPose(
+      poseFromXYYaw(auth.goal_x, auth.goal_y, auth.goal_yaw),
+      "#90e0ef",
+      6 * devicePixelRatio,
+    );
+  }
+  drawDirectionalPose(latest.pose, "#00b4d8", 7 * devicePixelRatio);
+  drawGoalPreview(goalInteraction.preview);
   const global = mapLayers.map.grid;
   const local = mapLayers.local_costmap.grid;
   $("map-status").textContent = global
     ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"}` +
       (local ? ` · local costmap aligned from ${local.source_frame_id || local.frame_id}` : " · local costmap unavailable")
     : "Waiting for /map…";
+}
+
+function renderGoalControls() {
+  const controls = $("goal-preview-controls");
+  const preview = goalInteraction.preview;
+  controls.hidden = !goalInteraction.active;
+  $("btn-goal-mode").classList.toggle("armed", goalInteraction.active);
+  mapCanvas.classList.toggle("selecting", goalInteraction.active);
+  $("btn-confirm-goal").disabled = role !== "controller" || !preview || goalInteraction.awaiting;
+  $("goal-preview-text").textContent = !preview
+    ? "Press on the map and drag toward the desired heading"
+    : goalInteraction.awaiting
+      ? "Sending goal — waiting for command-authority confirmation…"
+      : `Preview: x ${preview.x.toFixed(2)} · y ${preview.y.toFixed(2)} · yaw ${preview.yaw.toFixed(2)} rad`;
+  renderMap();
 }
 
 function resizeMapCanvas() {
@@ -341,10 +405,32 @@ mapCanvas.addEventListener("wheel", (event) => {
 }, { passive: false });
 mapCanvas.addEventListener("pointerdown", (event) => {
   mapCanvas.setPointerCapture(event.pointerId);
+  if (goalInteraction.active) {
+    const point = pointerWorld(event);
+    if (!pointIsInsideGlobalMap(point)) {
+      ack("goal must be inside the current global map");
+      return;
+    }
+    goalInteraction.dragging = true;
+    goalInteraction.pointerId = event.pointerId;
+    goalInteraction.preview = { x: point.x, y: point.y, yaw: 0 };
+    goalInteraction.awaiting = false;
+    renderGoalControls();
+    return;
+  }
   mapDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
   mapCanvas.classList.add("dragging");
 });
 mapCanvas.addEventListener("pointermove", (event) => {
+  if (goalInteraction.dragging && goalInteraction.pointerId === event.pointerId) {
+    const point = pointerWorld(event);
+    const preview = goalInteraction.preview;
+    const dx = point.x - preview.x;
+    const dy = point.y - preview.y;
+    if (Math.hypot(dx, dy) > 0.01) preview.yaw = Math.atan2(dy, dx);
+    renderGoalControls();
+    return;
+  }
   if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
   const ratio = window.devicePixelRatio || 1;
   mapView.x -= (event.clientX - mapDrag.x) * ratio / mapView.scale;
@@ -354,6 +440,12 @@ mapCanvas.addEventListener("pointermove", (event) => {
   renderMap();
 });
 function endMapDrag(event) {
+  if (goalInteraction.dragging && goalInteraction.pointerId === event.pointerId) {
+    goalInteraction.dragging = false;
+    goalInteraction.pointerId = null;
+    renderGoalControls();
+    return;
+  }
   if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
   mapDrag = null;
   mapCanvas.classList.remove("dragging");
@@ -365,11 +457,56 @@ $("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
 $("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
 new ResizeObserver(resizeMapCanvas).observe($("map-viewport"));
 
+function pointerWorld(event) {
+  const rect = mapCanvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  return worldFromScreen(
+    (event.clientX - rect.left) * ratio,
+    (event.clientY - rect.top) * ratio,
+  );
+}
+
+function pointIsInsideGlobalMap(point) {
+  const grid = mapLayers.map.grid;
+  if (!grid) return false;
+  const cell = mapGeometry.worldToGrid(grid, point.x, point.y);
+  return cell.x >= 0 && cell.y >= 0 && cell.x < grid.width && cell.y < grid.height;
+}
+
+$("btn-goal-mode").addEventListener("click", () => {
+  goalInteraction.active = !goalInteraction.active;
+  goalInteraction.dragging = false;
+  goalInteraction.preview = null;
+  goalInteraction.awaiting = false;
+  renderGoalControls();
+});
+$("btn-cancel-goal-preview").addEventListener("click", () => {
+  goalInteraction.active = false;
+  goalInteraction.dragging = false;
+  goalInteraction.preview = null;
+  goalInteraction.awaiting = false;
+  renderGoalControls();
+});
+$("btn-confirm-goal").addEventListener("click", () => {
+  const preview = goalInteraction.preview;
+  if (!preview || goalInteraction.awaiting) return;
+  goalInteraction.awaiting = true;
+  send({ action: "select_goal", frame: "map", x: preview.x, y: preview.y, yaw: preview.yaw });
+  renderGoalControls();
+});
+
 function setBannerFromState(mode, auth, stop) {
   if (stop.stopped) setBanner("STOP ASSERTED — global inhibit latched", "stop");
+  else if (mode.status === 2) setBanner(`Runtime fault — ${humanDetail(mode.detail || mode.readiness_reason)}`, "stop");
+  else if (mode.status === 1) setBanner(humanDetail(mode.detail || "Runtime transition in progress"), "waiting");
   else if (auth.dualsense_active) setBanner("DUALSENSE TAKEOVER — local manual control", "takeover");
   else if (auth.authority === 3 && auth.autonomy_action_active) setBanner("AUTONOMOUS — Nav2 executing under RUN", "run");
+  else if (!mode.ready && mode.mode !== 0) setBanner(`Not ready — ${humanDetail(mode.readiness_reason)}`, "waiting");
   else setBanner(`Connected · ${role}`, "connected");
+}
+
+function humanDetail(value) {
+  return String(value || "unknown reason").replaceAll("->", "→");
 }
 
 function stopSummary(stop, auth) {

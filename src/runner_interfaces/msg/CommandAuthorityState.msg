@@ -12,6 +12,13 @@ bool dualsense_active
 bool run_held
 bool autonomy_permitted
 bool autonomy_goal_selected
+# Authoritative selected goal retained by command_authority. Meaningful only
+# when autonomy_goal_selected is true; always map frame in v1.3.
+string goal_frame
+string goal_map
+float64 goal_x
+float64 goal_y
+float64 goal_yaw
 bool autonomy_action_active
 bool brake_intent
 bool lease_fresh

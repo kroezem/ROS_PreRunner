@@ -311,6 +311,8 @@ class OperatorGateway:
         if not all(math.isfinite(value) for value in (x, y, yaw)):
             return self._reject(conn_id, 'goal needs finite x, y and yaw')
         frame = str(action.get('frame', 'map')) or 'map'
+        if frame != 'map':
+            return self._reject(conn_id, 'goal frame must be map')
         return GatewayResult(
             True, f'goal ({x:.2f}, {y:.2f}, {yaw:.2f}) selected',
             (self._control(

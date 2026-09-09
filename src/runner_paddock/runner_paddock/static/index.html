@@ -13,6 +13,13 @@
       <header>
         <p class="eyebrow">Runner Paddock — operator console</p>
         <div id="banner" class="banner waiting">Connecting…</div>
+        <div class="operator-strip">
+          <div><span>Runtime</span><strong id="g-runtime">—</strong></div>
+          <div class="readiness"><span>Readiness</span><strong id="g-ready">—</strong></div>
+          <div><span>Selected map</span><strong id="m-selected">—</strong></div>
+          <div><span>STOP state</span><strong id="g-stop">—</strong></div>
+          <button id="btn-stop" class="stop">STOP</button>
+        </div>
       </header>
 
       <section class="card map-card" aria-labelledby="map-title">
@@ -22,9 +29,10 @@
             <p id="map-status" class="hint">Waiting for /map…</p>
           </div>
           <div class="map-tools" aria-label="Map view controls">
-            <button id="btn-zoom-out" type="button" aria-label="Zoom out">−</button>
-            <button id="btn-fit-map" type="button">Fit</button>
-            <button id="btn-zoom-in" type="button" aria-label="Zoom in">+</button>
+            <button id="btn-goal-mode" type="button" class="goal-action">Set goal</button>
+            <button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">−</button>
+            <button id="btn-fit-map" type="button" class="view-control">Fit</button>
+            <button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">+</button>
           </div>
         </div>
         <div class="map-viewport" id="map-viewport">
@@ -36,25 +44,26 @@
             <span><i class="cost"></i>local cost</span>
           </div>
         </div>
-        <p class="hint">Drag to pan · wheel/pinch controls use the view buttons</p>
+        <div id="goal-preview-controls" class="goal-preview-controls" hidden>
+          <strong id="goal-preview-text">Goal preview</strong>
+          <button id="btn-confirm-goal" type="button" class="goal-action">Confirm goal</button>
+          <button id="btn-cancel-goal-preview" type="button">Cancel</button>
+        </div>
+        <p class="hint">Drag to pan · wheel or ± to zoom · Set goal, then drag position→heading and confirm</p>
       </section>
 
       <section class="grid">
         <div class="card" id="global-card">
-          <h2>Global</h2>
+          <h2>Control &amp; safety</h2>
           <dl class="kv">
             <dt>Backend</dt><dd id="g-backend">—</dd>
             <dt>Lease role</dt><dd id="g-role">—</dd>
             <dt>Lease</dt><dd id="g-lease">—</dd>
-            <dt>Runtime</dt><dd id="g-runtime">—</dd>
-            <dt>Readiness</dt><dd id="g-ready">—</dd>
             <dt>Authority / source</dt><dd id="g-authority">—</dd>
             <dt>Inhibit reason</dt><dd id="g-reason">—</dd>
-            <dt>STOP</dt><dd id="g-stop">—</dd>
             <dt>DualSense</dt><dd id="g-dualsense">—</dd>
           </dl>
           <div class="stop-row">
-            <button id="btn-stop" class="stop">STOP</button>
             <button id="btn-clear-stop" class="clear">CLEAR STOP</button>
           </div>
           <p class="hint">CLEAR STOP needs the enforcer healthy, STOP applied, and the car stationary.</p>
@@ -68,7 +77,6 @@
             <dt>Session state</dt><dd id="m-phase">—</dd>
             <dt>Unsaved</dt><dd id="m-unsaved">—</dd>
             <dt>Save result</dt><dd id="m-save">—</dd>
-            <dt>Selected map</dt><dd id="m-selected">—</dd>
             <dt>Selection result</dt><dd id="m-selection-result">—</dd>
           </dl>
           <button id="btn-new-map" class="warn">NEW MAP</button>
@@ -89,28 +97,32 @@
           <dl class="kv">
             <dt>Active map</dt><dd id="a-map">—</dd>
             <dt>Mission</dt><dd id="a-mission">—</dd>
+            <dt>Selected goal</dt><dd id="a-goal">—</dd>
             <dt>Nav2 detail</dt><dd id="a-detail">—</dd>
             <dt>Action active</dt><dd id="a-active">—</dd>
           </dl>
-          <div class="inline">
-            <label>x <input id="goal-x" type="number" step="0.05" value="0"></label>
-            <label>y <input id="goal-y" type="number" step="0.05" value="0"></label>
-            <label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label>
-          </div>
-          <button id="btn-select-goal">Select goal pose</button>
+          <details class="numeric-goal">
+            <summary>Numeric goal fallback</summary>
+            <div class="inline">
+              <label>x <input id="goal-x" type="number" step="0.05" value="0"></label>
+              <label>y <input id="goal-y" type="number" step="0.05" value="0"></label>
+              <label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label>
+            </div>
+            <button id="btn-select-goal">Select numeric goal</button>
+          </details>
           <p class="hint" id="pose-hint">Robot pose: —</p>
-          <div class="run-row">
+          <div class="run-row" id="run-controls" hidden>
             <button id="btn-run" class="run">HOLD&nbsp;TO&nbsp;RUN</button>
             <button id="btn-cancel" class="warn">CANCEL</button>
           </div>
-          <p class="hint">Release HOLD TO RUN to stop and cancel. A new deliberate hold is required to resume.</p>
+          <p class="hint" id="run-hint" hidden>Release HOLD TO RUN to stop and cancel. A new deliberate hold is required to resume.</p>
         </div>
       </section>
 
-      <section class="card">
-        <h2>Backend truth (raw)</h2>
+      <details class="card debug-card">
+        <summary>Backend truth (debug)</summary>
         <pre id="debug">Waiting for state…</pre>
-      </section>
+      </details>
       <p id="acklog" class="hint"></p>
     </main>
     <script src="/static/map_geometry.js" defer></script>

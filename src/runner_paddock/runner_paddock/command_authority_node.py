@@ -123,6 +123,11 @@ def _authority_message(
     message.run_held = state.run_held
     message.autonomy_permitted = state.autonomy_permitted
     message.autonomy_goal_selected = state.goal is not None
+    message.goal_frame = 'map' if state.goal is not None else ''
+    message.goal_map = state.goal.map_name if state.goal is not None else ''
+    message.goal_x = state.goal.x if state.goal is not None else 0.0
+    message.goal_y = state.goal.y if state.goal is not None else 0.0
+    message.goal_yaw = state.goal.yaw if state.goal is not None else 0.0
     # Truthful action state comes from the navigation runtime's real Nav2
     # lifecycle, never the reducer's optimistic dispatch intent.
     message.autonomy_action_active = (

@@ -372,6 +372,8 @@ class RosStateNode(Node):
     def _on_authority(self, message: CommandAuthorityState) -> None:
         try:
             _finite(message.lease_age_sec, message.raw_autonomy_age_sec)
+            if message.autonomy_goal_selected:
+                _finite(message.goal_x, message.goal_y, message.goal_yaw)
             self._cache.update('command_authority', {
                 'stamp': _stamp(message.stamp),
                 'authority': int(message.authority),
@@ -381,6 +383,11 @@ class RosStateNode(Node):
                 'run_held': message.run_held,
                 'autonomy_permitted': message.autonomy_permitted,
                 'autonomy_goal_selected': message.autonomy_goal_selected,
+                'goal_frame': message.goal_frame,
+                'goal_map': message.goal_map,
+                'goal_x': message.goal_x,
+                'goal_y': message.goal_y,
+                'goal_yaw': message.goal_yaw,
                 'autonomy_action_active': message.autonomy_action_active,
                 'brake_intent': message.brake_intent,
                 'lease_fresh': message.lease_fresh,
