@@ -16,6 +16,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ from runner_paddock.state_cache import StateCache
 import uvicorn
 
 
-STATIC_DIRECTORY = Path(__file__).resolve().parent / 'static'
+STATIC_DIRECTORY = Path(str(files('runner_paddock.static')))
 
 
 def create_app(

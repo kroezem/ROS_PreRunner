@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from runner_paddock.state_cache import StateCache
 from runner_paddock.web_app import create_app
+from runner_paddock.web_app import STATIC_DIRECTORY
 
 
 class FakeRuntime:
@@ -72,6 +73,18 @@ def _drain_until(websocket, wanted, limit=40):
         if frame['type'] == wanted:
             return frame
     raise AssertionError(f'no {wanted} frame within {limit} frames')
+
+
+def test_frontend_assets_are_packaged_at_runtime_location():
+    expected = {
+        'index.html',
+        'app.js',
+        'style.css',
+        'service-worker.js',
+    }
+    assert expected <= {
+        path.name for path in STATIC_DIRECTORY.iterdir() if path.is_file()
+    }
 
 
 def test_static_shell_lifecycle_and_two_clients():

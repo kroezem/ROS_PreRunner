@@ -7,14 +7,20 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=find_packages(exclude=['test']),
-    package_data={package_name: ['static/*']},
+    package_data={
+        f'{package_name}.static': [
+            '*.css', '*.html', '*.js', '*.webmanifest',
+        ],
+    },
     data_files=[
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['fastapi', 'setuptools', 'uvicorn', 'websockets'],
-    zip_safe=True,
+    # The web server passes the packaged static directory to Starlette, which
+    # requires ordinary filesystem paths rather than a zipped egg resource.
+    zip_safe=False,
     maintainer='matti',
     maintainer_email='matti@todo.todo',
     description='Paddock mode and command-authority supervision',
