@@ -91,7 +91,7 @@ class ClientHub:
             client.close()
 
     def publish(self, cache: StateCache) -> None:
-        """Offer one state tick and only unseen map/plan revisions."""
+        """Offer state plus only unseen large-grid/path revisions."""
         if not self._clients:
             return
 

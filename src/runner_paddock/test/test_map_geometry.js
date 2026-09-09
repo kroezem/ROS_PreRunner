@@ -28,3 +28,15 @@ test("known rotated grid cell round-trips through map coordinates", () => {
   assert.ok(Math.abs(inverse.x - gridPoint.x) < 1e-12);
   assert.ok(Math.abs(inverse.y - gridPoint.y) < 1e-12);
 });
+
+test("goal click pixel converts to map coordinates and back", () => {
+  const view = { x: 1, y: -2, scale: 100 };
+
+  const world = geometry.screenToWorld(view, 800, 600, 500, 100);
+
+  assert.deepEqual(world, { x: 2, y: 0 });
+  assert.deepEqual(
+    geometry.worldToScreen(view, 800, 600, world.x, world.y),
+    { x: 500, y: 100 },
+  );
+});

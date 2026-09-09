@@ -116,7 +116,7 @@ class StateCache:
         self, source: str
     ) -> tuple[int, Optional[dict[str, Any]]]:
         """
-        Return immutable-by-convention map/plan data and its revision.
+        Return immutable-by-convention large grid/path data and its revision.
 
         ROS callbacks replace complete dictionaries and never mutate a stored
         value. The stable reference avoids copying a potentially large grid

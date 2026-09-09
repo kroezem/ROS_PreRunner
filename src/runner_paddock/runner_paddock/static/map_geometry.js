@@ -55,5 +55,21 @@
     };
   }
 
-  return { yawOf, gridToWorld, worldToGrid, gridBounds };
+  function screenToWorld(view, width, height, x, y) {
+    return {
+      x: view.x + (x - width / 2) / view.scale,
+      y: view.y - (y - height / 2) / view.scale,
+    };
+  }
+
+  function worldToScreen(view, width, height, x, y) {
+    return {
+      x: width / 2 + (x - view.x) * view.scale,
+      y: height / 2 - (y - view.y) * view.scale,
+    };
+  }
+
+  return {
+    yawOf, gridToWorld, worldToGrid, gridBounds, screenToWorld, worldToScreen,
+  };
 }));

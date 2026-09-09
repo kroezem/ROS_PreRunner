@@ -240,17 +240,15 @@ function makeGridRaster(grid, local) {
 }
 
 function screenFromWorld(x, y) {
-  return {
-    x: mapCanvas.width / 2 + (x - mapView.x) * mapView.scale,
-    y: mapCanvas.height / 2 - (y - mapView.y) * mapView.scale,
-  };
+  return mapGeometry.worldToScreen(
+    mapView, mapCanvas.width, mapCanvas.height, x, y,
+  );
 }
 
 function worldFromScreen(x, y) {
-  return {
-    x: mapView.x + (x - mapCanvas.width / 2) / mapView.scale,
-    y: mapView.y - (y - mapCanvas.height / 2) / mapView.scale,
-  };
+  return mapGeometry.screenToWorld(
+    mapView, mapCanvas.width, mapCanvas.height, x, y,
+  );
 }
 
 function drawGridLayer(layer) {
@@ -328,7 +326,10 @@ function renderMap() {
   mapContext.setTransform(1, 0, 0, 1, 0, 0);
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
   drawGridLayer(mapLayers.map);
-  drawGridLayer(mapLayers.local_costmap);
+  const sources = ((latest.health || {}).sources || {});
+  const localFresh = !sources.local_costmap || sources.local_costmap.fresh;
+  const poseFresh = !sources.pose || sources.pose.fresh;
+  if (localFresh) drawGridLayer(mapLayers.local_costmap);
   const auth = latest.command_authority || {};
   if (auth.autonomy_goal_selected) {
     drawDirectionalPose(
@@ -337,13 +338,17 @@ function renderMap() {
       6 * devicePixelRatio,
     );
   }
-  drawDirectionalPose(latest.pose, "#00b4d8", 7 * devicePixelRatio);
+  if (poseFresh) {
+    drawDirectionalPose(latest.pose, "#00b4d8", 7 * devicePixelRatio);
+  }
   drawGoalPreview(goalInteraction.preview);
   const global = mapLayers.map.grid;
   const local = mapLayers.local_costmap.grid;
   $("map-status").textContent = global
     ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"}` +
-      (local ? ` · local costmap aligned from ${local.source_frame_id || local.frame_id}` : " · local costmap unavailable")
+      (local && localFresh
+        ? ` · local costmap aligned from ${local.source_frame_id || local.frame_id}`
+        : ` · local costmap ${local ? "stale" : "unavailable"}`)
     : "Waiting for /map…";
 }
 
