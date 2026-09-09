@@ -20,9 +20,9 @@ connection is a read-only observer. The gateway translates validated browser
 actions into ordered, typed intents that the ROS layer publishes verbatim on
 ``/paddock/control_event`` (RUN / STOP / CLEAR STOP / goal / lease / heartbeat),
 ``/paddock/mode_request`` (runtime selection) and ``/paddock/map_request``
-(NEW / SAVE / SELECT map). It manufactures nothing on its own: an intent is
-produced only in direct response to a fresh browser message, so if the browser
-goes silent the Pi-side lease simply expires and RUN is revoked.
+(NEW / SAVE / SELECT / DELETE map). It manufactures nothing on its own: an
+intent is produced only in direct response to a fresh browser message, so if
+the browser goes silent the Pi-side lease simply expires and RUN is revoked.
 
 State safety: a reconnecting browser starts with no lease, no RUN and no goal;
 the gateway never replays a prior dispatch or STOP clear.
