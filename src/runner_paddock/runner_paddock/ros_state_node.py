@@ -23,6 +23,11 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path
+from rcl_interfaces.msg import Parameter
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.msg import ParameterValue
+from rcl_interfaces.srv import GetParameters
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -45,6 +50,7 @@ from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
+from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.gateway import (
     ClearCostmapsIntent,
     ConfigRequestIntent,
@@ -53,11 +59,13 @@ from runner_paddock.gateway import (
     InitialPoseIntent,
     MapRequestIntent,
     ModeRequestIntent,
+    ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
 )
 from runner_paddock.grid_geometry import compose, PlanarPose
 from runner_paddock.state_cache import StateCache
+from sensor_msgs.msg import BatteryState
 from tf2_ros import Buffer
 from tf2_ros import TransformException
 from tf2_ros import TransformListener
@@ -68,6 +76,12 @@ GLOBAL_COSTMAP_TOPIC = '/global_costmap/costmap'
 LOCAL_COSTMAP_TOPIC = '/local_costmap/costmap'
 GLOBAL_CLEAR_SERVICE = '/global_costmap/clear_entirely_global_costmap'
 LOCAL_CLEAR_SERVICE = '/local_costmap/clear_entirely_local_costmap'
+OBSTACLE_PARAMETER = 'obstacle_layer.enabled'
+OBSTACLE_REFRESH_SEC = 1.0
+OBSTACLE_TARGETS = {
+    'global': '/global_costmap/global_costmap',
+    'local': '/local_costmap/local_costmap',
+}
 PLAN_TOPIC = '/plan'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
@@ -86,6 +100,8 @@ MODE_REQUEST_TOPIC = '/paddock/mode_request'
 MAP_REQUEST_TOPIC = '/paddock/map_request'
 INITIAL_POSE_TOPIC = '/initialpose'
 LOCALIZER_POSE_TOPIC = '/pose'
+SYSTEM_TELEMETRY_TOPIC = '/system/telemetry'
+BATTERY_TOPIC = '/battery'
 MAP_FRAME = 'map'
 ROBOT_FRAME = 'base_link'
 INITIAL_POSE_CONFIRM_TIMEOUT_SEC = 5.0
@@ -184,6 +200,22 @@ class RosStateNode(Node):
         self._gateway_lock = threading.Lock()
         self._initial_pose_lock = threading.Lock()
         self._pending_initial_pose = None
+        self._obstacle_lock = threading.Lock()
+        self._obstacle_request_id = 0
+        self._obstacle_refresh_id = 0
+        self._obstacle_operations = {}
+        self._obstacle_states = {
+            costmap: {
+                'requested': None,
+                'applied': None,
+                'current': None,
+                'status': 'unavailable',
+                'detail': 'waiting for Nav2 parameter service',
+                'request_id': 0,
+                'confirmed_at': None,
+            }
+            for costmap in OBSTACLE_TARGETS
+        }
         map_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -268,6 +300,15 @@ class RosStateNode(Node):
             self._on_localizer_pose,
             10,
         )
+        self.create_subscription(
+            SystemTelemetry,
+            SYSTEM_TELEMETRY_TOPIC,
+            self._on_system_telemetry,
+            latest_qos,
+        )
+        self.create_subscription(
+            BatteryState, BATTERY_TOPIC, self._on_battery, latest_qos
+        )
 
         # Operator-intent writers. This node is the sole browser-side writer of
         # each of these topics.
@@ -295,12 +336,23 @@ class RosStateNode(Node):
         self._local_clear_client = self.create_client(
             ClearEntireCostmap, LOCAL_CLEAR_SERVICE
         )
+        self._obstacle_get_clients = {}
+        self._obstacle_set_clients = {}
+        for costmap, node_name in OBSTACLE_TARGETS.items():
+            self._obstacle_get_clients[costmap] = self.create_client(
+                GetParameters, f'{node_name}/get_parameters'
+            )
+            self._obstacle_set_clients[costmap] = self.create_client(
+                SetParameters, f'{node_name}/set_parameters'
+            )
+        self._publish_obstacle_state()
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(
             self._tf_buffer, self, spin_thread=False
         )
         self.create_timer(0.1, self._update_pose)
+        self.create_timer(OBSTACLE_REFRESH_SEC, self._refresh_obstacle_states)
         self._publish_gateway_state()
 
     def _on_map(self, message: OccupancyGrid) -> None:
@@ -577,6 +629,31 @@ class RosStateNode(Node):
             'mode': message.mode,
         })
 
+    def _on_system_telemetry(self, message: SystemTelemetry) -> None:
+        """Cache the existing one-hertz Pi CPU telemetry without inventing 0."""
+        cpu_valid = bool(message.cpu_valid)
+        cpu_percent = float(message.total_cpu_utilization_percent)
+        if cpu_valid and not math.isfinite(cpu_percent):
+            cpu_valid = False
+        self._cache.update('system_telemetry', {
+            'stamp': _stamp(message.stamp),
+            'cpu_valid': cpu_valid,
+            'total_cpu_utilization_percent': (
+                cpu_percent if cpu_valid else None
+            ),
+        })
+
+    def _on_battery(self, message: BatteryState) -> None:
+        """Cache voltage from the existing Runner fuel-gauge publisher."""
+        voltage = float(message.voltage)
+        valid = bool(message.present) and math.isfinite(voltage)
+        self._cache.update('battery', {
+            'stamp': _stamp(message.header.stamp),
+            'present': bool(message.present),
+            'voltage_valid': valid,
+            'voltage': voltage if valid else None,
+        })
+
     def _on_encoder_state(self, message: EncoderState) -> None:
         """Cache the encoder owner's explicit stationary determination."""
         self._cache.update('encoder_state', {
@@ -674,6 +751,256 @@ class RosStateNode(Node):
                 f'Rejected invalid {RECORDING_STATE_TOPIC}: {error}'
             )
 
+    # -- live Nav2 obstacle processing ------------------------------------
+
+    @staticmethod
+    def _boolean_parameter(response) -> tuple[bool | None, str]:
+        values = getattr(response, 'values', ())
+        if len(values) != 1:
+            return None, 'get_parameters returned no single value'
+        value = values[0]
+        if value.type != ParameterType.PARAMETER_BOOL:
+            return None, (
+                f'{OBSTACLE_PARAMETER} is missing or is not boolean '
+                f'(type={value.type})'
+            )
+        return bool(value.bool_value), ''
+
+    def _publish_obstacle_state(self) -> None:
+        now = time.monotonic()
+        with self._obstacle_lock:
+            value = {}
+            for costmap, state in self._obstacle_states.items():
+                confirmed_at = state['confirmed_at']
+                age = (
+                    None if confirmed_at is None
+                    else max(0.0, now - confirmed_at)
+                )
+                value[costmap] = {
+                    key: item for key, item in state.items()
+                    if key != 'confirmed_at'
+                }
+                value[costmap]['available'] = confirmed_at is not None
+                value[costmap]['age_sec'] = age
+                value[costmap]['stale'] = age is None or age > 3.0
+        self._cache.update('obstacle_processing', value)
+
+    def _refresh_obstacle_states(self) -> None:
+        """Read both real plugin parameters at a low operator cadence."""
+        now = time.monotonic()
+        timed_out = []
+        with self._obstacle_lock:
+            for costmap, operation in tuple(self._obstacle_operations.items()):
+                if now < operation['deadline']:
+                    continue
+                timed_out.append((costmap, operation))
+                del self._obstacle_operations[costmap]
+                state = self._obstacle_states[costmap]
+                state['status'] = 'failed'
+                state['detail'] = (
+                    f'{operation["phase"]} timed out waiting for Nav2'
+                )
+        for costmap, operation in timed_out:
+            self.get_logger().warning(
+                f'{costmap} obstacle processing {operation["phase"]} timed out'
+            )
+
+        for costmap, client in self._obstacle_get_clients.items():
+            with self._obstacle_lock:
+                if costmap in self._obstacle_operations:
+                    continue
+                self._obstacle_refresh_id -= 1
+                refresh_id = self._obstacle_refresh_id
+            if not client.service_is_ready():
+                with self._obstacle_lock:
+                    state = self._obstacle_states[costmap]
+                    if state['confirmed_at'] is None:
+                        state['status'] = 'unavailable'
+                        state['detail'] = 'Nav2 get_parameters unavailable'
+                continue
+            self._start_obstacle_get(
+                costmap, 'refresh', refresh_id, None
+            )
+        self._publish_obstacle_state()
+
+    def _start_obstacle_get(
+        self, costmap: str, phase: str, request_id: int,
+        requested: bool | None,
+    ) -> bool:
+        client = self._obstacle_get_clients[costmap]
+        if not client.service_is_ready():
+            return False
+        request = GetParameters.Request()
+        request.names = [OBSTACLE_PARAMETER]
+        with self._obstacle_lock:
+            self._obstacle_operations[costmap] = {
+                'phase': phase,
+                'request_id': request_id,
+                'requested': requested,
+                'deadline': time.monotonic() + 2.0,
+            }
+        try:
+            future = client.call_async(request)
+        except Exception as error:  # noqa: B902
+            with self._obstacle_lock:
+                self._obstacle_operations.pop(costmap, None)
+                state = self._obstacle_states[costmap]
+                state['status'] = 'failed'
+                state['detail'] = f'get_parameters failed to start: {error}'
+            return False
+        future.add_done_callback(
+            lambda done, name=costmap, rid=request_id, kind=phase:
+            self._finish_obstacle_get(name, kind, rid, done)
+        )
+        return True
+
+    def _finish_obstacle_get(
+        self, costmap: str, phase: str, request_id: int, future
+    ) -> None:
+        with self._obstacle_lock:
+            operation = self._obstacle_operations.get(costmap)
+            if operation is None or operation['phase'] != phase \
+                    or operation['request_id'] != request_id:
+                return
+            requested = operation['requested']
+            del self._obstacle_operations[costmap]
+        try:
+            response = future.result()
+            current, error = self._boolean_parameter(response)
+        except Exception as exception:  # noqa: B902
+            current, error = None, f'get_parameters failed: {exception}'
+        with self._obstacle_lock:
+            state = self._obstacle_states[costmap]
+            if error:
+                state['status'] = 'failed'
+                state['detail'] = error
+            else:
+                state['current'] = current
+                state['confirmed_at'] = time.monotonic()
+                if phase == 'verify':
+                    if current == requested:
+                        state['status'] = 'applied'
+                        state['detail'] = (
+                            f'Nav2 read-back confirmed '
+                            f'{"ON" if current else "OFF"}'
+                        )
+                    else:
+                        state['status'] = 'failed'
+                        state['detail'] = (
+                            'set_parameters reported success but read-back '
+                            f'is {"ON" if current else "OFF"}'
+                        )
+                elif state['applied'] is not None \
+                        and current != state['applied']:
+                    state['status'] = 'drifted'
+                    state['detail'] = (
+                        'authoritative Nav2 state changed outside Paddock'
+                    )
+                elif state['status'] in ('unavailable', 'current'):
+                    state['status'] = 'current'
+                    state['detail'] = 'authoritative Nav2 parameter read'
+        self._publish_obstacle_state()
+
+    def _request_obstacle_processing(
+        self, intent: ObstacleProcessingIntent, role: str
+    ) -> GatewayResult:
+        costmap = intent.costmap
+        client = self._obstacle_set_clients[costmap]
+        with self._obstacle_lock:
+            self._obstacle_request_id += 1
+            request_id = self._obstacle_request_id
+            # Supersede an in-flight refresh; its callback is token-checked.
+            self._obstacle_operations.pop(costmap, None)
+            state = self._obstacle_states[costmap]
+            state['request_id'] = request_id
+            state['requested'] = intent.enabled
+            state['applied'] = None
+            state['status'] = 'requested'
+            state['detail'] = 'waiting for Nav2 set_parameters'
+        if not client.service_is_ready():
+            with self._obstacle_lock:
+                state['status'] = 'rejected'
+                state['detail'] = 'Nav2 set_parameters unavailable'
+            self._publish_obstacle_state()
+            return GatewayResult(False, state['detail'], (), role)
+
+        request = SetParameters.Request()
+        request.parameters = [Parameter(
+            name=OBSTACLE_PARAMETER,
+            value=ParameterValue(
+                type=ParameterType.PARAMETER_BOOL,
+                bool_value=intent.enabled,
+            ),
+        )]
+        with self._obstacle_lock:
+            self._obstacle_operations[costmap] = {
+                'phase': 'set',
+                'request_id': request_id,
+                'requested': intent.enabled,
+                'deadline': time.monotonic() + 2.0,
+            }
+        try:
+            future = client.call_async(request)
+        except Exception as error:  # noqa: B902
+            with self._obstacle_lock:
+                self._obstacle_operations.pop(costmap, None)
+                state['status'] = 'failed'
+                state['detail'] = f'set_parameters failed to start: {error}'
+            self._publish_obstacle_state()
+            return GatewayResult(False, state['detail'], (), role)
+        future.add_done_callback(
+            lambda done, name=costmap, rid=request_id:
+            self._finish_obstacle_set(name, rid, done)
+        )
+        self._publish_obstacle_state()
+        return GatewayResult(
+            True,
+            f'{costmap} obstacle processing requested; awaiting read-back',
+            (),
+            role,
+        )
+
+    def _finish_obstacle_set(
+        self, costmap: str, request_id: int, future
+    ) -> None:
+        with self._obstacle_lock:
+            operation = self._obstacle_operations.get(costmap)
+            if operation is None or operation['phase'] != 'set' \
+                    or operation['request_id'] != request_id:
+                return
+            requested = operation['requested']
+            del self._obstacle_operations[costmap]
+        try:
+            response = future.result()
+            results = getattr(response, 'results', ())
+            accepted = len(results) == 1 and results[0].successful
+            reason = (
+                results[0].reason if len(results) == 1 else
+                'set_parameters returned no single result'
+            )
+        except Exception as error:  # noqa: B902
+            accepted = False
+            reason = f'set_parameters failed: {error}'
+        with self._obstacle_lock:
+            state = self._obstacle_states[costmap]
+            if not accepted:
+                state['status'] = 'rejected'
+                state['detail'] = reason or 'Nav2 rejected the parameter'
+            else:
+                state['applied'] = requested
+                state['status'] = 'verifying'
+                state['detail'] = 'set accepted; verifying with get_parameters'
+        if not accepted:
+            self._publish_obstacle_state()
+            return
+        if not self._start_obstacle_get(
+            costmap, 'verify', request_id, requested
+        ):
+            with self._obstacle_lock:
+                state['status'] = 'failed'
+                state['detail'] = 'set accepted but read-back unavailable'
+            self._publish_obstacle_state()
+
     # -- operator intent ---------------------------------------------------
 
     def submit(self, conn_id: str, action: dict) -> dict:
@@ -694,6 +1021,11 @@ class RosStateNode(Node):
             for intent in result.intents:
                 if isinstance(intent, ClearCostmapsIntent):
                     result = self._clear_costmaps(result)
+                    break
+                if isinstance(intent, ObstacleProcessingIntent):
+                    result = self._request_obstacle_processing(
+                        intent, result.role
+                    )
                     break
                 if isinstance(intent, InitialPoseIntent):
                     result = self._set_initial_pose(intent, result.role)

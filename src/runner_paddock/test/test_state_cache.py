@@ -56,3 +56,22 @@ def test_small_snapshots_do_not_expose_mutable_cache_state():
     snapshot = cache.state_snapshot()
     snapshot['pose']['position']['x'] = 99.0
     assert cache.state_snapshot()['pose']['position']['x'] == 2.0
+
+
+def test_cpu_and_battery_freshness_expires_instead_of_becoming_zero():
+    now = [1.0]
+    cache = StateCache(clock=lambda: now[0])
+    cache.update('system_telemetry', {
+        'cpu_valid': True, 'total_cpu_utilization_percent': 24.0,
+    })
+    cache.update('battery', {'voltage_valid': True, 'voltage': 7.2})
+
+    now[0] += 3.0
+    snapshot = cache.state_snapshot()
+
+    assert snapshot['system_telemetry'][
+        'total_cpu_utilization_percent'
+    ] == 24.0
+    assert snapshot['battery']['voltage'] == 7.2
+    assert not snapshot['health']['sources']['system_telemetry']['fresh']
+    assert not snapshot['health']['sources']['battery']['fresh']

@@ -20,14 +20,19 @@ from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.msg import ParameterValue
 from runner_interfaces.msg import ConfigState
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import StopState
+from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.gateway import GatewayResult
 from runner_paddock.gateway import InitialPoseIntent
+from runner_paddock.gateway import ObstacleProcessingIntent
 from runner_paddock.ros_runtime import RosRuntime
 from runner_paddock.ros_state_node import RosStateNode
 from runner_paddock.state_cache import StateCache
+from sensor_msgs.msg import BatteryState
 
 
 class _Future:
@@ -36,6 +41,31 @@ class _Future:
 
     def result(self):
         return object()
+
+
+class _ResponseFuture:
+    def __init__(self, response):
+        self.response = response
+
+    def add_done_callback(self, callback):
+        callback(self)
+
+    def result(self):
+        return self.response
+
+
+class _ParameterClient:
+    def __init__(self, response, ready=True):
+        self.response = response
+        self.ready = ready
+        self.requests = []
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        self.requests.append(request)
+        return _ResponseFuture(self.response)
 
 
 class _ClearClient:
@@ -101,6 +131,38 @@ def _initial_pose_node(cache, subscribers=1):
     )
 
 
+def _obstacle_node(*, current, set_success=True):
+    node = RosStateNode.__new__(RosStateNode)
+    node._cache = StateCache()
+    node._obstacle_lock = threading.Lock()
+    node._obstacle_request_id = 0
+    node._obstacle_refresh_id = 0
+    node._obstacle_operations = {}
+    node._obstacle_states = {
+        name: {
+            'requested': None, 'applied': None, 'current': None,
+            'status': 'unavailable', 'detail': 'waiting', 'request_id': 0,
+            'confirmed_at': None,
+        }
+        for name in ('global', 'local')
+    }
+    set_response = SimpleNamespace(results=[SimpleNamespace(
+        successful=set_success,
+        reason='' if set_success else 'rejected by plugin',
+    )])
+    get_response = SimpleNamespace(values=[ParameterValue(
+        type=ParameterType.PARAMETER_BOOL,
+        bool_value=current,
+    )])
+    node._obstacle_set_clients = {
+        name: _ParameterClient(set_response) for name in ('global', 'local')
+    }
+    node._obstacle_get_clients = {
+        name: _ParameterClient(get_response) for name in ('global', 'local')
+    }
+    return node
+
+
 def test_runtime_start_stop_leaves_no_executor_thread():
     runtime = RosRuntime(StateCache())
     runtime.start()
@@ -149,6 +211,66 @@ def test_authoritative_mode_stop_and_config_callbacks_reach_snapshot():
     assert snapshot['mode']['ready']
     assert not snapshot['stop_state']['stopped']
     assert snapshot['stop_state']['healthy']
+
+
+def test_existing_cpu_and_battery_topics_reach_snapshot_without_zero_fill():
+    cache = StateCache(clock=lambda: 10.0)
+    node = SimpleNamespace(_cache=cache)
+
+    RosStateNode._on_system_telemetry(node, SystemTelemetry(
+        stamp=Time(sec=1), cpu_valid=True,
+        total_cpu_utilization_percent=37.5,
+    ))
+    battery = BatteryState(present=True, voltage=7.41)
+    battery.header.stamp = Time(sec=2)
+    RosStateNode._on_battery(node, battery)
+
+    snapshot = cache.state_snapshot()
+    assert snapshot['system_telemetry'][
+        'total_cpu_utilization_percent'
+    ] == 37.5
+    assert snapshot['battery']['voltage'] == 7.41
+
+    RosStateNode._on_system_telemetry(node, SystemTelemetry(cpu_valid=False))
+    RosStateNode._on_battery(node, BatteryState(present=False))
+    snapshot = cache.state_snapshot()
+    assert snapshot['system_telemetry'][
+        'total_cpu_utilization_percent'
+    ] is None
+    assert snapshot['battery']['voltage'] is None
+
+
+def test_obstacle_set_is_verified_against_real_parameter_readback():
+    node = _obstacle_node(current=False)
+
+    result = node._request_obstacle_processing(
+        ObstacleProcessingIntent('global', False), 'controller'
+    )
+
+    state = node._cache.state_snapshot()['obstacle_processing']['global']
+    assert result.accepted
+    assert state['requested'] is False
+    assert state['applied'] is False
+    assert state['current'] is False
+    assert state['status'] == 'applied'
+    assert node._obstacle_set_clients['global'].requests[0].parameters[
+        0
+    ].name == 'obstacle_layer.enabled'
+
+
+def test_obstacle_silent_set_failure_is_exposed_by_readback():
+    node = _obstacle_node(current=False)
+
+    node._request_obstacle_processing(
+        ObstacleProcessingIntent('local', True), 'controller'
+    )
+
+    state = node._cache.state_snapshot()['obstacle_processing']['local']
+    assert state['requested'] is True
+    assert state['applied'] is True
+    assert state['current'] is False
+    assert state['status'] == 'failed'
+    assert 'reported success but read-back is OFF' in state['detail']
 
 
 def test_clear_costmaps_reports_both_nav2_service_responses():

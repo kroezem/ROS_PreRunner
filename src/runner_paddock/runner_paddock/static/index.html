@@ -133,6 +133,14 @@
           <dl class="kv"><dt>Selected map</dt><dd id="m-selected">—</dd><dt>Mission</dt><dd id="a-mission">—</dd><dt>Goal state</dt><dd id="a-goal">—</dd><dt>Nav2 detail</dt><dd id="a-detail">—</dd><dt>Action</dt><dd id="a-active">—</dd></dl>
           <button id="btn-clear-obstacles" class="clear">Clear transient obstacles</button><p class="hint">Clears global and local Nav2 costmaps. The saved map is unchanged.</p>
         </div>
+        <div class="setting-group">
+          <div class="group-heading"><h3>Obstacle processing</h3><span>live Nav2 plugin state</span></div>
+          <p class="hint">These controls change each costmap's real <code>obstacle_layer.enabled</code> parameter. DISPLAY layer visibility is separate.</p>
+          <div class="obstacle-controls">
+            <div><strong>Global obstacle processing</strong><div class="inline"><button id="btn-global-obstacles-on" type="button">ON</button><button id="btn-global-obstacles-off" type="button" class="ghost">OFF</button></div><dl class="kv"><dt>Requested</dt><dd id="global-obstacles-requested">—</dd><dt>Applied</dt><dd id="global-obstacles-applied">—</dd><dt>Current</dt><dd id="global-obstacles-current">unavailable</dd><dt>Result</dt><dd id="global-obstacles-result">Waiting for Nav2…</dd></dl></div>
+            <div><strong>Local obstacle processing</strong><div class="inline"><button id="btn-local-obstacles-on" type="button">ON</button><button id="btn-local-obstacles-off" type="button" class="ghost">OFF</button></div><dl class="kv"><dt>Requested</dt><dd id="local-obstacles-requested">—</dd><dt>Applied</dt><dd id="local-obstacles-applied">—</dd><dt>Current</dt><dd id="local-obstacles-current">unavailable</dd><dt>Result</dt><dd id="local-obstacles-result">Waiting for Nav2…</dd></dl></div>
+          </div>
+        </div>
         <details class="numeric-goal setting-group"><summary>Numeric goal fallback</summary><div class="inline"><label>x <input id="goal-x" type="number" step="0.05" value="0"></label><label>y <input id="goal-y" type="number" step="0.05" value="0"></label><label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label></div><button id="btn-select-goal">Select numeric goal</button></details>
       </section>
 
@@ -171,6 +179,7 @@
 
       <section id="panel-system" class="config-panel" role="tabpanel" hidden>
         <div class="panel-heading"><div><span class="section-label">System</span><h2>Telemetry &amp; diagnostics</h2></div><span id="system-health" class="status-chip">—</span></div>
+        <div class="setting-group"><div class="group-heading"><h3>Pi &amp; battery</h3><span>existing ROS telemetry</span></div><dl class="kv"><dt>Pi CPU load</dt><dd id="system-cpu-load">unavailable</dd><dt>Runner battery voltage</dt><dd id="system-battery-voltage">unavailable</dd></dl></div>
         <div class="setting-group"><div class="group-heading"><h3>Control authority</h3><span>backend truth</span></div><dl class="kv"><dt>Lease role</dt><dd id="g-role">—</dd><dt>Lease</dt><dd id="g-lease">—</dd><dt>Authority / source</dt><dd id="g-authority">—</dd><dt>Inhibit reason</dt><dd id="g-reason">—</dd><dt>DualSense</dt><dd id="g-dualsense">—</dd><dt>Manual applied speed</dt><dd><span id="manual-speed">—</span> m/s</dd><dt>Manual steering</dt><dd id="manual-steering">—</dd></dl></div>
         <div class="setting-group">
           <div class="group-heading"><h3>Motion telemetry</h3><span>adapter state</span></div>

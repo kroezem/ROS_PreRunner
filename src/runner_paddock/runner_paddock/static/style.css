@@ -135,6 +135,11 @@ button.run.armed small { color: #17383e; }
 .mapping-actions > button, .save-row button { margin: 0; }
 .config-setting { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-top: .65rem; }
 .config-setting input { width: 6rem; }
+.obstacle-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
+.obstacle-controls > div { padding: .75rem; border: 1px solid var(--border); border-radius: .45rem; background: #10191a; }
+.obstacle-controls .inline { margin: .55rem 0; }
+.obstacle-controls button { min-width: 4.5rem; }
+.obstacle-controls button.active { border-color: var(--accent); background: var(--accent-dark); }
 dl.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem .9rem; margin: .7rem 0; font-size: .75rem; }
 dl.kv dt { color: var(--muted); }
 dl.kv dd { margin: 0; overflow-wrap: anywhere; }
@@ -231,6 +236,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .config-tabs { flex-direction: row; gap: .15rem; padding: .25rem; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); scrollbar-width: none; }
   .config-tab { flex: 0 0 auto; width: auto; min-width: 5rem; min-height: 2.7rem; padding: .3rem .5rem; text-align: center; font-size: .58rem; }
   .config-panel { padding: .7rem; }
+  .obstacle-controls { grid-template-columns: 1fr; }
   .panel-heading h2 { font-size: 1rem; }
   .setting-group { padding: .65rem; }
   .display-map-preview { height: clamp(15rem, 42vh, 22rem); }

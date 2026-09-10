@@ -122,6 +122,14 @@ class ClearCostmapsIntent:
 
 
 @dataclass(frozen=True)
+class ObstacleProcessingIntent:
+    """Set one Nav2 costmap obstacle plugin's live enabled parameter."""
+
+    costmap: str
+    enabled: bool
+
+
+@dataclass(frozen=True)
 class InitialPoseIntent:
     """One validated map-frame seed for slam_toolbox localization."""
 
@@ -341,6 +349,31 @@ class OperatorGateway:
             True,
             'Nav2 costmap clear requested',
             (ClearCostmapsIntent(),),
+            'controller',
+        )
+
+    def _do_set_obstacle_processing(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        """Validate an explicit global/local live obstacle-layer state."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        costmap = str(action.get('costmap', '')).strip().lower()
+        if costmap not in ('global', 'local'):
+            return self._reject(
+                conn_id, 'obstacle processing costmap must be global or local'
+            )
+        enabled = action.get('enabled')
+        if not isinstance(enabled, bool):
+            return self._reject(
+                conn_id, 'obstacle processing enabled must be boolean'
+            )
+        return GatewayResult(
+            True,
+            f'{costmap} obstacle processing '
+            f'{"ON" if enabled else "OFF"} requested',
+            (ObstacleProcessingIntent(costmap, enabled),),
             'controller',
         )
 

@@ -109,6 +109,11 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="btn-confirm-initial-pose"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text
+        assert 'id="btn-global-obstacles-off"' in response.text
+        assert 'id="btn-local-obstacles-on"' in response.text
+        assert 'obstacle_layer.enabled' in response.text
+        assert 'id="system-cpu-load"' in response.text
+        assert 'id="system-battery-voltage"' in response.text
         assert 'id="manual-max-speed-input"' in response.text
         assert 'id="m-reset"' in response.text
         assert 'id="mapping-speed-target"' in response.text

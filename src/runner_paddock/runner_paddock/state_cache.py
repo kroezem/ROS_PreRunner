@@ -48,6 +48,8 @@ class StateCache:
         'global_costmap': 2.0,
         'local_costmap': 1.0,
         'recording_state': 2.0,
+        'system_telemetry': 2.5,
+        'battery': 2.5,
     }
 
     _SMALL_SOURCES = (
@@ -55,6 +57,7 @@ class StateCache:
         'local_control', 'adapter_state', 'gateway', 'config', 'map_state',
         'navigation_state', 'encoder_state', 'initial_pose',
         'recording_state',
+        'system_telemetry', 'battery', 'obstacle_processing',
     )
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
@@ -75,6 +78,9 @@ class StateCache:
             'map_state': _Entry(),
             'navigation_state': _Entry(),
             'recording_state': _Entry(),
+            'system_telemetry': _Entry(),
+            'battery': _Entry(),
+            'obstacle_processing': _Entry(),
             'map': _Entry(),
             'plan': _Entry(),
             'global_costmap': _Entry(),

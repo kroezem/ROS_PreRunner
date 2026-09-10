@@ -24,6 +24,7 @@ from runner_paddock.gateway import (
     InitialPoseIntent,
     MapRequestIntent,
     ModeRequestIntent,
+    ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
 )
@@ -101,6 +102,27 @@ def test_clear_obstacles_requires_lease_and_requests_nav2_services():
     assert result.accepted
     assert result.role == 'controller'
     assert result.intents == (ClearCostmapsIntent(),)
+
+
+def test_obstacle_processing_is_explicit_independent_and_lease_scoped():
+    gw = _gateway()
+    action = {
+        'action': 'set_obstacle_processing',
+        'costmap': 'global',
+        'enabled': False,
+    }
+    assert not gw.handle('observer', action).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    global_off = gw.handle('c1', action)
+    local_on = gw.handle('c1', {
+        **action, 'costmap': 'local', 'enabled': True,
+    })
+
+    assert global_off.intents == (ObstacleProcessingIntent('global', False),)
+    assert local_on.intents == (ObstacleProcessingIntent('local', True),)
+    assert not gw.handle('c1', {**action, 'costmap': 'other'}).accepted
+    assert not gw.handle('c1', {**action, 'enabled': 0}).accepted
 
 
 def test_disconnect_releases_the_lease_and_reconnect_starts_clean():

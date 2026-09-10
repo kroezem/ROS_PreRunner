@@ -266,6 +266,36 @@ function runtimeDetail(mode) {
   return mode.ready ? `${runtime} ready` : `${runtime} stable`;
 }
 
+function onOff(value) {
+  return typeof value === "boolean" ? (value ? "ON" : "OFF") : "—";
+}
+
+function renderObstacleProcessing(costmap, state) {
+  text(`${costmap}-obstacles-requested`, onOff(state.requested));
+  text(`${costmap}-obstacles-applied`, onOff(state.applied));
+  let current = "unavailable";
+  if (state.available) {
+    current = `${onOff(state.current)} · ${state.stale ? "STALE" : "confirmed"}`;
+    if (Number.isFinite(state.age_sec)) current += ` (${state.age_sec.toFixed(1)}s)`;
+  }
+  text(`${costmap}-obstacles-current`, current);
+  text(`${costmap}-obstacles-result`,
+    `${String(state.status || "unavailable").toUpperCase()} — ${state.detail || "no detail"}`);
+  [true, false].forEach((enabled) => {
+    const button = $(`btn-${costmap}-obstacles-${enabled ? "on" : "off"}`);
+    button.classList.toggle("active", state.available && state.current === enabled);
+    button.setAttribute("aria-pressed", String(state.available && state.current === enabled));
+  });
+}
+
+function telemetryValue(source, valid, value, suffix, digits) {
+  if (!source || !source.available) return "unavailable";
+  const rendered = valid && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable value";
+  if (source.fresh) return rendered;
+  const age = Number.isFinite(source.age_sec) ? ` (${source.age_sec.toFixed(1)}s old)` : "";
+  return `STALE — last ${rendered}${age}`;
+}
+
 function render() {
   const mode = latest.mode || {};
   const auth = latest.command_authority || {};
@@ -278,6 +308,10 @@ function render() {
   const nav = latest.navigation_state || {};
   const recording = latest.recording_state || {};
   const config = latest.config || {};
+  const obstacleProcessing = latest.obstacle_processing || {};
+  const systemTelemetry = latest.system_telemetry || {};
+  const battery = latest.battery || {};
+  const sources = (latest.health || {}).sources || {};
   const health = (latest.health || {}).status || "?";
   const pose = latest.pose;
 
@@ -295,6 +329,22 @@ function render() {
   text("g-stop", stopSummary(stop, auth));
   text("g-dualsense", local.active ? `ACTIVE (${local.mode || ""})` :
     (local.connected ? "connected, idle" : "disconnected"));
+  renderObstacleProcessing("global", obstacleProcessing.global || {});
+  renderObstacleProcessing("local", obstacleProcessing.local || {});
+  text("system-cpu-load", telemetryValue(
+    sources.system_telemetry,
+    systemTelemetry.cpu_valid,
+    systemTelemetry.total_cpu_utilization_percent,
+    "%",
+    1,
+  ));
+  text("system-battery-voltage", telemetryValue(
+    sources.battery,
+    battery.voltage_valid,
+    battery.voltage,
+    " V",
+    2,
+  ));
   renderControlState(mode, auth, stop, adapter);
   renderRecording(recording);
   const appliedManualMax = Number.isFinite(config.applied_value)
@@ -345,7 +395,7 @@ function render() {
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
-    "#btn-apply-manual-speed",
+    "#btn-apply-manual-speed, [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
   ).forEach((button) => {
     button.disabled = !controller;
   });
@@ -1161,6 +1211,15 @@ $("btn-stop").addEventListener("click", () => {
 });
 $("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
+["global", "local"].forEach((costmap) => {
+  [true, false].forEach((enabled) => {
+    $(`btn-${costmap}-obstacles-${enabled ? "on" : "off"}`).addEventListener("click", () => send({
+      action: "set_obstacle_processing",
+      costmap,
+      enabled,
+    }));
+  });
+});
 function toggleRecording() {
   const state = (latest.recording_state || {}).state;
   if ([1, 2].includes(state)) {
