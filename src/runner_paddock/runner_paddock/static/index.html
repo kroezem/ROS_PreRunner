@@ -19,7 +19,7 @@
   </header>
 
   <section id="view-control" class="primary-view active" aria-label="Control">
-    <section class="control-map" aria-label="Robot visualization">
+    <section id="control-map-home" class="control-map" aria-label="Robot visualization">
       <div class="map-viewport" id="map-viewport">
         <canvas id="map-canvas" class="mode-view" aria-label="Global occupancy map with costmaps, plan, goal, and robot pose"></canvas>
         <div id="banner" class="banner waiting" role="status">Connecting…</div>
@@ -51,10 +51,10 @@
       <section id="control-mapping" class="runtime-control mapping-control" hidden>
         <div id="manual-joystick" class="joystick" role="application" aria-label="Manual driving joystick">
           <div class="joystick-crosshair"></div>
-          <div class="motion-overlay" aria-label="Authoritative linear speed">
-            <span>TARGET <strong id="mapping-speed-target">—</strong></span>
-            <span>ACTUAL <strong id="mapping-speed-actual">—</strong></span>
-            <small>m/s</small>
+          <div class="metric control-speed-metric motion-overlay" aria-label="Authoritative linear speed">
+            <div><strong>Linear speed</strong><span>m/s</span></div>
+            <div class="metric-values"><span>target <b id="mapping-speed-target">—</b></span><span>actual <b id="mapping-speed-actual">—</b></span></div>
+            <div class="metric-track"><i class="zero"></i><i id="mapping-speed-target-mark" class="metric-mark target"></i><i id="mapping-speed-actual-mark" class="metric-mark current"></i></div>
           </div>
           <div id="joystick-knob" class="joystick-knob"></div>
         </div>
@@ -65,13 +65,13 @@
           <button id="btn-initial-pose-mode" type="button" class="initial-pose-action" data-map-mode="initial-pose">SET INITIAL POSE</button>
           <button id="btn-goal-mode" type="button" class="goal-action" data-map-mode="goal">SET GOAL</button>
         </div>
-        <div class="autonomy-speed" aria-label="Authoritative linear speed">
-          <span>TARGET <strong id="autonomy-speed-target">—</strong> m/s</span>
-          <span>ACTUAL <strong id="autonomy-speed-actual">—</strong> m/s</span>
+        <div class="metric control-speed-metric autonomy-speed" aria-label="Authoritative linear speed">
+          <div><strong>Linear speed</strong><span>m/s</span></div>
+          <div class="metric-values"><span>target <b id="autonomy-speed-target">—</b></span><span>actual <b id="autonomy-speed-actual">—</b></span></div>
+          <div class="metric-track"><i class="zero"></i><i id="autonomy-speed-target-mark" class="metric-mark target"></i><i id="autonomy-speed-actual-mark" class="metric-mark current"></i></div>
         </div>
         <div class="run-row" id="run-controls" hidden>
           <button id="btn-run" class="run">HOLD TO RUN <small>release to revoke</small></button>
-          <button id="btn-cancel" class="warn">CANCEL</button>
         </div>
         <p class="hint" id="run-hint" hidden>A new deliberate hold is required after every release.</p>
       </section>
@@ -115,14 +115,14 @@
           <p class="hint">NEW MAP revokes manual motion and waits for confirmed stationary before replacing SLAM. SAVE MAP retains the STOP requirement.</p>
         </div>
         <div class="setting-group">
+          <div class="group-heading"><h3>Saved map catalog</h3><span id="map-count" class="status-chip">0</span></div>
+          <p id="m-selection-result" class="state-detail">—</p><p id="m-delete-result" class="state-detail secondary-detail">—</p><ul id="map-catalog" class="catalog"></ul>
+        </div>
+        <div class="setting-group">
           <div class="group-heading"><h3>Browser manual drive</h3><span>behavior</span></div>
           <div class="config-setting"><label>Maximum speed <input id="manual-max-speed-input" type="number" min="0" max="0.40" step="0.01" value="0.40"> m/s</label><button id="btn-apply-manual-speed">APPLY</button></div>
           <dl class="kv"><dt>Requested</dt><dd id="manual-max-requested">0.40 m/s</dd><dt>Applied</dt><dd id="manual-max-applied">0.40 m/s</dd><dt>Result</dt><dd id="manual-max-result">Waiting for configuration state…</dd></dl>
           <p class="hint">Use 0 to disable browser motion, or 0.25–0.40 m/s. The characterized 0.25 m/s moving floor remains active.</p>
-        </div>
-        <div class="setting-group">
-          <div class="group-heading"><h3>Saved map catalog</h3><span id="map-count" class="status-chip">0</span></div>
-          <p id="m-selection-result" class="state-detail">—</p><p id="m-delete-result" class="state-detail secondary-detail">—</p><ul id="map-catalog" class="catalog"></ul>
         </div>
       </section>
 
@@ -138,8 +138,12 @@
 
       <section id="panel-display" class="config-panel" role="tabpanel" hidden>
         <div class="panel-heading"><div><span class="section-label">Display</span><h2>Control visualization</h2></div><span class="status-chip">LOCAL</span></div>
+        <div class="setting-group display-preview-group">
+          <div class="group-heading"><h3>Live preview</h3><span>same visualization as CONTROL</span></div>
+          <div id="display-map-preview" class="display-map-preview" aria-label="Live map preview"></div>
+        </div>
         <div class="setting-group">
-          <div class="group-heading"><h3>Map interaction</h3><span>opens CONTROL</span></div>
+          <div class="group-heading"><h3>Map interaction</h3><span>adjust the live preview</span></div>
           <div class="display-actions"><button type="button" class="view-control display-map-action active" data-map-mode="view">Default view</button><button type="button" class="view-control display-map-action" data-map-mode="pan">Pan</button><button type="button" class="view-control display-map-action" data-map-mode="rotate">Rotate</button><button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">Zoom −</button><button id="btn-fit-map" type="button" class="view-control">Fit map</button><button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">Zoom +</button></div>
         </div>
         <div class="setting-group">

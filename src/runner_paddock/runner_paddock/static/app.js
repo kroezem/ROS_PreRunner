@@ -209,7 +209,7 @@ function selectView(name) {
     view.hidden = !selected;
     view.classList.toggle("active", selected);
   });
-  if (name === "control") window.requestAnimationFrame(resizeMapCanvas);
+  placeMapForCurrentView();
 }
 
 function selectConfigTab(name) {
@@ -221,6 +221,16 @@ function selectConfigTab(name) {
     panel.hidden = !selected;
     panel.classList.toggle("active", selected);
   });
+  placeMapForCurrentView();
+}
+
+function placeMapForCurrentView() {
+  const displaySelected = document.body.dataset.view === "configure" &&
+    document.querySelector(".config-tab.active")?.dataset.tab === "display";
+  const destination = displaySelected ? $("display-map-preview") : $("control-map-home");
+  const viewport = $("map-viewport");
+  if (viewport.parentElement !== destination) destination.append(viewport);
+  window.requestAnimationFrame(resizeMapCanvas);
 }
 
 document.querySelectorAll(".primary-tab").forEach((tab) => {
@@ -333,7 +343,7 @@ function render() {
   const controller = role === "controller";
   document.querySelectorAll(
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, " +
-    "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
+    "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
     "#btn-apply-manual-speed",
   ).forEach((button) => {
@@ -354,7 +364,6 @@ function render() {
   $("run-controls").hidden = !autonomyControl;
   $("run-hint").hidden = !autonomyControl;
   $("btn-run").disabled = !runAvailable;
-  $("btn-cancel").disabled = !controller || !autonomyControl;
   $("btn-goal-mode").hidden = !autonomyControl;
   $("btn-goal-mode").disabled = !controller || !autonomyControl;
   $("btn-initial-pose-mode").hidden = !autonomyControl;
@@ -507,6 +516,10 @@ function renderControlState(mode, auth, stop, adapter) {
   text("mapping-speed-actual", actualSpeed);
   text("autonomy-speed-target", targetSpeed);
   text("autonomy-speed-actual", actualSpeed);
+  setMetricMark("mapping-speed-target-mark", adapter.commanded_speed, 1.0, speedAvailable);
+  setMetricMark("mapping-speed-actual-mark", adapter.measured_speed, 1.0, speedAvailable);
+  setMetricMark("autonomy-speed-target-mark", adapter.commanded_speed, 1.0, speedAvailable);
+  setMetricMark("autonomy-speed-actual-mark", adapter.measured_speed, 1.0, speedAvailable);
   text("manual-speed", fmt(auth.manual_applied_speed_mps));
   text("manual-steering", fmt(auth.manual_applied_steering));
   const manualAvailable = mapping && mode.ready && socketReady &&
@@ -1007,14 +1020,11 @@ function endMapDrag(event) {
 
 mapCanvas.addEventListener("pointerup", endMapDrag);
 mapCanvas.addEventListener("pointercancel", endMapDrag);
-$("btn-fit-map").addEventListener("click", () => { fitMap(); selectView("control"); });
-$("btn-zoom-in").addEventListener("click", () => { zoomMap(1.25); selectView("control"); });
-$("btn-zoom-out").addEventListener("click", () => { zoomMap(0.8); selectView("control"); });
+$("btn-fit-map").addEventListener("click", fitMap);
+$("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
+$("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
 document.querySelectorAll("[data-map-mode]").forEach((button) => {
-  button.addEventListener("click", () => {
-    setMapMode(button.dataset.mapMode);
-    if (button.classList.contains("display-map-action")) selectView("control");
-  });
+  button.addEventListener("click", () => setMapMode(button.dataset.mapMode));
 });
 new ResizeObserver(resizeMapCanvas).observe($("map-viewport"));
 
@@ -1201,11 +1211,6 @@ function stopRun() {
   runButton.classList.remove("armed");
 }
 
-function cancelRun() {
-  if (runHeld) stopRun();
-  else send({ action: "run", held: false });
-}
-
 const joystick = $("manual-joystick");
 const joystickKnob = $("joystick-knob");
 
@@ -1294,7 +1299,6 @@ runButton.addEventListener("pointerdown", (event) => startRun(event, "pointer"))
 runButton.addEventListener("pointerup", stopRun);
 runButton.addEventListener("pointerleave", stopRun);
 runButton.addEventListener("pointercancel", stopRun);
-$("btn-cancel").addEventListener("click", cancelRun);
 $("btn-apply-manual-speed").addEventListener("click", () => {
   const config = latest.config || {};
   send({

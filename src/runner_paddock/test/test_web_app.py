@@ -113,6 +113,12 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="m-reset"' in response.text
         assert 'id="mapping-speed-target"' in response.text
         assert 'id="mapping-speed-actual"' in response.text
+        assert 'id="mapping-speed-target-mark"' in response.text
+        assert 'id="display-map-preview"' in response.text
+        assert 'id="btn-cancel"' not in response.text
+        assert response.text.index('Saved map catalog') < response.text.index(
+            'Browser manual drive'
+        )
         assert 'data-tab="autonomy"' in response.text
         assert 'id="delete-dialog"' in response.text
         assert 'id="btn-record"' in response.text
