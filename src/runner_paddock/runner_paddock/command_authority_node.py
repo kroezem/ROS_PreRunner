@@ -92,6 +92,28 @@ STOP_STATE_TOPIC = '/paddock/stop_state'
 NAVIGATION_REQUEST_TOPIC = '/paddock/navigation_request'
 NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
 DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC = 1.0
+STATUS_HEARTBEAT_PERIOD_SEC = 0.1
+
+
+def _status_key(authority, lease) -> tuple:
+    """Return status content excluding stamps and continuously changing ages."""
+    return (
+        tuple(
+            getattr(authority, slot)
+            for slot in authority.__slots__
+            if slot not in {
+                '_stamp',
+                '_lease_age_sec',
+                '_raw_autonomy_age_sec',
+                '_manual_input_age_sec',
+            }
+        ),
+        tuple(
+            getattr(lease, slot)
+            for slot in lease.__slots__
+            if slot != '_stamp'
+        ),
+    )
 
 
 class _AutonomyOutputGate:
@@ -304,6 +326,8 @@ class CommandAuthorityNode(Node):
         self._nav_action_active = False
         self._nav_state_at = None
         self._nav_state_timeout = DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC
+        self._last_status_publish_at: float | None = None
+        self._last_status_key = None
         self._auto_brake_window = float(
             self.declare_parameter(
                 'auto_brake_window_sec', DEFAULT_AUTO_BRAKE_WINDOW_SEC
@@ -762,7 +786,7 @@ class CommandAuthorityNode(Node):
         stamp = self.get_clock().now().to_msg()
 
         now = time.monotonic()
-        self._authority_pub.publish(_authority_message(
+        authority = _authority_message(
             result,
             stamp,
             self._stop_state,
@@ -772,7 +796,7 @@ class CommandAuthorityNode(Node):
                 if self._navigation_state_fresh(now)
                 else False
             ),
-        ))
+        )
 
         lease = PaddockControlLease()
         lease.stamp = stamp
@@ -780,7 +804,21 @@ class CommandAuthorityNode(Node):
         lease.client_id = state.lease_client_id
         lease.lease_id = state.lease_id
         lease.generation = state.lease_generation
+        # Keep deadman evaluation and control/brake output at 100 Hz. Status
+        # replication is change-triggered with its own bounded heartbeat so
+        # steady state does not serialize the same messages at the safety rate.
+        key = _status_key(authority, lease)
+        due = (
+            self._last_status_publish_at is None
+            or now - self._last_status_publish_at
+            >= STATUS_HEARTBEAT_PERIOD_SEC
+        )
+        if key == self._last_status_key and not due:
+            return
+        self._authority_pub.publish(authority)
         self._lease_pub.publish(lease)
+        self._last_status_key = key
+        self._last_status_publish_at = now
 
 
 def main(args=None) -> None:

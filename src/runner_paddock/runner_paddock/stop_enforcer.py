@@ -35,6 +35,16 @@ from std_msgs.msg import Bool
 
 LOCK_TIMEOUT = 0.15
 DRAIN_TIME = 0.40
+STATE_HEARTBEAT_PERIOD = 0.05
+
+
+def _state_key(message):
+    """Return STOP status content excluding its publication timestamp."""
+    return tuple(
+        getattr(message, slot)
+        for slot in message.__slots__
+        if slot != '_stamp'
+    )
 
 
 def persist(path, generation, stopped):
@@ -94,6 +104,8 @@ class StopEnforcer(Node):
         self.last_request_accepted = False
         self.last_request_reason = ''
         self.request_results = {}
+        self.last_state_publish_at = None
+        self.last_state_key = None
         # Lifespan prevents a backlogged old clear heartbeat from becoming fresh.
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          lifespan=Duration(seconds=0.10))
@@ -253,7 +265,19 @@ class StopEnforcer(Node):
         message.last_request_id = self.last_request_id
         message.last_request_accepted = self.last_request_accepted
         message.last_request_reason = self.last_request_reason
+        # The 50 Hz lock/zero enforcement above is safety-critical and remains
+        # unchanged. Status changes publish immediately, with a 20 Hz liveness
+        # heartbeat kept well inside the authority's 150 ms freshness bound.
+        key = _state_key(message)
+        due = (
+            self.last_state_publish_at is None
+            or now - self.last_state_publish_at >= STATE_HEARTBEAT_PERIOD
+        )
+        if key == self.last_state_key and not due:
+            return
         self.state_pub.publish(message)
+        self.last_state_key = key
+        self.last_state_publish_at = now
 
 
 def main():

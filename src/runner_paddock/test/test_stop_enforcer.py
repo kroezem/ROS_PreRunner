@@ -18,7 +18,17 @@ import json
 
 import pytest
 
-from runner_paddock.stop_enforcer import persist, restore
+from runner_interfaces.msg import StopState
+from runner_paddock.stop_enforcer import _state_key, persist, restore
+
+
+def test_state_key_ignores_stamp_but_detects_stop_changes():
+    message = StopState(stopped=True)
+    before = _state_key(message)
+    message.stamp.sec = 9
+    assert _state_key(message) == before
+    message.stopped = False
+    assert _state_key(message) != before
 
 
 def test_stop_record_round_trip_is_atomic_and_typed(tmp_path):

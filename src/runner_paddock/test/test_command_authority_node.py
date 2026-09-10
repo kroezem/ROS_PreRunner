@@ -19,12 +19,15 @@ from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
+from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import ConfigRequest
 from runner_interfaces.msg import PaddockControlEvent
+from runner_interfaces.msg import PaddockControlLease
 
 from runner_paddock.command_authority_node import _authority_message
 from runner_paddock.command_authority_node import _AutonomyOutputGate
 from runner_paddock.command_authority_node import _from_twist
+from runner_paddock.command_authority_node import _status_key
 from runner_paddock.command_authority_node import _to_twist
 from runner_paddock.command_authority_node import CommandAuthorityNode
 from runner_paddock.command_authority_node import DEFAULT_SUPERVISION_PERIOD_SEC
@@ -106,6 +109,19 @@ def test_authority_message_exposes_monotonic_ages_and_brake_state():
     assert not message.raw_autonomy_fresh
     assert message.raw_autonomy_age_sec == -1.0
     assert message.reason == 'IDLE_BRAKE'
+
+
+def test_status_key_ignores_ages_but_detects_semantic_changes():
+    authority = CommandAuthorityState(lease_age_sec=0.1)
+    lease = PaddockControlLease(active=False)
+    before = _status_key(authority, lease)
+
+    authority.stamp.sec = 9
+    authority.lease_age_sec = 0.2
+    assert _status_key(authority, lease) == before
+
+    lease.active = True
+    assert _status_key(authority, lease) != before
 
 
 def test_authority_message_exposes_selected_goal_as_backend_truth():
