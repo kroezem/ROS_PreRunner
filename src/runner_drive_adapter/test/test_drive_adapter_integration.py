@@ -83,6 +83,9 @@ def test_graph_ownership_staleness_and_diagnostics():
         _spin_for(executor, 0.15)
         assert commands == []
         assert any('reason=no_command' in state.data for state in states)
+        # Diagnostics are decoupled from the 20 Hz control loop.
+        assert 1 <= len(states) <= 2
+        assert len(typed_states) == len(states)
         assert len(probe.get_publishers_info_by_topic('/cmd_vel_auto_raw')) == 1
         cmd_vel_publishers = probe.get_publishers_info_by_topic('/cmd_vel')
         assert not any(
@@ -251,7 +254,7 @@ def test_graph_ownership_staleness_and_diagnostics():
         state_count = len(typed_states)
         _spin_for(executor, 0.50)
         published = len(typed_states) - state_count
-        assert 8 <= published <= 12
+        assert 3 <= published <= 7
 
         adapter.adapter._integrator = 0.004
         result = adapter.set_parameters([

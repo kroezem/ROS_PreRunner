@@ -36,6 +36,7 @@ from std_msgs.msg import String
 
 
 WARNING_THROTTLE_SECONDS = 5.0
+DIAGNOSTIC_PERIOD_SEC = 0.1
 
 
 class WarningThrottle:
@@ -97,6 +98,8 @@ class DriveAdapterNode(Node):
         self.add_on_set_parameters_callback(self._on_parameters)
         self._warnings = WarningThrottle()
         self._shutdown_recorded = False
+        self._last_diagnostic_at: float | None = None
+        self._last_diagnostic_decision = None
         # v1.3 autonomy seam: the adapter is the sole writer of the *raw*
         # converted autonomy command. runner_command_authority validates and
         # supervises it before anything reaches /cmd_vel_auto and the mux.
@@ -217,9 +220,16 @@ class DriveAdapterNode(Node):
     def _publish(self) -> None:
         now = time.monotonic()
         decision = self.adapter.step(now)
-        self._state_pub.publish(String(data=decision.diagnostic_text()))
-        self._typed_state_pub.publish(self._typed_state(decision))
-        self._warn_for_decision(decision, now)
+        if (
+            self._last_diagnostic_at is None
+            or decision != self._last_diagnostic_decision
+            or now - self._last_diagnostic_at >= DIAGNOSTIC_PERIOD_SEC
+        ):
+            self._state_pub.publish(String(data=decision.diagnostic_text()))
+            self._typed_state_pub.publish(self._typed_state(decision))
+            self._warn_for_decision(decision, now)
+            self._last_diagnostic_at = now
+            self._last_diagnostic_decision = decision
         if not decision.publish_command:
             return
         output = Twist()
