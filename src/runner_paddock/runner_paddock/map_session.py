@@ -573,6 +573,10 @@ class MapSessionModel:
     delete_detail: str = ''
     # request_id -> SaveOutcome, for idempotent retries within one process.
     _save_results: dict = field(default_factory=dict)
+    _catalog_key: tuple | None = field(default=None, init=False, repr=False)
+    _catalog_entries: list[CatalogEntry] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     def observe_runtime(
         self,
@@ -657,4 +661,21 @@ class MapSessionModel:
         self.delete_detail = detail
 
     def catalog(self) -> list[CatalogEntry]:
-        return scan_catalog(self.map_dir, selected=self.selected_applied)
+        rows = []
+        try:
+            paths = tuple(self.map_dir.iterdir())
+        except OSError:
+            paths = ()
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            rows.append((path.name, stat.st_mtime_ns, stat.st_size))
+        key = (self.selected_applied, tuple(sorted(rows)))
+        if key != self._catalog_key:
+            self._catalog_entries = scan_catalog(
+                self.map_dir, selected=self.selected_applied
+            )
+            self._catalog_key = key
+        return list(self._catalog_entries)

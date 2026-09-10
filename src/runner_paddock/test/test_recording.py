@@ -19,6 +19,7 @@ import json
 
 import pytest
 
+import runner_paddock.recording as recording
 from runner_paddock.recording import RecordingExecutor
 from runner_paddock.recording import RUNNER_DEBUG_TOPICS
 from runner_paddock.recording import safe_recording_name
@@ -106,3 +107,32 @@ def test_catalog_reads_rosbag_metadata_and_delete_is_explicit(tmp_path):
     assert entry.size_bytes > 0
     executor.delete(9, 'finished')
     assert not bag.exists()
+
+
+def test_catalog_reuses_metadata_until_directory_changes(tmp_path, monkeypatch):
+    root = tmp_path / 'bags'
+    bag = root / 'finished'
+    bag.mkdir(parents=True)
+    (bag / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 2\n',
+        encoding='utf-8',
+    )
+    calls = 0
+    original = recording.read_recording_info
+
+    def counted(path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(recording, 'read_recording_info', counted)
+    executor = RecordingExecutor(root, runtime_path=tmp_path / 'runtime.json')
+    assert len(executor.catalog()) == 1
+    assert len(executor.catalog()) == 1
+    assert calls == 1
+
+    (bag / 'finished_0.mcap').write_bytes(b'new data')
+    executor.catalog()
+    assert calls == 2

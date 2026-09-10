@@ -180,6 +180,8 @@ class RecordingExecutor:
         self.pid = 0
         self.process = None
         self.stop_requested_at: float | None = None
+        self._catalog_key = None
+        self._catalog_entries: tuple[RecordingInfo, ...] = ()
         self.root.mkdir(parents=True, exist_ok=True)
         self._reconcile_runtime_record()
 
@@ -321,8 +323,54 @@ class RecordingExecutor:
 
     def catalog(self) -> tuple[RecordingInfo, ...]:
         """List finalized MCAP recordings newest first."""
+        key = self._catalog_fingerprint()
+        if key == self._catalog_key:
+            return self._catalog_entries
         entries = filter(None, (read_recording_info(path) for path in self.root.iterdir()))
-        return tuple(sorted(entries, key=lambda item: item.start_time_ns, reverse=True))
+        self._catalog_entries = tuple(sorted(
+            entries, key=lambda item: item.start_time_ns, reverse=True
+        ))
+        self._catalog_key = key
+        return self._catalog_entries
+
+    def _catalog_fingerprint(self) -> tuple:
+        """Cheaply detect changes without reparsing every rosbag metadata file."""
+        rows = []
+        try:
+            paths = tuple(self.root.iterdir())
+        except OSError:
+            return ()
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if not path.is_dir():
+                rows.append((path.name, stat.st_mtime_ns, stat.st_size))
+                continue
+            metadata = path / 'metadata.yaml'
+            manifest = path / '.paddock-recording.json'
+            child_rows = []
+            try:
+                children = tuple(path.iterdir())
+            except OSError:
+                children = ()
+            for child in children:
+                try:
+                    child_stat = child.stat()
+                except OSError:
+                    continue
+                child_rows.append((
+                    child.name, child_stat.st_mtime_ns, child_stat.st_size
+                ))
+            rows.append((
+                path.name,
+                stat.st_mtime_ns,
+                tuple(sorted(child_rows)),
+                metadata.is_file(),
+                manifest.is_file(),
+            ))
+        return tuple(sorted(rows))
 
     def process_healthy(self) -> bool:
         """Report process reality, not requested state."""

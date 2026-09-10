@@ -99,6 +99,28 @@ def test_catalog_hides_incomplete_and_reports_reason(tmp_path):
     assert 'raster' in catalog['broken'].reason
 
 
+def test_model_catalog_reuses_validation_until_files_change(
+    tmp_path, monkeypatch
+):
+    calls = 0
+    original = scan_catalog
+
+    def counted(path, selected=''):
+        nonlocal calls
+        calls += 1
+        return original(path, selected)
+
+    monkeypatch.setattr('runner_paddock.map_session.scan_catalog', counted)
+    model = MapSessionModel(map_dir=tmp_path)
+    assert model.catalog() == []
+    assert model.catalog() == []
+    assert calls == 1
+
+    (tmp_path / 'new.yaml').write_text('image: new.pgm\n')
+    model.catalog()
+    assert calls == 2
+
+
 def test_catalog_flags_manifest_hash_mismatch(tmp_path):
     write_bundle(tmp_path, 'tampered')
     (tmp_path / 'tampered.data').write_bytes(b'a-different-payload')
