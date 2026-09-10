@@ -105,6 +105,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'maximum-scale=1' in response.text
         assert 'role="tablist"' in response.text
         assert 'data-map-mode="view"' in response.text
+        assert 'id="btn-initial-pose-mode"' in response.text
+        assert 'id="btn-confirm-initial-pose"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text
         assert 'id="manual-max-speed-input"' in response.text

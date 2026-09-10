@@ -53,6 +53,13 @@ const goalInteraction = {
   preview: null,
   awaiting: false,
 };
+const initialPoseInteraction = {
+  dragging: false,
+  pointerId: null,
+  preview: null,
+  awaiting: false,
+};
+const INITIAL_POSE_COLOR = "#ff8c42";
 
 function loadLayerSettings() {
   let stored = {};
@@ -163,6 +170,9 @@ function connect() {
       if (frame.name === "select_goal" && !frame.accepted) {
         goalInteraction.awaiting = false;
       }
+      if (frame.name === "set_initial_pose" && !frame.accepted) {
+        initialPoseInteraction.awaiting = false;
+      }
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
       render();
     }
@@ -173,6 +183,7 @@ function connect() {
     role = "observer";
     runHeld = false;
     keyboardRun = false;
+    initialPoseInteraction.awaiting = false;
     retainedPlan = null;
     window.clearInterval(heartbeatTimer);
     window.clearInterval(runTimer);
@@ -323,7 +334,7 @@ function render() {
   document.querySelectorAll(
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, #btn-new-map-from-maps, " +
     "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
-    "#btn-goal-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
+    "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
     "#btn-apply-manual-speed",
   ).forEach((button) => {
     button.disabled = !controller;
@@ -346,6 +357,8 @@ function render() {
   $("btn-cancel").disabled = !controller || !autonomyControl;
   $("btn-goal-mode").hidden = !autonomyControl;
   $("btn-goal-mode").disabled = !controller || !autonomyControl;
+  $("btn-initial-pose-mode").hidden = !autonomyControl;
+  $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
   $("btn-clear-stop").hidden = !(stop.stopped || stop.clear_pending || auth.stop_applied);
   if (!runAvailable) stopRun();
 
@@ -358,8 +371,20 @@ function render() {
     goalInteraction.preview = null;
     setMapMode("view");
   }
+  const initialPose = latest.initial_pose || {};
+  const initialPreview = initialPoseInteraction.preview;
+  const initialRequested = initialPose.requested || {};
+  if (initialPreview && initialPoseInteraction.awaiting && initialPose.state === "applied" &&
+      Math.abs(initialRequested.x - initialPreview.x) < 1e-6 &&
+      Math.abs(initialRequested.y - initialPreview.y) < 1e-6 &&
+      Math.abs(initialRequested.yaw - initialPreview.yaw) < 1e-6) {
+    initialPoseInteraction.awaiting = false;
+    initialPoseInteraction.preview = null;
+    setMapMode("view");
+  }
   $("health-debug").textContent = JSON.stringify(latest.health || {}, null, 2);
   renderGoalControls();
+  renderInitialPoseControls();
   renderMap();
 }
 
@@ -728,6 +753,13 @@ function renderMap() {
       goalInteraction.preview.x, goalInteraction.preview.y, goalInteraction.preview.yaw,
     ), layerSettings.goal.color, 6 * devicePixelRatio);
   }
+  if (initialPoseInteraction.preview) {
+    drawDirectionalPose(poseFromXYYaw(
+      initialPoseInteraction.preview.x,
+      initialPoseInteraction.preview.y,
+      initialPoseInteraction.preview.yaw,
+    ), INITIAL_POSE_COLOR, 8 * devicePixelRatio);
+  }
   const global = mapLayers.map.grid;
   const globalCostmap = mapLayers.global_costmap.grid;
   const local = mapLayers.local_costmap.grid;
@@ -787,6 +819,32 @@ function renderGoalControls() {
       : `x ${preview.x.toFixed(2)} · y ${preview.y.toFixed(2)} · yaw ${preview.yaw.toFixed(2)}`;
 }
 
+function renderInitialPoseControls() {
+  const preview = initialPoseInteraction.preview;
+  const status = latest.initial_pose || {};
+  const requested = status.requested || {};
+  const statusMatches = preview &&
+    Math.abs(requested.x - preview.x) < 1e-6 &&
+    Math.abs(requested.y - preview.y) < 1e-6 &&
+    Math.abs(requested.yaw - preview.yaw) < 1e-6;
+  $("initial-pose-preview-controls").hidden = mapMode !== "initial-pose";
+  $("btn-confirm-initial-pose").disabled = role !== "controller" ||
+    !preview || initialPoseInteraction.awaiting;
+  $("initial-pose-preview-text").textContent = !preview
+    ? "Press and drag initial position → heading"
+    : statusMatches && status.state === "rejected"
+      ? `REJECTED · ${status.detail || "backend rejected initial pose"}`
+    : initialPoseInteraction.awaiting
+      ? "Accepted by backend — awaiting slam_toolbox pose…"
+      : `INITIAL · x ${preview.x.toFixed(2)} · y ${preview.y.toFixed(2)} · yaw ${preview.yaw.toFixed(2)}`;
+  const visible = Boolean(status.state);
+  $("initial-pose-status").hidden = !visible || mapMode === "initial-pose";
+  if (visible) {
+    $("initial-pose-status").textContent =
+      `INITIAL POSE ${String(status.state).toUpperCase()} · ${status.detail || ""}`;
+  }
+}
+
 function resizeMapCanvas() {
   const bounds = mapCanvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
@@ -831,9 +889,15 @@ function setMapMode(mode) {
   mapDrag = null;
   goalInteraction.dragging = false;
   goalInteraction.pointerId = null;
+  initialPoseInteraction.dragging = false;
+  initialPoseInteraction.pointerId = null;
   if (mode !== "goal") {
     goalInteraction.preview = null;
     goalInteraction.awaiting = false;
+  }
+  if (mode !== "initial-pose") {
+    initialPoseInteraction.preview = null;
+    initialPoseInteraction.awaiting = false;
   }
   mapCanvas.className = `mode-${mode}`;
   document.querySelectorAll("[data-map-mode]").forEach((button) => {
@@ -841,6 +905,7 @@ function setMapMode(mode) {
   });
   text("map-mode-label", mode.toUpperCase());
   renderGoalControls();
+  renderInitialPoseControls();
   renderMap();
 }
 
@@ -864,18 +929,21 @@ function pointIsInsideGlobalMap(point) {
 
 mapCanvas.addEventListener("pointerdown", (event) => {
   if (mapMode === "view") return;
-  if (mapMode === "goal") {
+  if (mapMode === "goal" || mapMode === "initial-pose") {
     const point = pointerWorld(event);
     if (!pointIsInsideGlobalMap(point)) {
-      ack("goal must be inside the current global map");
+      ack(`${mapMode === "goal" ? "goal" : "initial pose"} must be inside the current global map`);
       return;
     }
+    const interaction = mapMode === "goal"
+      ? goalInteraction : initialPoseInteraction;
     mapCanvas.setPointerCapture(event.pointerId);
-    goalInteraction.dragging = true;
-    goalInteraction.pointerId = event.pointerId;
-    goalInteraction.preview = { x: point.x, y: point.y, yaw: 0 };
-    goalInteraction.awaiting = false;
+    interaction.dragging = true;
+    interaction.pointerId = event.pointerId;
+    interaction.preview = { x: point.x, y: point.y, yaw: 0 };
+    interaction.awaiting = false;
     renderGoalControls();
+    renderInitialPoseControls();
     renderMap();
     return;
   }
@@ -886,12 +954,16 @@ mapCanvas.addEventListener("pointerdown", (event) => {
 });
 
 mapCanvas.addEventListener("pointermove", (event) => {
-  if (goalInteraction.dragging && goalInteraction.pointerId === event.pointerId) {
+  const poseInteraction = goalInteraction.dragging
+    ? goalInteraction : initialPoseInteraction.dragging
+      ? initialPoseInteraction : null;
+  if (poseInteraction && poseInteraction.pointerId === event.pointerId) {
     const point = pointerWorld(event);
-    const dx = point.x - goalInteraction.preview.x;
-    const dy = point.y - goalInteraction.preview.y;
-    if (Math.hypot(dx, dy) > 0.01) goalInteraction.preview.yaw = Math.atan2(dy, dx);
+    const dx = point.x - poseInteraction.preview.x;
+    const dy = point.y - poseInteraction.preview.y;
+    if (Math.hypot(dx, dy) > 0.01) poseInteraction.preview.yaw = Math.atan2(dy, dx);
     renderGoalControls();
+    renderInitialPoseControls();
     renderMap();
     return;
   }
@@ -914,10 +986,14 @@ mapCanvas.addEventListener("pointermove", (event) => {
 });
 
 function endMapDrag(event) {
-  if (goalInteraction.dragging && goalInteraction.pointerId === event.pointerId) {
-    goalInteraction.dragging = false;
-    goalInteraction.pointerId = null;
+  const poseInteraction = goalInteraction.dragging
+    ? goalInteraction : initialPoseInteraction.dragging
+      ? initialPoseInteraction : null;
+  if (poseInteraction && poseInteraction.pointerId === event.pointerId) {
+    poseInteraction.dragging = false;
+    poseInteraction.pointerId = null;
     renderGoalControls();
+    renderInitialPoseControls();
     return;
   }
   if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
@@ -942,6 +1018,17 @@ $("btn-confirm-goal").addEventListener("click", () => {
   goalInteraction.awaiting = true;
   send({ action: "select_goal", frame: "map", x: preview.x, y: preview.y, yaw: preview.yaw });
   renderGoalControls();
+});
+$("btn-cancel-initial-pose-preview").addEventListener("click", () => setMapMode("view"));
+$("btn-confirm-initial-pose").addEventListener("click", () => {
+  const preview = initialPoseInteraction.preview;
+  if (!preview || initialPoseInteraction.awaiting) return;
+  initialPoseInteraction.awaiting = true;
+  send({
+    action: "set_initial_pose", frame: "map",
+    x: preview.x, y: preview.y, yaw: preview.yaw,
+  });
+  renderInitialPoseControls();
 });
 
 // --- maps ---------------------------------------------------------------

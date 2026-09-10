@@ -21,6 +21,7 @@ from runner_paddock.gateway import (
     ConfigRequestIntent,
     ControlEvent,
     ControlEventIntent,
+    InitialPoseIntent,
     MapRequestIntent,
     ModeRequestIntent,
     OperatorGateway,
@@ -161,6 +162,27 @@ def test_goal_and_map_intents():
 
     mode = gw.handle('c1', {'action': 'select_mode', 'mode': 'mapping'})
     assert isinstance(mode.intents[0], ModeRequestIntent)
+
+
+def test_initial_pose_is_lease_scoped_finite_and_map_frame_only():
+    gw = _gateway()
+    action = {
+        'action': 'set_initial_pose', 'frame': 'map',
+        'x': 1.25, 'y': -0.5, 'yaw': 0.75,
+    }
+    assert not gw.handle('observer', action).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    result = gw.handle('c1', action)
+
+    assert result.accepted
+    assert result.intents == (InitialPoseIntent(
+        x=1.25, y=-0.5, yaw=0.75, frame='map'
+    ),)
+    assert not gw.handle('c1', {**action, 'frame': 'odom'}).accepted
+    assert not gw.handle('c1', {
+        **action, 'x': float('nan')
+    }).accepted
 
 
 def test_unknown_action_is_rejected():

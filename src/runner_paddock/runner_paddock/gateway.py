@@ -122,6 +122,16 @@ class ClearCostmapsIntent:
 
 
 @dataclass(frozen=True)
+class InitialPoseIntent:
+    """One validated map-frame seed for slam_toolbox localization."""
+
+    x: float
+    y: float
+    yaw: float
+    frame: str = 'map'
+
+
+@dataclass(frozen=True)
 class RecordingRequestIntent:
     """One persistent recording-executor request."""
 
@@ -494,6 +504,35 @@ class OperatorGateway:
                 ControlEvent.GOAL_SELECTED,
                 goal_frame=frame, goal_x=x, goal_y=y, goal_yaw=yaw,
             ),),
+            'controller',
+        )
+
+    def _do_set_initial_pose(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        """Validate a map-frame localization seed for backend application."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        try:
+            x = float(action['x'])
+            y = float(action['y'])
+            yaw = float(action.get('yaw', 0.0))
+        except (KeyError, TypeError, ValueError):
+            return self._reject(
+                conn_id, 'initial pose needs finite x, y and yaw'
+            )
+        if not all(math.isfinite(value) for value in (x, y, yaw)):
+            return self._reject(
+                conn_id, 'initial pose needs finite x, y and yaw'
+            )
+        frame = str(action.get('frame', 'map')) or 'map'
+        if frame != 'map':
+            return self._reject(conn_id, 'initial pose frame must be map')
+        return GatewayResult(
+            True,
+            f'initial pose ({x:.2f}, {y:.2f}, {yaw:.2f}) requested',
+            (InitialPoseIntent(x=x, y=y, yaw=yaw, frame=frame),),
             'controller',
         )
 

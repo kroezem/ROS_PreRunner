@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any
 
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.srv import ClearEntireCostmap
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path
@@ -33,6 +34,7 @@ from runner_interfaces.msg import AdapterState
 from runner_interfaces.msg import CommandAuthorityState
 from runner_interfaces.msg import ConfigRequest
 from runner_interfaces.msg import ConfigState
+from runner_interfaces.msg import EncoderState
 from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import MapRequest
 from runner_interfaces.msg import MapState
@@ -48,6 +50,7 @@ from runner_paddock.gateway import (
     ConfigRequestIntent,
     ControlEventIntent,
     GatewayResult,
+    InitialPoseIntent,
     MapRequestIntent,
     ModeRequestIntent,
     OperatorGateway,
@@ -81,8 +84,17 @@ RECORDING_REQUEST_TOPIC = '/paddock/recording_request'
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 MODE_REQUEST_TOPIC = '/paddock/mode_request'
 MAP_REQUEST_TOPIC = '/paddock/map_request'
+INITIAL_POSE_TOPIC = '/initialpose'
+LOCALIZER_POSE_TOPIC = '/pose'
 MAP_FRAME = 'map'
 ROBOT_FRAME = 'base_link'
+INITIAL_POSE_CONFIRM_TIMEOUT_SEC = 5.0
+# Match slam_toolbox's RViz SetInitialPose defaults. slam_toolbox 2.8.5 uses
+# x/y/yaw as a scan-matching seed and ignores this input covariance, but a
+# complete, realistic planar covariance remains part of Runner's interface.
+INITIAL_POSE_X_VARIANCE = 0.25
+INITIAL_POSE_Y_VARIANCE = 0.25
+INITIAL_POSE_YAW_VARIANCE = 0.06853891909122467
 
 
 def _stamp(stamp: Any) -> dict[str, int]:
@@ -170,6 +182,8 @@ class RosStateNode(Node):
         self._cache = cache
         self._gateway = OperatorGateway()
         self._gateway_lock = threading.Lock()
+        self._initial_pose_lock = threading.Lock()
+        self._pending_initial_pose = None
         map_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -244,6 +258,16 @@ class RosStateNode(Node):
             self._on_recording_state,
             map_qos,
         )
+        self.create_subscription(
+            EncoderState, '/wheel/encoder_state', self._on_encoder_state,
+            latest_qos,
+        )
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            LOCALIZER_POSE_TOPIC,
+            self._on_localizer_pose,
+            10,
+        )
 
         # Operator-intent writers. This node is the sole browser-side writer of
         # each of these topics.
@@ -261,6 +285,9 @@ class RosStateNode(Node):
         )
         self._config_request_pub = self.create_publisher(
             ConfigRequest, CONFIG_REQUEST_TOPIC, 10
+        )
+        self._initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, INITIAL_POSE_TOPIC, 1
         )
         self._global_clear_client = self.create_client(
             ClearEntireCostmap, GLOBAL_CLEAR_SERVICE
@@ -550,6 +577,69 @@ class RosStateNode(Node):
             'mode': message.mode,
         })
 
+    def _on_encoder_state(self, message: EncoderState) -> None:
+        """Cache the encoder owner's explicit stationary determination."""
+        self._cache.update('encoder_state', {
+            'stamp': _stamp(message.stamp),
+            'stationary': bool(message.stationary),
+        })
+
+    def _on_localizer_pose(
+        self, message: PoseWithCovarianceStamped
+    ) -> None:
+        """Confirm a seed only from subsequent slam_toolbox pose truth."""
+        try:
+            if message.header.frame_id != MAP_FRAME:
+                raise ValueError(
+                    f'expected {MAP_FRAME!r} frame, got '
+                    f'{message.header.frame_id!r}'
+                )
+            observed = _pose(message.pose.pose)
+            covariance = [float(value) for value in message.pose.covariance]
+            _finite(*covariance)
+            stamp = _stamp(message.header.stamp)
+            stamp_ns = stamp['sec'] * 1_000_000_000 + stamp['nanosec']
+        except (TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected invalid {LOCALIZER_POSE_TOPIC}: {error}'
+            )
+            return
+
+        with self._initial_pose_lock:
+            pending = self._pending_initial_pose
+            if pending is None or stamp_ns < pending['request_stamp_ns']:
+                return
+            self._pending_initial_pose = None
+        snapshot = self._cache.state_snapshot()
+        mode = snapshot.get('mode') or {}
+        map_state = snapshot.get('map_state') or {}
+        if (
+            int(mode.get('runtime_epoch') or 0)
+            != pending['status']['runtime_epoch']
+            or (map_state.get('selected_map_applied') or '')
+            != pending['status']['map']
+            or (mode.get('active_autonomy_map') or '')
+            != pending['status']['map']
+        ):
+            self._cache.update('initial_pose', {
+                **pending['status'],
+                'state': 'rejected',
+                'detail': 'runtime or active map changed before application',
+                'observed': None,
+            })
+            return
+        self._cache.update('initial_pose', {
+            **pending['status'],
+            'state': 'applied',
+            'detail': 'slam_toolbox published a subsequent localized pose',
+            'observed': {
+                'stamp': stamp,
+                'frame_id': message.header.frame_id,
+                'pose': observed,
+                'covariance': covariance,
+            },
+        })
+
     def _on_recording_state(self, message: RecordingState) -> None:
         try:
             _finite(message.elapsed_sec)
@@ -605,6 +695,9 @@ class RosStateNode(Node):
                 if isinstance(intent, ClearCostmapsIntent):
                     result = self._clear_costmaps(result)
                     break
+                if isinstance(intent, InitialPoseIntent):
+                    result = self._set_initial_pose(intent, result.role)
+                    break
                 self._publish_intent(intent)
             self._publish_gateway_state()
         if not result.accepted:
@@ -616,6 +709,117 @@ class RosStateNode(Node):
             'accepted': result.accepted,
             'reason': result.reason,
             'role': result.role,
+        }
+
+    def _set_initial_pose(
+        self, intent: InitialPoseIntent, role: str
+    ) -> GatewayResult:
+        """Gate and publish a localization seed to slam_toolbox alone."""
+        snapshot = self._cache.state_snapshot()
+        reason = self._initial_pose_rejection(snapshot)
+        if not reason and self._initial_pose_pub.get_subscription_count() < 1:
+            reason = 'slam_toolbox /initialpose subscriber unavailable'
+        status = self._initial_pose_status(intent, snapshot)
+        if reason:
+            with self._initial_pose_lock:
+                self._pending_initial_pose = None
+            self._cache.update('initial_pose', {
+                **status, 'state': 'rejected', 'detail': reason,
+                'observed': None,
+            })
+            return GatewayResult(False, reason, (), role)
+
+        now = self.get_clock().now()
+        message = PoseWithCovarianceStamped()
+        message.header.stamp = now.to_msg()
+        message.header.frame_id = MAP_FRAME
+        message.pose.pose.position.x = intent.x
+        message.pose.pose.position.y = intent.y
+        message.pose.pose.orientation.z = math.sin(intent.yaw / 2.0)
+        message.pose.pose.orientation.w = math.cos(intent.yaw / 2.0)
+        message.pose.covariance[0] = INITIAL_POSE_X_VARIANCE
+        message.pose.covariance[7] = INITIAL_POSE_Y_VARIANCE
+        message.pose.covariance[35] = INITIAL_POSE_YAW_VARIANCE
+        accepted = {
+            **status,
+            'state': 'accepted',
+            'detail': 'published to slam_toolbox; awaiting localized pose',
+            'observed': None,
+        }
+        with self._initial_pose_lock:
+            self._pending_initial_pose = {
+                'request_stamp_ns': now.nanoseconds,
+                'deadline': time.monotonic()
+                + INITIAL_POSE_CONFIRM_TIMEOUT_SEC,
+                'status': status,
+            }
+            # Keep a very fast localizer response from being overwritten by
+            # the preceding accepted/awaiting state.
+            self._initial_pose_pub.publish(message)
+            self._cache.update('initial_pose', accepted)
+        return GatewayResult(
+            True, 'initial pose accepted; awaiting slam_toolbox pose', (), role
+        )
+
+    @staticmethod
+    def _initial_pose_rejection(snapshot: dict) -> str:
+        """Return the first stopped-localization safety precondition failure."""
+        health = snapshot.get('health') or {}
+        sources = health.get('sources') or {}
+        mode = snapshot.get('mode') or {}
+        map_state = snapshot.get('map_state') or {}
+        stop = snapshot.get('stop_state') or {}
+        encoder = snapshot.get('encoder_state') or {}
+
+        if not (sources.get('mode') or {}).get('fresh'):
+            return 'runtime state unavailable or stale'
+        if mode.get('mode') != ModeState.MODE_AUTONOMY \
+                or mode.get('status') != ModeState.STATUS_STABLE:
+            return 'initial pose requires stable AUTONOMY localization'
+        if not mode.get('ready'):
+            return 'localization is not ready'
+        selected = map_state.get('selected_map_applied') or ''
+        active = mode.get('active_autonomy_map') or ''
+        complete = any(
+            entry.get('name') == selected and entry.get('complete')
+            for entry in map_state.get('catalog', [])
+        )
+        if not (sources.get('map_state') or {}).get('fresh') \
+                or not selected or not complete:
+            return 'a valid selected map is required'
+        if active != selected:
+            return 'selected map is not the active localization map'
+        if not (sources.get('stop_state') or {}).get('fresh'):
+            return 'STOP state unavailable or stale'
+        if not (stop.get('stopped') and stop.get('locked')
+                and stop.get('healthy') and stop.get('applied')):
+            return 'initial pose requires healthy applied STOP'
+        if not (sources.get('encoder_state') or {}).get('fresh'):
+            return 'encoder stationary state unavailable or stale'
+        if not encoder.get('stationary'):
+            return 'robot is not stationary'
+        return ''
+
+    @staticmethod
+    def _initial_pose_status(
+        intent: InitialPoseIntent, snapshot: dict
+    ) -> dict:
+        mode = snapshot.get('mode') or {}
+        map_state = snapshot.get('map_state') or {}
+        return {
+            'map': map_state.get('selected_map_applied') or '',
+            'runtime_epoch': int(mode.get('runtime_epoch') or 0),
+            'requested': {
+                'frame_id': intent.frame,
+                'x': intent.x,
+                'y': intent.y,
+                'yaw': intent.yaw,
+                'covariance': {
+                    'x': INITIAL_POSE_X_VARIANCE,
+                    'y': INITIAL_POSE_Y_VARIANCE,
+                    'yaw': INITIAL_POSE_YAW_VARIANCE,
+                },
+            },
         }
 
     def _clear_costmaps(self, result: GatewayResult) -> GatewayResult:
@@ -752,6 +956,7 @@ class RosStateNode(Node):
         self._cache.update('gateway', self._gateway.public_state())
 
     def _update_pose(self) -> None:
+        self._expire_initial_pose_confirmation()
         try:
             transform = self._tf_buffer.lookup_transform(
                 MAP_FRAME, ROBOT_FRAME, rclpy.time.Time()
@@ -780,3 +985,17 @@ class RosStateNode(Node):
             })
         except (TransformException, ValueError):
             pass
+
+    def _expire_initial_pose_confirmation(self) -> None:
+        """Make a missing post-seed localizer result explicit to operators."""
+        with self._initial_pose_lock:
+            pending = self._pending_initial_pose
+            if pending is None or time.monotonic() < pending['deadline']:
+                return
+            self._pending_initial_pose = None
+        self._cache.update('initial_pose', {
+            **pending['status'],
+            'state': 'rejected',
+            'detail': 'application unconfirmed: no fresh slam_toolbox pose',
+            'observed': None,
+        })

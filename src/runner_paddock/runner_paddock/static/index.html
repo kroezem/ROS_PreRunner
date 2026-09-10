@@ -38,6 +38,7 @@
             <button type="button" class="view-control" data-map-mode="pan">Pan</button>
             <button type="button" class="view-control" data-map-mode="rotate">Rotate</button>
             <button id="btn-goal-mode" type="button" class="goal-action" data-map-mode="goal">Set Goal</button>
+            <button id="btn-initial-pose-mode" type="button" class="initial-pose-action" data-map-mode="initial-pose">Set Initial Pose</button>
           </div>
           <div class="zoom-tools" role="group" aria-label="Map zoom controls">
             <button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">−</button>
@@ -55,6 +56,12 @@
           <button id="btn-confirm-goal" type="button" class="goal-action">Confirm</button>
           <button id="btn-cancel-goal-preview" type="button" class="local-control">Cancel</button>
         </div>
+        <div id="initial-pose-preview-controls" class="initial-pose-preview-controls" hidden>
+          <strong id="initial-pose-preview-text">Initial pose preview</strong>
+          <button id="btn-confirm-initial-pose" type="button" class="initial-pose-action">Confirm Initial Pose</button>
+          <button id="btn-cancel-initial-pose-preview" type="button" class="local-control">Cancel</button>
+        </div>
+        <div id="initial-pose-status" class="initial-pose-status" hidden></div>
       </div>
     </section>
 

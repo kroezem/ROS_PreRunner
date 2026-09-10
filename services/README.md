@@ -151,6 +151,16 @@ graceful shutdown path as an interactive Ctrl-C, after which the
 `package.xml`) are installed from the Ubuntu archive via apt/rosdep — there is
 no pip target or `PYTHONPATH` shim.
 
+The gateway is also the controlled production writer to slam_toolbox's
+`/initialpose` localization subscriber. Paddock accepts only a finite `map`-
+frame pose while stable AUTONOMY is using the same complete selected map,
+healthy STOP is applied, and fresh encoder state says stationary. It publishes
+`geometry_msgs/PoseWithCovarianceStamped` with the slam_toolbox RViz planar
+defaults (x/y variance 0.25 m², yaw variance 0.06853891909122467 rad²), then
+reports applied only after a subsequent map-frame slam_toolbox `/pose` sample.
+The browser remains a requester and slam_toolbox remains the only `map→odom`
+owner; this path does not publish TF or modify a saved map bundle.
+
 **Reaching Paddock: Tailscale Serve, not a LAN port (Stage 3C).** The backend
 only ever binds `127.0.0.1:8000`; it is not reachable from the LAN or from
 the tailnet IP directly. The network-facing boundary is Tailscale Serve,

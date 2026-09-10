@@ -29,7 +29,7 @@ test("known rotated grid cell round-trips through map coordinates", () => {
   assert.ok(Math.abs(inverse.y - gridPoint.y) < 1e-12);
 });
 
-test("goal click pixel converts to map coordinates and back", () => {
+test("goal and initial-pose click pixel converts to map coordinates and back", () => {
   const view = { x: 1, y: -2, scale: 100 };
 
   const world = geometry.screenToWorld(view, 800, 600, 500, 100);
