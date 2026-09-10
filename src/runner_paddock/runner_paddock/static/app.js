@@ -158,9 +158,9 @@ function connect() {
       Object.assign(latest, frame);
       render();
     } else if (["map", "global_costmap", "local_costmap", "plan"].includes(frame.type)) {
-      latest[frame.type] = frame;
+      latest[frame.type] = frame.cleared ? null : frame;
       if (["map", "global_costmap", "local_costmap"].includes(frame.type)) {
-        updateMapLayer(frame.type, frame);
+        updateMapLayer(frame.type, frame.cleared ? null : frame);
       } else {
         rememberPlan(frame);
         renderMap();
@@ -285,11 +285,10 @@ function render() {
   text("g-stop", stopSummary(stop, auth));
   text("g-dualsense", local.active ? `ACTIVE (${local.mode || ""})` :
     (local.connected ? "connected, idle" : "disconnected"));
-  renderControlState(mode, auth, stop, local, adapter, nav);
+  renderControlState(mode, auth, stop, adapter);
   renderRecording(recording);
   const appliedManualMax = Number.isFinite(config.applied_value)
     ? config.applied_value : 0.40;
-  text("manual-max-speed", appliedManualMax.toFixed(2));
   text("manual-max-requested", `${fmt(config.requested_value ?? 0.40)} m/s`);
   text("manual-max-applied", `${appliedManualMax.toFixed(2)} m/s`);
   text("manual-max-result", config.reason || "Waiting for configuration state…");
@@ -306,6 +305,7 @@ function render() {
   text("m-phase", ["NONE", "STARTING", "READY", "SAVING", "SAVED", "FAILED"][mapState.session_phase] ?? "—");
   text("m-unsaved", mapState.unsaved ? "unsaved content" : "—");
   text("m-save", `${["idle", "running", "succeeded", "failed"][mapState.save_state] ?? "—"} · ${mapState.save_detail || ""}`);
+  text("m-reset", `${["idle", "running", "succeeded", "failed"][mapState.reset_state] ?? "—"} · ${mapState.reset_detail || ""}`);
   text("m-selected", mapState.selected_map_applied || "(none)");
   text("m-selection-result", mapState.selected_map_reason
     ? `Selection rejected: ${mapState.selected_map_requested || "(unnamed)"} — ${mapState.selected_map_reason}`
@@ -332,7 +332,7 @@ function render() {
 
   const controller = role === "controller";
   document.querySelectorAll(
-    "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, #btn-new-map-from-maps, " +
+    "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
     "#btn-apply-manual-speed",
@@ -345,7 +345,7 @@ function render() {
   document.querySelectorAll('button[data-mode="autonomy"]').forEach((button) => {
     button.disabled = !controller || !hasAutonomyMap;
   });
-  $("a-map-hint").textContent = hasAutonomyMap ? "" : "Select a completed map in MAPS before AUTONOMY.";
+  $("a-map-hint").textContent = hasAutonomyMap ? "" : "Select a completed map in MAPPING before AUTONOMY.";
   const autonomyControl = mode.mode === 2 && mode.status === 0;
   const stopReady = auth.stop_state_fresh && auth.stop_healthy && auth.stop_clear &&
     !auth.stop_applied && !stop.stopped;
@@ -412,7 +412,6 @@ function renderRecording(recording) {
   const active = [1, 2, 3].includes(state);
   const stopping = state === 3;
   const stateName = state === null ? "UNAVAILABLE" : RECORDING_STATE[state] || "UNKNOWN";
-  text("record-action", active ? "STOP REC" : "REC");
   text("record-elapsed", formatDuration(recording.elapsed_sec));
   text("recording-chip", stateName);
   text("recording-detail", recording.detail || "Waiting for recording executor…");
@@ -424,8 +423,7 @@ function renderRecording(recording) {
     ? `${recording.recorder_pid} · ${recording.process_healthy ? "healthy" : "NOT HEALTHY"}` : "—");
   $("record-action").parentElement.classList.toggle("active", active);
   $("btn-record").disabled = !socketReady || role !== "controller" || stopping || state === null;
-  $("btn-recording-form").textContent = active ? "STOP RECORDING" : "START RECORDING";
-  $("btn-recording-form").disabled = role !== "controller" || !socketReady || stopping || state === null;
+  text("record-action", active ? "STOP RECORDING" : "START RECORDING");
   $("recording-name").disabled = active;
   $("recording-profile").disabled = active;
   renderRecordingCatalog(recording.recordings || [], active ? recording.name : "");
@@ -464,13 +462,15 @@ function renderRecordingCatalog(recordings, activeName) {
   });
 }
 
-function renderControlState(mode, auth, stop, local, adapter, nav) {
+function renderControlState(mode, auth, stop, adapter) {
   const runtime = RUNTIME[mode.mode] ?? "UNKNOWN";
   const status = RUNTIME_STATUS[mode.status] ?? "WAITING";
   const stable = mode.status === 0;
   const autonomy = stable && mode.mode === 2;
   const mapping = stable && mode.mode === 1;
   const passive = !autonomy && !mapping;
+
+  document.body.dataset.runtime = autonomy ? "autonomy" : mapping ? "mapping" : "idle";
 
   text("control-kicker", status === "STABLE" ? "Runtime" : status);
   text("control-title", status === "FAULT" ? `${runtime} fault` : runtime);
@@ -498,12 +498,15 @@ function renderControlState(mode, auth, stop, local, adapter, nav) {
   text("control-inhibit", inhibit);
   $("control-inhibit").classList.toggle("ready", inhibit === "Ready for operator input.");
 
-  text("control-nav", MISSION[nav.state] ?? "—");
-  text("control-goal", auth.autonomy_goal_selected ? "selected" : "not selected");
-  text("control-speed", fmt(adapter.measured_speed));
-  text("control-yaw", fmt(adapter.measured_yaw_rate));
-  text("control-local", local.active ? `ACTIVE · ${local.mode || "local"}` :
-    (local.connected ? "Connected · controls released" : "DualSense disconnected"));
+  const adapterSource = ((latest.health || {}).sources || {}).adapter_state;
+  const speedAvailable = (!adapterSource || adapterSource.fresh) &&
+    Number.isFinite(adapter.commanded_speed) && Number.isFinite(adapter.measured_speed);
+  const targetSpeed = speedAvailable ? adapter.commanded_speed.toFixed(2) : "—";
+  const actualSpeed = speedAvailable ? adapter.measured_speed.toFixed(2) : "—";
+  text("mapping-speed-target", targetSpeed);
+  text("mapping-speed-actual", actualSpeed);
+  text("autonomy-speed-target", targetSpeed);
+  text("autonomy-speed-actual", actualSpeed);
   text("manual-speed", fmt(auth.manual_applied_speed_mps));
   text("manual-steering", fmt(auth.manual_applied_steering));
   const manualAvailable = mapping && mode.ready && socketReady &&
@@ -542,6 +545,7 @@ function setMetricMark(id, value, limit, available) {
 
 function updateMapLayer(kind, grid) {
   mapLayers[kind] = { grid, raster: makeGridRaster(grid, kind) };
+  if (kind === "map" && !grid) mapView.fitted = false;
   if (kind === "map" && !mapView.fitted) fitMap();
   renderMap();
 }
@@ -1003,11 +1007,14 @@ function endMapDrag(event) {
 
 mapCanvas.addEventListener("pointerup", endMapDrag);
 mapCanvas.addEventListener("pointercancel", endMapDrag);
-$("btn-fit-map").addEventListener("click", fitMap);
-$("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
-$("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
+$("btn-fit-map").addEventListener("click", () => { fitMap(); selectView("control"); });
+$("btn-zoom-in").addEventListener("click", () => { zoomMap(1.25); selectView("control"); });
+$("btn-zoom-out").addEventListener("click", () => { zoomMap(0.8); selectView("control"); });
 document.querySelectorAll("[data-map-mode]").forEach((button) => {
-  button.addEventListener("click", () => setMapMode(button.dataset.mapMode));
+  button.addEventListener("click", () => {
+    setMapMode(button.dataset.mapMode);
+    if (button.classList.contains("display-map-action")) selectView("control");
+  });
 });
 new ResizeObserver(resizeMapCanvas).observe($("map-viewport"));
 
@@ -1157,9 +1164,7 @@ function toggleRecording() {
   }
 }
 $("btn-record").addEventListener("click", toggleRecording);
-$("btn-recording-form").addEventListener("click", toggleRecording);
 $("btn-new-map").addEventListener("click", () => send({ action: "new_map" }));
-$("btn-new-map-from-maps").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-save-map").addEventListener("click", () => send({ action: "save_map", name: $("save-name").value.trim() }));
 $("btn-select-goal").addEventListener("click", () => send({
   action: "select_goal",

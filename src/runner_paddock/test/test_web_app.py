@@ -110,9 +110,13 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text
         assert 'id="manual-max-speed-input"' in response.text
+        assert 'id="m-reset"' in response.text
+        assert 'id="mapping-speed-target"' in response.text
+        assert 'id="mapping-speed-actual"' in response.text
+        assert 'data-tab="autonomy"' in response.text
         assert 'id="delete-dialog"' in response.text
         assert 'id="btn-record"' in response.text
-        assert 'data-tab="recordings"' in response.text
+        assert 'data-tab="recording"' in response.text
         assert 'id="delete-recording-dialog"' in response.text
         assert runtime.started
 
