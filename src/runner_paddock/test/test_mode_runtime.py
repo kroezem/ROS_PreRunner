@@ -290,13 +290,44 @@ def test_transition_publishes_truthful_runtime_phases(tmp_path):
 
     details = [state.detail for state in published]
     assert 'Stopping previous runtime — requesting service stop' in details
-    assert 'Stopping previous runtime — waiting for mode cgroups' in details
     assert 'Stopping previous runtime — waiting for ROS graph cleanup' in details
     assert 'Validating selected map — studio' in details
     assert any(
         detail.startswith('Starting AUTONOMY — requesting ') for detail in details
     )
     assert 'Starting AUTONOMY — waiting for runtime readiness' in details
+
+
+def test_failed_unit_with_no_process_or_cgroup_is_clean(tmp_path):
+    value, systemd, _graph, _published = runtime(tmp_path)
+    systemd.units[AUTONOMY_UNIT] = UnitState(
+        'failed', 'failed', main_pid=0, control_group=''
+    )
+
+    assert value._unit_cleanup_status() == (True, '')
+
+
+def test_cgroup_blocker_detail_names_unit_pid_and_command(tmp_path):
+    value, systemd, _graph, published = runtime(tmp_path)
+    systemd.units[AUTONOMY_UNIT] = UnitState(
+        'deactivating',
+        'stop-sigterm',
+        main_pid=1974,
+        control_group='/system.slice/runner-mode-autonomy.service',
+        cgroup_processes=((1974, 'ros2 run runner_paddock mode_launcher autonomy'),),
+    )
+
+    try:
+        value._wait_for_unit_cleanup(value._transition_progress)
+    except RuntimeError as error:
+        detail = str(error)
+    else:
+        raise AssertionError('populated cgroup unexpectedly passed cleanup')
+
+    assert 'runner-mode-autonomy.service deactivating/stop-sigterm' in detail
+    assert 'cgroup /system.slice/runner-mode-autonomy.service' in detail
+    assert 'PID 1974 ros2 run runner_paddock mode_launcher autonomy' in detail
+    assert any('PID 1974' in state.detail for state in published)
 
 
 def test_start_failure_cleans_partial_graph_and_faults_idle(tmp_path):

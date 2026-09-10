@@ -104,6 +104,7 @@ class UnitState:
     sub_state: str = ''
     main_pid: int = 0
     control_group: str = ''
+    cgroup_processes: tuple[tuple[int, str], ...] = ()
 
     @property
     def active(self) -> bool:
@@ -113,11 +114,7 @@ class UnitState:
     @property
     def cleanly_inactive(self) -> bool:
         """Return whether the unit has no process or cgroup membership."""
-        return (
-            self.active_state == 'inactive'
-            and self.main_pid == 0
-            and not self.control_group
-        )
+        return self.main_pid == 0 and not self.control_group
 
 
 @dataclass(frozen=True)
@@ -163,6 +160,7 @@ class SystemdManager:
             control_group = str(
                 properties.Get(SYSTEMD_SERVICE_IFACE, 'ControlGroup')
             )
+            cgroup_processes = self._cgroup_processes(control_group)
         except dbus.exceptions.DBusException as error:
             raise RuntimeError(f'cannot inspect {unit}: {error}') from error
         return UnitState(
@@ -170,7 +168,34 @@ class SystemdManager:
             sub_state=sub_state,
             main_pid=main_pid,
             control_group=control_group,
+            cgroup_processes=cgroup_processes,
         )
+
+    @staticmethod
+    def _cgroup_processes(control_group: str) -> tuple[tuple[int, str], ...]:
+        """Describe current cgroup members for transition diagnostics."""
+        if not control_group:
+            return ()
+        try:
+            raw_pids = (
+                Path('/sys/fs/cgroup')
+                / control_group.lstrip('/')
+                / 'cgroup.procs'
+            ).read_text(encoding='ascii').splitlines()
+        except OSError:
+            return ()
+        processes = []
+        for raw_pid in raw_pids:
+            try:
+                pid = int(raw_pid)
+                command = Path(f'/proc/{pid}/cmdline').read_bytes()
+                command_text = command.replace(b'\0', b' ').decode(
+                    errors='replace'
+                ).strip()
+            except (OSError, ValueError):
+                continue
+            processes.append((pid, command_text or '<unknown>'))
+        return tuple(processes)
 
     def start(self, unit: str) -> None:
         """Start one fixed mode unit; systemd polkit-authorizes the call."""
@@ -279,6 +304,45 @@ class ModeRuntime:
     def _all_units_clean(self) -> bool:
         return all(self.systemd.state(unit).cleanly_inactive for unit in MODE_UNITS)
 
+    def _unit_cleanup_status(self) -> tuple[bool, str]:
+        """Return whether mode units are empty and identify every blocker."""
+        blockers = []
+        for unit in MODE_UNITS:
+            state = self.systemd.state(unit)
+            if state.cleanly_inactive:
+                continue
+            location = state.control_group or '<no cgroup reported>'
+            processes = ', '.join(
+                f'PID {pid} {command}'
+                for pid, command in state.cgroup_processes
+            )
+            if not processes and state.main_pid:
+                processes = f'MainPID {state.main_pid}'
+            if not processes:
+                processes = 'no process details available'
+            blockers.append(
+                f'{unit} {state.active_state}/{state.sub_state}, '
+                f'cgroup {location}: {processes}'
+            )
+        return not blockers, '; '.join(blockers)
+
+    def _wait_for_unit_cleanup(
+        self, progress: Callable[[str], None] | None = None
+    ) -> None:
+        """Wait for empty mode cgroups while publishing changing blockers."""
+        deadline = time.monotonic() + self.transition_timeout
+        last_reason = ''
+        while time.monotonic() < deadline:
+            clean, reason = self._unit_cleanup_status()
+            if clean:
+                return
+            if progress is not None and reason != last_reason:
+                progress('Stopping previous runtime — waiting for ' + reason)
+                last_reason = reason
+            time.sleep(self.poll_period)
+        suffix = f': {last_reason}' if last_reason else ''
+        raise RuntimeError(f'timed out waiting for empty mode cgroups{suffix}')
+
     def _resources_gone(self) -> bool:
         counts = Counter(self.graph_nodes())
         return not any(counts.get(node, 0) for node in MODE_NODES)
@@ -363,9 +427,7 @@ class ModeRuntime:
                 errors.append(str(error))
         if errors:
             raise RuntimeError('; '.join(errors))
-        if progress is not None:
-            progress('Stopping previous runtime — waiting for mode cgroups')
-        self._wait(self._all_units_clean, 'empty mode cgroups')
+        self._wait_for_unit_cleanup(progress)
         if progress is not None:
             progress('Stopping previous runtime — waiting for ROS graph cleanup')
         self._wait(self._resources_gone, 'mode-scoped ROS resources to disappear')
