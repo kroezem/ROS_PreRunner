@@ -102,6 +102,19 @@ class StateCache:
                 entry.revision += 1
             return changed
 
+    def invalidate(self, source: str) -> bool:
+        """Discard one cached source and revision its transmitted tombstone."""
+        if source not in self._entries:
+            raise KeyError(source)
+        with self._lock:
+            entry = self._entries[source]
+            if entry.value is None:
+                return False
+            entry.value = None
+            entry.received_at = None
+            entry.revision += 1
+            return True
+
     def state_snapshot(self) -> dict[str, Any]:
         """Copy small state plus local age/freshness and aggregate health."""
         now = self._clock()

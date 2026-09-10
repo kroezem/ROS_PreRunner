@@ -200,6 +200,14 @@ class RosStateNode(Node):
         self._gateway_lock = threading.Lock()
         self._initial_pose_lock = threading.Lock()
         self._pending_initial_pose = None
+        self._map_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._map_subscription = None
+        self._map_subscription_identity = None
         self._obstacle_lock = threading.Lock()
         self._obstacle_request_id = 0
         self._obstacle_refresh_id = 0
@@ -216,20 +224,12 @@ class RosStateNode(Node):
             }
             for costmap in OBSTACLE_TARGETS
         }
-        map_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
+        map_qos = self._map_qos
         latest_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
-        )
-        self.create_subscription(
-            OccupancyGrid, MAP_TOPIC, self._on_map, map_qos
         )
         self.create_subscription(
             OccupancyGrid,
@@ -355,11 +355,60 @@ class RosStateNode(Node):
         self.create_timer(OBSTACLE_REFRESH_SEC, self._refresh_obstacle_states)
         self._publish_gateway_state()
 
-    def _on_map(self, message: OccupancyGrid) -> None:
+    def _on_map(self, message: OccupancyGrid, identity: tuple) -> None:
+        """Accept a map only for the stable runtime that subscribed to it."""
+        if identity != self._map_subscription_identity:
+            return
         try:
-            self._cache.update('map', _grid(message))
+            value = _grid(message)
+            value['runtime_epoch'] = identity[0]
+            self._cache.update('map', value)
         except (TypeError, ValueError) as error:
             self.get_logger().warning(f'Rejected invalid {MAP_TOPIC}: {error}')
+
+    @staticmethod
+    def _map_identity(message: ModeState) -> tuple | None:
+        """Return a positive identity only for an applied, stable runtime map."""
+        if (
+            int(message.status) != ModeState.STATUS_STABLE
+            or not bool(message.ready)
+            or int(message.runtime_epoch) <= 0
+        ):
+            return None
+        mode = int(message.mode)
+        if mode == ModeState.MODE_MAPPING and message.mapping_session_id:
+            applied_map = message.mapping_session_id
+        elif mode == ModeState.MODE_AUTONOMY and message.active_autonomy_map:
+            applied_map = message.active_autonomy_map
+        else:
+            return None
+        return int(message.runtime_epoch), mode, applied_map
+
+    def _select_map_subscription(self, identity: tuple | None) -> None:
+        """Replace the map reader at runtime boundaries to reacquire durability."""
+        if identity == getattr(self, '_map_subscription_identity', None):
+            return
+        previous = self._map_subscription
+        self._map_subscription = None
+        self._map_subscription_identity = None
+        self._cache.invalidate('map')
+        if previous is not None:
+            self.destroy_subscription(previous)
+        if identity is None:
+            return
+        self._map_subscription_identity = identity
+        try:
+            self._map_subscription = self.create_subscription(
+                OccupancyGrid,
+                MAP_TOPIC,
+                lambda message, expected=identity: RosStateNode._on_map(
+                    self, message, expected
+                ),
+                self._map_qos,
+            )
+        except Exception:
+            self._map_subscription_identity = None
+            raise
 
     def _on_global_costmap(self, message: OccupancyGrid) -> None:
         """Publish only an authoritative map-frame global costmap."""
@@ -440,6 +489,8 @@ class RosStateNode(Node):
                 'ready': bool(message.ready),
                 'readiness_reason': message.readiness_reason,
             })
+            identity = RosStateNode._map_identity(message)
+            RosStateNode._select_map_subscription(self, identity)
         except (TypeError, ValueError) as error:
             self.get_logger().warning(
                 f'Rejected invalid {MODE_STATE_TOPIC}: {error}'

@@ -112,13 +112,15 @@ class ClientHub:
             revision, value = cache.large_snapshot(kind)
             recipients = [
                 client for client in self._clients
-                if value is not None and client.revisions[kind] != revision
+                if client.revisions[kind] != revision
             ]
             if not recipients:
                 continue
             try:
-                frame = encode_message(
-                    kind, revision=revision, **value
+                frame = (
+                    encode_message(kind, revision=revision, cleared=True)
+                    if value is None
+                    else encode_message(kind, revision=revision, **value)
                 )
             except (TypeError, ValueError) as error:
                 LOGGER.warning('Rejected invalid %s snapshot: %s', kind, error)

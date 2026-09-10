@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.msg import ParameterValue
 from runner_interfaces.msg import ConfigState
@@ -271,6 +272,78 @@ def test_obstacle_silent_set_failure_is_exposed_by_readback():
     assert state['current'] is False
     assert state['status'] == 'failed'
     assert 'reported success but read-back is OFF' in state['detail']
+
+
+def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
+    cache = StateCache(clock=lambda: 10.0)
+    cache.update('map', {'frame_id': 'map', 'data': [100]})
+    subscriptions = []
+    destroyed = []
+
+    def create_subscription(_message_type, _topic, callback, _qos):
+        subscription = SimpleNamespace(callback=callback)
+        subscriptions.append(subscription)
+        return subscription
+
+    node = SimpleNamespace(
+        _cache=cache,
+        _map_qos=object(),
+        _map_subscription=SimpleNamespace(callback=None),
+        _map_subscription_identity=(4, ModeState.MODE_MAPPING, 'old-session'),
+        create_subscription=create_subscription,
+        destroy_subscription=destroyed.append,
+    )
+
+    RosStateNode._on_mode(node, ModeState(
+        mode=ModeState.MODE_MAPPING,
+        status=ModeState.STATUS_TRANSITIONING,
+        detail='Resetting MAPPING',
+    ))
+
+    assert cache.large_snapshot('map') == (2, None)
+    assert node._map_subscription is None
+    assert node._map_subscription_identity is None
+    assert len(destroyed) == 1
+
+    RosStateNode._on_mode(node, ModeState(
+        mode=ModeState.MODE_MAPPING,
+        status=ModeState.STATUS_STABLE,
+        ready=True,
+        runtime_epoch=5,
+        mapping_session_id='current-session',
+    ))
+    assert node._map_subscription is subscriptions[-1]
+    assert node._map_subscription_identity == (
+        5, ModeState.MODE_MAPPING, 'current-session'
+    )
+
+    message = OccupancyGrid()
+    message.header.frame_id = 'map'
+    message.info.resolution = 0.05
+    message.info.width = 1
+    message.info.height = 1
+    message.data = [0]
+    subscriptions[-1].callback(message)
+    revision, active_map = cache.large_snapshot('map')
+    assert revision == 3
+    assert active_map['runtime_epoch'] == 5
+
+
+def test_queued_previous_runtime_map_is_rejected_after_resubscribe():
+    cache = StateCache(clock=lambda: 10.0)
+    node = SimpleNamespace(
+        _cache=cache,
+        _map_subscription_identity=(8, ModeState.MODE_AUTONOMY, 'studio'),
+    )
+    message = OccupancyGrid()
+
+    RosStateNode._on_map(
+        node,
+        message,
+        (7, ModeState.MODE_AUTONOMY, 'previous-map'),
+    )
+
+    assert cache.large_snapshot('map') == (0, None)
 
 
 def test_clear_costmaps_reports_both_nav2_service_responses():

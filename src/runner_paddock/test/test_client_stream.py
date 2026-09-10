@@ -107,3 +107,23 @@ def test_state_frame_contains_authoritative_mode_stop_and_config():
         assert frame['config']['applied_value'] == 0.6
 
     asyncio.run(scenario())
+
+
+def test_map_invalidation_sends_revisioned_tombstone():
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        cache.update('map', {'frame_id': 'map', 'data': [100]})
+        hub = ClientHub()
+        client = hub.register()
+        hub.publish(cache)
+        initial = [json.loads(await client.next_frame()) for _ in range(2)]
+        assert {frame['type'] for frame in initial} == {'state', 'map'}
+
+        cache.invalidate('map')
+        hub.publish(cache)
+        frames = [json.loads(await client.next_frame()) for _ in range(2)]
+        tombstone = next(frame for frame in frames if frame['type'] == 'map')
+        assert tombstone['cleared'] is True
+        assert tombstone['revision'] == 2
+
+    asyncio.run(scenario())

@@ -58,6 +58,16 @@ def test_small_snapshots_do_not_expose_mutable_cache_state():
     assert cache.state_snapshot()['pose']['position']['x'] == 2.0
 
 
+def test_invalidate_discards_large_value_and_advances_revision_once():
+    cache = StateCache(clock=lambda: 1.0)
+    cache.update('map', {'frame_id': 'map', 'data': [100]})
+
+    assert cache.invalidate('map')
+    assert cache.large_snapshot('map') == (2, None)
+    assert not cache.invalidate('map')
+    assert cache.large_snapshot('map') == (2, None)
+
+
 def test_cpu_and_battery_freshness_expires_instead_of_becoming_zero():
     now = [1.0]
     cache = StateCache(clock=lambda: now[0])
