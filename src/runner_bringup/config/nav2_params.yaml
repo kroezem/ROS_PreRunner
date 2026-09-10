@@ -24,6 +24,7 @@ planner_server:
       reverse_penalty: 8.0
       change_penalty: 20.0
       angle_quantization_bins: 72
+      lookup_table_size: 5.0
       analytic_expansion_ratio: 3.5
       analytic_expansion_max_length: 3.0
       minimum_turning_radius: 0.60
