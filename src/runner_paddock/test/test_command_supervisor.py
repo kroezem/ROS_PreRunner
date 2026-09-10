@@ -397,6 +397,33 @@ def test_manual_demand_is_bounded_converted_and_stale_revoked():
     assert stale.manual_command is None
 
 
+def test_configured_manual_ceiling_reaches_demand_without_changing_floor():
+    supervisor = CommandSupervisor(control_liveness_sec=0.5)
+    control(supervisor, ControlEvent.LEASE_ACQUIRED, 1, 0.0)
+    supervisor.set_runtime_mode(Mode.MAPPING, '', 0.0, runtime_stable=True)
+
+    full = control(
+        supervisor, ControlEvent.MANUAL_ACTIVE, 2, 0.01,
+        manual_speed_mps=0.40, manual_steering=-1.0,
+    )
+    assert full.manual_demand.signed_speed_mps == pytest.approx(0.40)
+    assert full.manual_demand.steering_normalized == pytest.approx(-1.0)
+
+    supervisor.set_manual_max_speed_mps(0.30)
+    floor = control(
+        supervisor, ControlEvent.MANUAL_ACTIVE, 3, 0.02,
+        manual_speed_mps=0.10, manual_steering=0.0,
+    )
+    assert floor.manual_demand.signed_speed_mps == pytest.approx(0.25)
+
+    supervisor.set_manual_max_speed_mps(0.0)
+    disabled = control(
+        supervisor, ControlEvent.MANUAL_ACTIVE, 4, 0.03,
+        manual_speed_mps=0.40, manual_steering=0.0,
+    )
+    assert disabled.manual_demand.signed_speed_mps == 0.0
+
+
 def test_manual_floor_and_autonomy_takeover_require_new_run():
     supervisor = autonomy_ready()
     demand = control(

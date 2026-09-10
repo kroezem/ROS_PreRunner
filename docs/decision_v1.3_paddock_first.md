@@ -42,7 +42,8 @@ This amends v1.2 Drive adapter (D-55), retaining frozen longitudinal control (D-
 
 ## Supported operational configuration and complete mapping sessions
 
-Ratified Q3: manual and mapping ceiling 0.30 m/s; autonomous desired 0.45 m/s,
+Ratified Q3, amended by explicit operator decision: manual and mapping ceiling
+0.40 m/s; autonomous desired 0.45 m/s,
 maximum 0.60 m/s; moving floor 0.25 m/s. No tuning changes. Overrides are scoped
 to session/runtime. Typed readback replaces arbitrary parameter mutation.
 NEW MAP creates a fresh session; SAVE exposes only complete validated bundles.

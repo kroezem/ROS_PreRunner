@@ -48,6 +48,7 @@ def test_curated_profile_covers_command_authority_and_diagnosis_topics():
         '/paddock/manual_demand', '/cmd_vel_paddock_manual_raw',
         '/cmd_vel_paddock', '/cmd_vel_teleop', '/cmd_vel',
         '/drive_adapter/state_typed', '/paddock/command_authority_state',
+        '/paddock/config_request', '/paddock/config_state',
         '/paddock/navigation_state', '/paddock/mode_state',
         '/paddock/stop_state', '/teleop/control_state',
         '/wheel/encoder_state', '/motor/direction', '/odometry/filtered',

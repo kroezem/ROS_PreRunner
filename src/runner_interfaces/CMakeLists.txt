@@ -16,6 +16,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/KeyboardState.msg"
   "msg/LocalControlState.msg"
   "msg/CommandAuthorityState.msg"
+  "msg/ConfigRequest.msg"
+  "msg/ConfigState.msg"
   "msg/ConvertedCommand.msg"
   "msg/MapCatalogEntry.msg"
   "msg/MapRequest.msg"

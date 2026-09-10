@@ -48,6 +48,8 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import CommandAuthorityState
+from runner_interfaces.msg import ConfigRequest
+from runner_interfaces.msg import ConfigState
 from runner_interfaces.msg import ConvertedCommand
 from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import ManualDemand as ManualDemandMessage
@@ -77,6 +79,8 @@ RAW_MANUAL_TOPIC = '/cmd_vel_paddock_manual_raw'
 DEFAULT_AUTO_BRAKE_WINDOW_SEC = 0.30
 CONTROL_EVENT_TOPIC = '/paddock/control_event'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
+CONFIG_REQUEST_TOPIC = '/paddock/config_request'
+CONFIG_STATE_TOPIC = '/paddock/config_state'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 LEASE_STATE_TOPIC = '/paddock/control_lease'
 LOCAL_CONTROL_TOPIC = '/teleop/control_state'
@@ -277,6 +281,11 @@ class CommandAuthorityNode(Node):
             control_liveness_sec=control_liveness,
             active_autonomy_map=active_map,
         )
+        self._config_revision = 0
+        self._config_request_id = 0
+        self._config_requested_value = self._supervisor.manual_max_speed_mps
+        self._config_accepted = True
+        self._config_reason = 'DEFAULT'
         self._last_local_control_at = None
         self._local_control_identity = None
         self._dualsense_active = False
@@ -327,6 +336,12 @@ class CommandAuthorityNode(Node):
         self._lease_pub = self.create_publisher(
             PaddockControlLease, LEASE_STATE_TOPIC, 10
         )
+        config_qos = QoSProfile(depth=1)
+        config_qos.reliability = ReliabilityPolicy.RELIABLE
+        config_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._config_pub = self.create_publisher(
+            ConfigState, CONFIG_STATE_TOPIC, config_qos
+        )
         stop_qos = QoSProfile(depth=1)
         stop_qos.reliability = ReliabilityPolicy.RELIABLE
         stop_qos.lifespan = Duration(seconds=0.10)
@@ -346,6 +361,12 @@ class CommandAuthorityNode(Node):
             PaddockControlEvent,
             CONTROL_EVENT_TOPIC,
             self._on_control_event,
+            10,
+        )
+        self.create_subscription(
+            ConfigRequest,
+            CONFIG_REQUEST_TOPIC,
+            self._on_config_request,
             10,
         )
         mode_qos = QoSProfile(depth=1)
@@ -378,6 +399,7 @@ class CommandAuthorityNode(Node):
         self.create_timer(supervision_period, self._on_supervision_timer)
 
         self._apply(self._supervisor.restart(time.monotonic()))
+        self._publish_config_state()
         self.get_logger().info(
             'Command authority supervised autonomy path: '
             f'{RAW_AUTONOMY_TOPIC} -> supervise -> {SUPERVISED_AUTONOMY_TOPIC} '
@@ -391,6 +413,46 @@ class CommandAuthorityNode(Node):
             _from_twist(message), time.monotonic()
         )
         self._apply(result)
+
+    def _on_config_request(self, message: ConfigRequest) -> None:
+        """Authorize and apply the one supported operational speed setting."""
+        self._config_request_id = int(message.request_id)
+        requested_value = float(message.value)
+        self._config_requested_value = (
+            requested_value
+            if math.isfinite(requested_value)
+            else self._supervisor.manual_max_speed_mps
+        )
+        self._config_accepted = False
+        state = self._supervisor.state
+        if not state.lease_active or message.lease_id != state.lease_id:
+            self._config_reason = 'LEASE_NOT_OWNED'
+        elif int(message.expected_revision) != self._config_revision:
+            self._config_reason = 'STALE_REVISION'
+        elif message.field != 'manual_max_speed_mps':
+            self._config_reason = 'UNKNOWN_FIELD'
+        else:
+            try:
+                self._supervisor.set_manual_max_speed_mps(requested_value)
+            except ValueError as error:
+                self._config_reason = str(error)
+            else:
+                self._config_revision += 1
+                self._config_accepted = True
+                self._config_reason = 'APPLIED'
+        self._publish_config_state()
+
+    def _publish_config_state(self) -> None:
+        message = ConfigState()
+        message.stamp = self.get_clock().now().to_msg()
+        message.request_id = self._config_request_id
+        message.revision = self._config_revision
+        message.field = 'manual_max_speed_mps'
+        message.requested_value = self._config_requested_value
+        message.applied_value = self._supervisor.manual_max_speed_mps
+        message.accepted = self._config_accepted
+        message.reason = self._config_reason
+        self._config_pub.publish(message)
 
     def _on_control_event(self, message: PaddockControlEvent) -> None:
         try:

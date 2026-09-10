@@ -107,6 +107,16 @@ class MapRequestIntent:
 
 
 @dataclass(frozen=True)
+class ConfigRequestIntent:
+    """One revision-checked supported operational configuration request."""
+
+    lease_id: str
+    expected_revision: int
+    field: str
+    value: float
+
+
+@dataclass(frozen=True)
 class ClearCostmapsIntent:
     """Request Nav2's existing global and local full-clear services."""
 
@@ -321,6 +331,33 @@ class OperatorGateway:
             True,
             'Nav2 costmap clear requested',
             (ClearCostmapsIntent(),),
+            'controller',
+        )
+
+    def _do_set_config(self, conn_id: str, action: dict) -> GatewayResult:
+        """Validate one allowlisted operational configuration request."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        field = str(action.get('field', ''))
+        if field != 'manual_max_speed_mps':
+            return self._reject(conn_id, 'unsupported configuration field')
+        try:
+            value = float(action['value'])
+            revision = int(action['expected_revision'])
+        except (KeyError, TypeError, ValueError):
+            return self._reject(conn_id, 'configuration value/revision invalid')
+        if not math.isfinite(value) or revision < 0:
+            return self._reject(conn_id, 'configuration value/revision invalid')
+        return GatewayResult(
+            True,
+            f'{field} configuration requested',
+            (ConfigRequestIntent(
+                lease_id=self._lease_id,
+                expected_revision=revision,
+                field=field,
+                value=value,
+            ),),
             'controller',
         )
 

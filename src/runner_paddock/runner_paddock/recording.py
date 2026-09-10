@@ -42,6 +42,8 @@ RUNNER_DEBUG_TOPICS = (
     '/paddock/control_event',
     '/paddock/control_lease',
     '/paddock/command_authority_state',
+    '/paddock/config_request',
+    '/paddock/config_state',
     '/paddock/navigation_request',
     '/paddock/navigation_state',
     '/paddock/mode_request',

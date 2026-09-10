@@ -15,15 +15,18 @@
 """ROS-plumbing contract tests that do not launch production behavior."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Twist
+from runner_interfaces.msg import ConfigRequest
 from runner_interfaces.msg import PaddockControlEvent
 
 from runner_paddock.command_authority_node import _authority_message
 from runner_paddock.command_authority_node import _AutonomyOutputGate
 from runner_paddock.command_authority_node import _from_twist
 from runner_paddock.command_authority_node import _to_twist
+from runner_paddock.command_authority_node import CommandAuthorityNode
 from runner_paddock.command_authority_node import DEFAULT_SUPERVISION_PERIOD_SEC
 from runner_paddock.command_authority_node import PADDOCK_OUTPUT_TOPIC
 from runner_paddock.command_authority_node import RAW_AUTONOMY_TOPIC
@@ -33,6 +36,22 @@ from runner_paddock.command_supervisor import ControlEvent
 from runner_paddock.command_supervisor import SupervisorResult
 from runner_paddock.command_supervisor import VelocityCommand
 from runner_paddock.state_machine import GoalIntent
+
+
+class _Publisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+
+class _Clock:
+    def now(self):
+        return self
+
+    def to_msg(self):
+        return Time(sec=1)
 
 
 def test_topic_contract_never_names_live_cmd_vel_as_an_output():
@@ -104,6 +123,52 @@ def test_authority_message_exposes_selected_goal_as_backend_truth():
     assert (message.goal_x, message.goal_y, message.goal_yaw) == (
         1.25, -0.75, 0.4,
     )
+
+
+def test_manual_speed_config_is_lease_authorized_applied_and_reported():
+    supervisor = CommandSupervisor(control_liveness_sec=0.5)
+    supervisor.handle_control_event(
+        event=ControlEvent.LEASE_ACQUIRED,
+        client_id='client', lease_id='lease', sequence=1, now=0.0,
+    )
+    publisher = _Publisher()
+    node = SimpleNamespace(
+        _supervisor=supervisor,
+        _config_revision=0,
+        _config_request_id=0,
+        _config_requested_value=0.40,
+        _config_accepted=True,
+        _config_reason='DEFAULT',
+        _config_pub=publisher,
+        get_clock=lambda: _Clock(),
+    )
+    node._publish_config_state = lambda: (
+        CommandAuthorityNode._publish_config_state(node)
+    )
+    request = ConfigRequest(
+        request_id=7,
+        lease_id='lease',
+        expected_revision=0,
+        field='manual_max_speed_mps',
+        value=0.40,
+    )
+
+    CommandAuthorityNode._on_config_request(node, request)
+
+    assert supervisor.manual_max_speed_mps == 0.40
+    state = publisher.messages[-1]
+    assert state.accepted
+    assert state.revision == 1
+    assert state.requested_value == 0.40
+    assert state.applied_value == 0.40
+
+    request.request_id = 8
+    request.expected_revision = 1
+    request.value = 0.41
+    CommandAuthorityNode._on_config_request(node, request)
+    rejected = publisher.messages[-1]
+    assert not rejected.accepted
+    assert rejected.applied_value == 0.40
 
 
 def test_steady_20_hz_autonomy_has_no_injected_zeros_between_samples():

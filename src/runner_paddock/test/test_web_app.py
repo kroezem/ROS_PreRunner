@@ -80,6 +80,7 @@ def test_frontend_assets_are_packaged_at_runtime_location():
     expected = {
         'index.html',
         'app.js',
+        'joystick_geometry.js',
         'map_geometry.js',
         'style.css',
         'service-worker.js',
@@ -106,6 +107,7 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-map-mode="view"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text
+        assert 'id="manual-max-speed-input"' in response.text
         assert 'id="delete-dialog"' in response.text
         assert 'id="btn-record"' in response.text
         assert 'data-tab="recordings"' in response.text

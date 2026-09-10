@@ -208,8 +208,8 @@ Names and new types below are **v1.3 proposals**, not claims of installed interf
 | None | `/paddock/map_request` | Authorized NEW/RESET/SAVE with session/name/request identity | Authority → map-session executor | Persistent | Authorized operation |
 | None | `/paddock/map_state` | Session/save progress, bundle catalog/revision, failure | Map-session executor → authority/gateway/mode supervisor | Persistent | Status |
 | SLAM reset/serialize and map saver CLI | Existing services / export capability | Map executor sole production caller; SLAM remains state owner | Map executor → SLAM/map export | MAPPING | Operation interface |
-| None | `/paddock/config_request` | Named bounded setting transaction, expected revision | Authority → operational-config executor | Persistent | Authorized operation |
-| None | `/paddock/config_state` | Requested/applied/observed values and per-field result | Operational-config executor → authority/gateway | Persistent | Status |
+| None | `/paddock/config_request` | Named bounded setting transaction, expected revision | Gateway → authority-owned operational-config handler | Persistent | Authorized operation |
+| None | `/paddock/config_state` | Requested/applied values and per-field result | Authority-owned operational-config handler → gateway | Persistent | Status |
 | `/initialpose` engineering publishers | Same topic, controlled production ingress | PoseWithCovarianceStamped, map frame, realistic covariance, stopped-only | Map/localization executor → slam_toolbox | Persistent writer, eligible runtime only | Authorized pose intent |
 | `/teleop/keyboard_state` | Removed from production | No keyboard latch/control input to adapter, bridge or teleop | None | Removed | Legacy control |
 | `/teleop/fixed_throttle_setpoint` | same | Local normalized effort setpoint, never browser speed ceiling | `runner_teleop` → diagnostics | Persistent | Status |
@@ -240,9 +240,16 @@ Existing direct launch commands become engineering-only entry points with explic
 
 Manual input is `{signed_speed_mps, steering_normalized}`. Positive speed is forward, negative reverse, zero active braking. Steering is front-wheel steering demand in [-1,1], normalized by the retained maximum steering angle; positive follows the existing positive steering convention. It is not yaw rate. Steering-at-zero is a supported manual command while manual engagement remains fresh. Browser joystick scaling may be normalized internally, but the transmitted semantic demand and displayed applied value use m/s.
 
-Initial remote manual ceiling proposal is **0.30 m/s**, preserving v1.2’s phone ceiling. Ceiling controls can reduce the usable range; increasing this established phone bound requires a separately approved envelope decision. Autonomy retains the current maximum commanded speed of 0.60 m/s and desired speed default 0.45 m/s. No higher-performance tuning is smuggled into interface work.
+The browser joystick uses independent square-clamped axes, not radial magnitude:
+full forward at either horizontal corner still requests the full applied manual
+speed ceiling and full steering. Because screen x increases to the right while
+the established vehicle command convention uses negative normalized steering
+for physical right, the browser semantic boundary maps screen-right to `-1`
+and screen-left to `+1`. No DualSense or downstream steering sign changes.
 
-Keep the frozen zero-or-minimum-moving-speed contract: exactly zero or magnitude at least 0.25 m/s. For a positive effective ceiling below 0.25, reject the configuration; ceiling zero means disabled motion. For a nonzero demand below 0.25 with a sufficient ceiling, promote to 0.25 and report the applied value. Apply floor and ceiling coherently: floor promotion must never exceed an operator ceiling. The operator must not be shown a fictitious 0.10 m/s crawl. Mapping remote manual ceiling is additionally bounded by its 0.30 m/s default. These remote speed ceilings do not retune the deliberately independent DualSense effort path; display its local semantics separately.
+The remote manual ceiling is **0.40 m/s** by explicit operator decision, superseding v1.2’s 0.30 m/s phone ceiling. Ceiling controls can reduce or disable the usable range. Autonomy retains the current maximum commanded speed of 0.60 m/s and desired speed default 0.45 m/s. This manual-only bound does not change controller tuning.
+
+Keep the frozen zero-or-minimum-moving-speed contract: exactly zero or magnitude at least 0.25 m/s. For a positive effective ceiling below 0.25, reject the configuration; ceiling zero means disabled motion. For a nonzero demand below 0.25 with a sufficient ceiling, promote to 0.25 and report the applied value. Apply floor and ceiling coherently: floor promotion must never exceed an operator ceiling. The operator must not be shown a fictitious 0.10 m/s crawl. Mapping remote manual ceiling is additionally bounded by its 0.40 m/s default. These remote speed ceilings do not retune the deliberately independent DualSense effort path; display its local semantics separately.
 
 **Proposed refinement:** extend the existing drive adapter to service exactly one authority-selected remote demand at a time. Autonomy supplies existing SI `/cmd_vel_nav`; manual supplies authority-bounded speed plus direct steering. Use one longitudinal controller state and the same calibrated conversion implementation/configuration origin. This demand selection implements an already decided normal grant; it is not a second priority arbiter. Final local/STOP precedence stays solely in the existing mux.
 
@@ -344,12 +351,12 @@ Foxglove is optional throughout. Basic map view/status belongs in Paddock; detai
 
 ## 14. Supported operator configuration
 
-A typed allowlist separates supported settings from arbitrary ROS parameters. Authority authorizes the transaction; one configuration executor validates and applies it outside the control loop, reads actual values back and publishes the result. The committed speed-envelope file remains the baseline origin. Operational overrides have an explicit revision and source and are reported separately from baseline divergence. Do not rewrite calibration files on each browser slider change.
+A typed allowlist separates supported settings from arbitrary ROS parameters. Authority authorizes the transaction; the one authority-owned operational-configuration handler validates and applies its manual clamp outside the command timer and publishes the result. Settings owned by other processes still require readback from their actual owner before being reported as applied. The committed speed-envelope file remains the baseline origin. Operational overrides have an explicit revision and source and are reported separately from baseline divergence. Do not rewrite calibration files on each browser slider change.
 
 | Supported field/action | Proposed bounds / semantics | Apply rule |
 |---|---|---|
-| `manual_max_speed_mps` | 0 (disabled) or [0.25, 0.30] initially | Session operational setting; authoritative manual clamp |
-| `mapping_speed_ceiling_mps` | 0 or [0.25, 0.30]; effective remote ceiling is min with manual ceiling | Applies to remote mapping demand; no implied DualSense retuning |
+| `manual_max_speed_mps` | 0 (disabled) or [0.25, 0.40], default 0.40 | Session operational setting; authoritative manual clamp |
+| `mapping_speed_ceiling_mps` | 0 or [0.25, 0.40], default 0.40; effective remote ceiling is min with manual ceiling | Applies to remote mapping demand; no implied DualSense retuning |
 | `autonomy_desired_speed_mps` | Initial [0.30, 0.60], default 0.45; respects current RPP 0.30 regulation floor and 0.25 approach floor | Apply/read back named RPP setting while stopped; no controller lifecycle transition |
 | `autonomy_speed_ceiling_mps` | 0 or [0.30, 0.60]; desired ≤ ceiling | Authority/conversion demand bound; no expansion of frozen maximum |
 | `selected_map` | Complete verified catalog bundle ID/revision | No active-runtime hot swap; stopped runtime transition |
@@ -442,7 +449,7 @@ Matti ratified these decisions in the implementation brief on 7 September 2026:
 
 1. **Q1 — Global persistent STOP.** Use a persistent local executor with the existing mux lock/zero facilities. Unknown or failed enforcement fails closed; known-clear enforcement remains independent of web/authority. Stop and report concrete installed-behavior evidence before changing the mux itself.
 2. **Q2 — RUN release lifecycle.** Revoke motion immediately, cancel the current Nav2 action asynchronously, retain logical mission/progress as a continuation candidate, and require deliberate future RUN after cancellation/quiescence. Stronger takeover/STOP/runtime/session barriers remain binding. No fake action pause.
-3. **Q3 — Initial operator bounds.** Manual maximum and mapping remote ceiling 0.30 m/s; autonomy desired default 0.45 m/s and maximum 0.60 m/s; existing minimum-moving speed 0.25 m/s. Keep feedforward, PI, integrator and output bounds frozen. Operational overrides are session/runtime-scoped unless explicitly specified otherwise.
+3. **Q3 — Operator bounds, amended.** Manual maximum and mapping remote ceiling are 0.40 m/s by explicit operator decision; autonomy desired default remains 0.45 m/s and maximum remains 0.60 m/s; existing minimum-moving speed remains 0.25 m/s. Keep feedforward, PI, integrator and output bounds frozen. Operational overrides are session/runtime-scoped unless explicitly specified otherwise.
 
 Engineering evidence gates remain mandatory: measured timeout/queue budgets, installed mux lock behavior, STOP acknowledgement/restart ordering, Nav2 command quiescence/provenance, consistent map export and new-session invalidation. An unsafe unstamped boundary, incompatible STOP packaging, changed final mux/motor/encoder/TF/serial ownership, another mux or mission owner, retuning, or a localization change requires escalation before implementation past that fork.
 

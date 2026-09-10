@@ -34,7 +34,8 @@ DEFAULT_LEASE_TIMEOUT_SEC = 0.150
 DEFAULT_CONTROL_LIVENESS_SEC = 3.0
 DEFAULT_RAW_AUTONOMY_TIMEOUT_SEC = 0.150
 DEFAULT_MANUAL_TIMEOUT_SEC = 0.250
-DEFAULT_MANUAL_MAX_SPEED_MPS = 0.30
+DEFAULT_MANUAL_MAX_SPEED_MPS = 0.40
+MAX_MANUAL_MAX_SPEED_MPS = 0.40
 DEFAULT_MINIMUM_MOVING_SPEED_MPS = 0.25
 UINT64_MODULUS = 1 << 64
 UINT64_HALF_RANGE = 1 << 63
@@ -174,11 +175,13 @@ class CommandSupervisor:
         self.raw_autonomy_timeout_sec = raw_autonomy_timeout_sec
         if not math.isfinite(manual_timeout_sec) or manual_timeout_sec <= 0.0:
             raise ValueError('manual_timeout_sec must be finite and positive')
-        if (
-            not math.isfinite(manual_max_speed_mps)
-            or manual_max_speed_mps < minimum_moving_speed_mps
+        if not self.manual_speed_ceiling_valid(
+            manual_max_speed_mps, minimum_moving_speed_mps
         ):
-            raise ValueError('manual speed ceiling must reach the moving floor')
+            raise ValueError(
+                'manual speed ceiling must be zero or within the moving floor '
+                f'and {MAX_MANUAL_MAX_SPEED_MPS:.2f} m/s'
+            )
         self.manual_timeout_sec = manual_timeout_sec
         self.manual_max_speed_mps = manual_max_speed_mps
         self.minimum_moving_speed_mps = minimum_moving_speed_mps
@@ -195,6 +198,34 @@ class CommandSupervisor:
         # a matching heartbeat from the same still-connected browser reinstates
         # it in place instead of forcing the operator to reload the page.
         self._lapsed_lease: Optional[Tuple[str, str]] = None
+
+    @staticmethod
+    def manual_speed_ceiling_valid(
+        value: float,
+        minimum_moving_speed_mps: float = DEFAULT_MINIMUM_MOVING_SPEED_MPS,
+    ) -> bool:
+        """Return whether a browser-manual ceiling is in the operator range."""
+        return (
+            math.isfinite(value)
+            and (
+                value == 0.0
+                or minimum_moving_speed_mps
+                <= value
+                <= MAX_MANUAL_MAX_SPEED_MPS
+            )
+        )
+
+    def set_manual_max_speed_mps(self, value: float) -> None:
+        """Apply one validated operational browser-manual speed ceiling."""
+        if not self.manual_speed_ceiling_valid(
+            value, self.minimum_moving_speed_mps
+        ):
+            raise ValueError(
+                'manual_max_speed_mps must be 0 or within '
+                f'[{self.minimum_moving_speed_mps:.2f}, '
+                f'{MAX_MANUAL_MAX_SPEED_MPS:.2f}]'
+            )
+        self.manual_max_speed_mps = float(value)
 
     def _lease_age(self, now: float) -> Optional[float]:
         if self.last_lease_receive_at is None:

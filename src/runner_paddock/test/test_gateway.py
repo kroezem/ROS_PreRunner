@@ -18,6 +18,7 @@ import itertools
 
 from runner_paddock.gateway import (
     ClearCostmapsIntent,
+    ConfigRequestIntent,
     ControlEvent,
     ControlEventIntent,
     MapRequestIntent,
@@ -183,6 +184,26 @@ def test_manual_samples_keep_si_units_and_release_explicitly():
 
     released = gw.handle('c1', {'action': 'manual', 'active': False})
     assert released.intents[0].event == ControlEvent.MANUAL_INACTIVE
+
+
+def test_manual_speed_configuration_is_lease_scoped_and_revisioned():
+    gw = _gateway()
+    action = {
+        'action': 'set_config',
+        'field': 'manual_max_speed_mps',
+        'value': 0.40,
+        'expected_revision': 2,
+    }
+    assert not gw.handle('observer', action).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    result = gw.handle('c1', action)
+
+    assert result.accepted
+    assert result.intents == (ConfigRequestIntent(
+        lease_id='id2', expected_revision=2,
+        field='manual_max_speed_mps', value=0.40,
+    ),)
 
 
 def test_recording_requests_are_lease_scoped_but_not_socket_owned():

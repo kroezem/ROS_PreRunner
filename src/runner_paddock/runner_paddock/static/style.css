@@ -97,7 +97,7 @@ button.run.armed small { color: #17383e; }
 .mapping-callout p { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.4; }
 .joystick-heading, .manual-feedback { display: flex; justify-content: space-between; gap: .5rem; color: var(--muted); font-size: .68rem; }
 .joystick-heading strong, .manual-feedback strong { color: #f1f3f4; }
-.joystick { position: relative; width: min(100%, 16rem); aspect-ratio: 1; margin: .45rem auto; border: 2px solid #42616a; border-radius: 50%; background: radial-gradient(circle, #263238 0 12%, #191f21 13% 100%); touch-action: none; user-select: none; -webkit-user-select: none; }
+.joystick { position: relative; width: min(100%, 16rem); aspect-ratio: 1; margin: .45rem auto; border: 2px solid #42616a; border-radius: .65rem; background: #191f21; touch-action: none; user-select: none; -webkit-user-select: none; }
 .joystick.disabled { opacity: .38; }
 .joystick.engaged { border-color: var(--accent); box-shadow: 0 0 0 .18rem rgb(0 180 216 / 18%); }
 .joystick-crosshair::before, .joystick-crosshair::after { content: ""; position: absolute; background: #506066; pointer-events: none; }
@@ -107,7 +107,7 @@ button.run.armed small { color: #17383e; }
 .manual-feedback { flex-wrap: wrap; }
 .joystick-heading, .manual-feedback { display: flex; justify-content: space-between; gap: .5rem; color: var(--muted); font-size: .68rem; text-transform: uppercase; }
 .joystick-heading strong { color: var(--accent); }
-.joystick { position: relative; width: min(100%, 17rem); aspect-ratio: 1; margin: .55rem auto; border: 2px solid #557079; border-radius: 50%; background: radial-gradient(circle, #26363a 0 12%, #171d1f 13% 69%, #223036 70%); touch-action: none; user-select: none; -webkit-user-select: none; }
+.joystick { position: relative; width: min(100%, 17rem); aspect-ratio: 1; margin: .55rem auto; border: 2px solid #557079; border-radius: .65rem; background: #171d1f; touch-action: none; user-select: none; -webkit-user-select: none; }
 .joystick-crosshair::before, .joystick-crosshair::after { content: ""; position: absolute; background: #526166; pointer-events: none; }
 .joystick-crosshair::before { left: 50%; top: 8%; width: 1px; height: 84%; }
 .joystick-crosshair::after { left: 8%; top: 50%; width: 84%; height: 1px; }
@@ -127,6 +127,8 @@ button.run.armed small { color: #17383e; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .panel-heading h2 { margin: 0; font-size: 1rem; }
 .mode-actions { display: flex; flex-wrap: wrap; }
+.config-setting { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; }
+.config-setting input { width: 6rem; min-height: 2.75rem; padding: .4rem; border: 1px solid var(--border); border-radius: .35rem; background: #171717; color: #f1f3f4; font: inherit; }
 
 dl.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .8rem; margin: .7rem 0; font-size: .78rem; }
 dl.kv dt { color: var(--muted); }

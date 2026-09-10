@@ -31,6 +31,8 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from runner_interfaces.msg import AdapterState
 from runner_interfaces.msg import CommandAuthorityState
+from runner_interfaces.msg import ConfigRequest
+from runner_interfaces.msg import ConfigState
 from runner_interfaces.msg import LocalControlState
 from runner_interfaces.msg import MapRequest
 from runner_interfaces.msg import MapState
@@ -43,6 +45,7 @@ from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
 from runner_paddock.gateway import (
     ClearCostmapsIntent,
+    ConfigRequestIntent,
     ControlEventIntent,
     GatewayResult,
     MapRequestIntent,
@@ -67,6 +70,8 @@ MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
 NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
 AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
+CONFIG_REQUEST_TOPIC = '/paddock/config_request'
+CONFIG_STATE_TOPIC = '/paddock/config_state'
 LEASE_STATE_TOPIC = '/paddock/control_lease'
 STOP_STATE_TOPIC = '/paddock/stop_state'
 LOCAL_CONTROL_TOPIC = '/teleop/control_state'
@@ -212,6 +217,9 @@ class RosStateNode(Node):
             latest_qos,
         )
         self.create_subscription(
+            ConfigState, CONFIG_STATE_TOPIC, self._on_config_state, map_qos
+        )
+        self.create_subscription(
             PaddockControlLease, LEASE_STATE_TOPIC, self._on_lease, latest_qos
         )
         self.create_subscription(
@@ -250,6 +258,9 @@ class RosStateNode(Node):
         )
         self._recording_request_pub = self.create_publisher(
             RecordingRequest, RECORDING_REQUEST_TOPIC, 10
+        )
+        self._config_request_pub = self.create_publisher(
+            ConfigRequest, CONFIG_REQUEST_TOPIC, 10
         )
         self._global_clear_client = self.create_client(
             ClearEntireCostmap, GLOBAL_CLEAR_SERVICE
@@ -459,6 +470,24 @@ class RosStateNode(Node):
         except ValueError as error:
             self.get_logger().warning(
                 f'Rejected invalid {AUTHORITY_STATE_TOPIC}: {error}'
+            )
+
+    def _on_config_state(self, message: ConfigState) -> None:
+        try:
+            _finite(message.requested_value, message.applied_value)
+            self._cache.update('config', {
+                'stamp': _stamp(message.stamp),
+                'request_id': int(message.request_id),
+                'revision': int(message.revision),
+                'field': message.field,
+                'requested_value': float(message.requested_value),
+                'applied_value': float(message.applied_value),
+                'accepted': bool(message.accepted),
+                'reason': message.reason,
+            })
+        except ValueError as error:
+            self.get_logger().warning(
+                f'Rejected invalid {CONFIG_STATE_TOPIC}: {error}'
             )
 
     def _on_lease(self, message: PaddockControlLease) -> None:
@@ -689,6 +718,15 @@ class RosStateNode(Node):
             message.name = intent.name
             message.profile = intent.profile
             self._recording_request_pub.publish(message)
+        elif isinstance(intent, ConfigRequestIntent):
+            message = ConfigRequest()
+            message.stamp = stamp
+            message.request_id = time.time_ns()
+            message.lease_id = intent.lease_id
+            message.expected_revision = int(intent.expected_revision)
+            message.field = intent.field
+            message.value = float(intent.value)
+            self._config_request_pub.publish(message)
 
     def _autonomy_without_map(self, action: dict) -> bool:
         """Return True for a 'select AUTONOMY runtime' action with no map set."""

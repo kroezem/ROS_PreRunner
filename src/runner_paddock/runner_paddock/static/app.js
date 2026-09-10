@@ -28,6 +28,7 @@ let retainedPlan = null;
 const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
 const mapGeometry = window.PaddockMapGeometry;
+const joystickGeometry = window.PaddockJoystickGeometry;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
 const mapLayers = {
   map: { grid: null, raster: null },
@@ -255,6 +256,7 @@ function render() {
   const mapState = latest.map_state || {};
   const nav = latest.navigation_state || {};
   const recording = latest.recording_state || {};
+  const config = latest.config || {};
   const health = (latest.health || {}).status || "?";
   const pose = latest.pose;
 
@@ -274,6 +276,15 @@ function render() {
     (local.connected ? "connected, idle" : "disconnected"));
   renderControlState(mode, auth, stop, local, adapter, nav);
   renderRecording(recording);
+  const appliedManualMax = Number.isFinite(config.applied_value)
+    ? config.applied_value : 0.40;
+  text("manual-max-speed", appliedManualMax.toFixed(2));
+  text("manual-max-requested", `${fmt(config.requested_value ?? 0.40)} m/s`);
+  text("manual-max-applied", `${appliedManualMax.toFixed(2)} m/s`);
+  text("manual-max-result", config.reason || "Waiting for configuration state…");
+  if (document.activeElement !== $("manual-max-speed-input")) {
+    $("manual-max-speed-input").value = appliedManualMax.toFixed(2);
+  }
 
   const detail = runtimeDetail(mode);
   text("a-runtime-detail", detail);
@@ -312,7 +323,8 @@ function render() {
   document.querySelectorAll(
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, #btn-new-map-from-maps, " +
     "#btn-save-map, #btn-select-goal, #btn-run, #btn-cancel, " +
-    "#btn-goal-mode, #btn-confirm-delete, #btn-confirm-delete-recording",
+    "#btn-goal-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
+    "#btn-apply-manual-speed",
   ).forEach((button) => {
     button.disabled = !controller;
   });
@@ -1112,17 +1124,20 @@ function manualIsAvailable() {
 
 function updateManualFromPointer(event) {
   const bounds = joystick.getBoundingClientRect();
-  const radius = Math.min(bounds.width, bounds.height) / 2;
-  let x = (event.clientX - (bounds.left + bounds.width / 2)) / radius;
-  let y = (event.clientY - (bounds.top + bounds.height / 2)) / radius;
-  const magnitude = Math.hypot(x, y);
-  if (magnitude > 1) { x /= magnitude; y /= magnitude; }
+  const halfWidth = bounds.width / 2;
+  const halfHeight = bounds.height / 2;
+  const rawX = (event.clientX - (bounds.left + halfWidth)) / halfWidth;
+  const rawY = (event.clientY - (bounds.top + halfHeight)) / halfHeight;
+  const config = latest.config || {};
+  const maxSpeed = Number.isFinite(config.applied_value)
+    ? config.applied_value : 0.40;
+  const demand = joystickGeometry.demandFromAxes(rawX, rawY, maxSpeed);
   manualDemand = {
-    speed_mps: Math.max(-0.30, Math.min(0.30, -y * 0.30)),
-    steering: Math.max(-1, Math.min(1, x)),
+    speed_mps: demand.speed_mps,
+    steering: demand.steering,
   };
-  joystickKnob.style.left = `${50 + x * 36}%`;
-  joystickKnob.style.top = `${50 + y * 36}%`;
+  joystickKnob.style.left = `${50 + demand.x * 36}%`;
+  joystickKnob.style.top = `${50 + demand.y * 36}%`;
 }
 
 function sendManualSample() {
@@ -1188,6 +1203,15 @@ runButton.addEventListener("pointerup", stopRun);
 runButton.addEventListener("pointerleave", stopRun);
 runButton.addEventListener("pointercancel", stopRun);
 $("btn-cancel").addEventListener("click", cancelRun);
+$("btn-apply-manual-speed").addEventListener("click", () => {
+  const config = latest.config || {};
+  send({
+    action: "set_config",
+    field: "manual_max_speed_mps",
+    value: Number($("manual-max-speed-input").value),
+    expected_revision: Number(config.revision || 0),
+  });
+});
 window.addEventListener("keydown", (event) => {
   if (event.code !== "Space" || event.repeat || isEditableOrInteractive(event.target)) return;
   if (runIsAvailable()) startRun(event, "keyboard");
