@@ -52,7 +52,7 @@ class StateCache:
 
     _SMALL_SOURCES = (
         'pose', 'mode', 'command_authority', 'control_lease', 'stop_state',
-        'local_control', 'adapter_state', 'gateway', 'map_state',
+        'local_control', 'adapter_state', 'gateway', 'config', 'map_state',
         'navigation_state', 'encoder_state', 'initial_pose',
         'recording_state',
     )
@@ -71,6 +71,7 @@ class StateCache:
             'encoder_state': _Entry(),
             'initial_pose': _Entry(),
             'gateway': _Entry(),
+            'config': _Entry(),
             'map_state': _Entry(),
             'navigation_state': _Entry(),
             'recording_state': _Entry(),

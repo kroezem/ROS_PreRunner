@@ -20,6 +20,9 @@ from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from runner_interfaces.msg import ConfigState
+from runner_interfaces.msg import ModeState
+from runner_interfaces.msg import StopState
 from runner_paddock.gateway import GatewayResult
 from runner_paddock.gateway import InitialPoseIntent
 from runner_paddock.ros_runtime import RosRuntime
@@ -104,6 +107,48 @@ def test_runtime_start_stop_leaves_no_executor_thread():
     assert runtime.thread_alive
     runtime.stop()
     assert not runtime.thread_alive
+
+
+def test_authoritative_mode_stop_and_config_callbacks_reach_snapshot():
+    cache = StateCache(clock=lambda: 10.0)
+    node = SimpleNamespace(_cache=cache)
+    config = ConfigState(
+        stamp=Time(sec=1),
+        request_id=4,
+        revision=2,
+        field='manual_max_speed_mps',
+        requested_value=0.6,
+        applied_value=0.6,
+        accepted=True,
+        reason='APPLIED',
+    )
+    mode = ModeState(
+        stamp=Time(sec=2),
+        mode=ModeState.MODE_MAPPING,
+        status=ModeState.STATUS_STABLE,
+        ready=True,
+    )
+    stop = StopState(
+        stamp=Time(sec=3),
+        boot_id='boot-1',
+        generation=3,
+        healthy=True,
+        applied=True,
+        reason='CLEAR',
+    )
+
+    # Config is transient-local and can be the first callback after startup.
+    RosStateNode._on_config_state(node, config)
+    RosStateNode._on_mode(node, mode)
+    RosStateNode._on_stop_state(node, stop)
+
+    snapshot = cache.state_snapshot()
+    assert snapshot['config']['applied_value'] == 0.6
+    assert snapshot['mode']['mode'] == ModeState.MODE_MAPPING
+    assert snapshot['mode']['status'] == ModeState.STATUS_STABLE
+    assert snapshot['mode']['ready']
+    assert not snapshot['stop_state']['stopped']
+    assert snapshot['stop_state']['healthy']
 
 
 def test_clear_costmaps_reports_both_nav2_service_responses():

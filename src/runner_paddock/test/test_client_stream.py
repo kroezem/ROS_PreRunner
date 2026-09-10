@@ -85,3 +85,25 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         assert hub.client_count == 0
 
     asyncio.run(scenario())
+
+
+def test_state_frame_contains_authoritative_mode_stop_and_config():
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        cache.update('mode', {'mode': 1, 'status': 0, 'ready': True})
+        cache.update('stop_state', {'stopped': False, 'healthy': True})
+        cache.update('config', {
+            'field': 'manual_max_speed_mps', 'applied_value': 0.6,
+        })
+        hub = ClientHub()
+        client = hub.register()
+
+        hub.publish(cache)
+
+        frame = json.loads(await client.next_frame())
+        assert frame['type'] == 'state'
+        assert frame['mode'] == {'mode': 1, 'status': 0, 'ready': True}
+        assert frame['stop_state'] == {'stopped': False, 'healthy': True}
+        assert frame['config']['applied_value'] == 0.6
+
+    asyncio.run(scenario())
