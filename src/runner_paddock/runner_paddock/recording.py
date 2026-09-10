@@ -350,25 +350,19 @@ class RecordingExecutor:
                 continue
             metadata = path / 'metadata.yaml'
             manifest = path / '.paddock-recording.json'
-            child_rows = []
-            try:
-                children = tuple(path.iterdir())
-            except OSError:
-                children = ()
-            for child in children:
+            metadata_rows = []
+            for child in (metadata, manifest):
                 try:
                     child_stat = child.stat()
                 except OSError:
                     continue
-                child_rows.append((
+                metadata_rows.append((
                     child.name, child_stat.st_mtime_ns, child_stat.st_size
                 ))
             rows.append((
                 path.name,
                 stat.st_mtime_ns,
-                tuple(sorted(child_rows)),
-                metadata.is_file(),
-                manifest.is_file(),
+                tuple(metadata_rows),
             ))
         return tuple(sorted(rows))
 

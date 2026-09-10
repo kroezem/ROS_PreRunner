@@ -119,6 +119,7 @@ def test_catalog_reuses_metadata_until_directory_changes(tmp_path, monkeypatch):
         '  starting_time:\n    nanoseconds_since_epoch: 2\n',
         encoding='utf-8',
     )
+    (bag / 'finished_0.mcap').write_bytes(b'initial data')
     calls = 0
     original = recording.read_recording_info
 
@@ -133,6 +134,12 @@ def test_catalog_reuses_metadata_until_directory_changes(tmp_path, monkeypatch):
     assert len(executor.catalog()) == 1
     assert calls == 1
 
-    (bag / 'finished_0.mcap').write_bytes(b'new data')
+    # Active MCAP growth must not force reparsing every finalized bag.
+    (bag / 'finished_0.mcap').write_bytes(b'growing data')
+    executor.catalog()
+    assert calls == 1
+
+    metadata = bag / 'metadata.yaml'
+    metadata.write_text(metadata.read_text() + '# finalized update\n')
     executor.catalog()
     assert calls == 2
