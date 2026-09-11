@@ -35,11 +35,11 @@ class RecordingExecutorNode(Node):
         ).value))
         self._executor = RecordingExecutor(root)
         self._lease_id = ''
-        qos = QoSProfile(depth=1)
-        qos.reliability = ReliabilityPolicy.RELIABLE
-        qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        recording_state_qos = QoSProfile(depth=1)
+        recording_state_qos.reliability = ReliabilityPolicy.RELIABLE
+        recording_state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self._publisher = self.create_publisher(
-            RecordingState, '/paddock/recording_state', qos
+            RecordingState, '/paddock/recording_state', recording_state_qos
         )
         self.create_subscription(
             RecordingRequest,
@@ -51,7 +51,11 @@ class RecordingExecutorNode(Node):
             PaddockControlLease,
             '/paddock/control_lease',
             self._on_lease,
-            qos,
+            QoSProfile(
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.VOLATILE,
+            ),
         )
         self.create_timer(0.5, self._tick)
         self._publish()
