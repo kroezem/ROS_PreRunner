@@ -57,6 +57,7 @@ RUNNER_DEBUG_TOPICS = (
     '/wheel/encoder_state',
     '/wheel/odom',
     '/motor/direction',
+    '/odom_rf2o',
     '/odometry/filtered',
     '/tf',
     '/tf_static',
