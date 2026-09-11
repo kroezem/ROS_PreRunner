@@ -23,6 +23,7 @@ let catalogRenderKey = null;
 let pendingDeleteName = "";
 let pendingDeleteRecordingName = "";
 let recordingCatalogKey = null;
+let recordingStopPending = false;
 let retainedPlan = null;
 
 const mapCanvas = $("map-canvas");
@@ -172,6 +173,9 @@ function connect() {
       }
       if (frame.name === "set_initial_pose" && !frame.accepted) {
         initialPoseInteraction.awaiting = false;
+      }
+      if (frame.name === "stop_recording" && !frame.accepted) {
+        recordingStopPending = false;
       }
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
       render();
@@ -467,13 +471,21 @@ function formatBytes(value) {
 }
 
 function renderRecording(recording) {
-  const state = Number.isInteger(recording.state) ? recording.state : null;
+  const authoritativeState = Number.isInteger(recording.state) ? recording.state : null;
+  if (recordingStopPending && ![1, 2].includes(authoritativeState)) {
+    recordingStopPending = false;
+  }
+  const state = recordingStopPending ? 3 : authoritativeState;
   const active = [1, 2, 3].includes(state);
   const stopping = state === 3;
   const stateName = state === null ? "UNAVAILABLE" : RECORDING_STATE[state] || "UNKNOWN";
-  text("record-elapsed", formatDuration(recording.elapsed_sec));
+  const liveProgress = `${formatDuration(recording.elapsed_sec)} · ${formatBytes(recording.size_bytes)}`;
+  text("record-elapsed", active ? liveProgress : "ready");
   text("recording-chip", stateName);
-  text("recording-detail", recording.detail || "Waiting for recording executor…");
+  $("recording-chip").dataset.state = stateName.toLowerCase();
+  text("recording-detail", recordingStopPending
+    ? "STOP acknowledged — finalizing MCAP…"
+    : recording.detail || "Waiting for recording executor…");
   text("recording-active-name", recording.name || "—");
   text("recording-active-size", active
     ? `${formatDuration(recording.elapsed_sec)} · ${formatBytes(recording.size_bytes)}` : "—");
@@ -481,15 +493,18 @@ function renderRecording(recording) {
   text("recording-pid", recording.recorder_pid
     ? `${recording.recorder_pid} · ${recording.process_healthy ? "healthy" : "NOT HEALTHY"}` : "—");
   $("record-action").parentElement.classList.toggle("active", active);
+  $("record-action").parentElement.dataset.state = stateName.toLowerCase();
   $("btn-record").disabled = !socketReady || role !== "controller" || stopping || state === null;
-  text("record-action", active ? "STOP RECORDING" : "START RECORDING");
+  const action = state === 1 ? "STOP STARTUP" : state === 2 ? "STOP RECORDING" :
+    state === 3 ? "FINALIZING…" : state === 4 ? "RETRY RECORDING" : "START RECORDING";
+  text("record-action", action);
   $("recording-name").disabled = active;
   $("recording-profile").disabled = active;
-  renderRecordingCatalog(recording.recordings || [], active ? recording.name : "");
+  renderRecordingCatalog(recording.recordings || [], active);
 }
 
-function renderRecordingCatalog(recordings, activeName) {
-  const key = JSON.stringify([recordings, activeName, role]);
+function renderRecordingCatalog(recordings, recorderActive) {
+  const key = JSON.stringify([recordings, recorderActive, role]);
   if (key === recordingCatalogKey) return;
   recordingCatalogKey = key;
   const list = $("recording-catalog");
@@ -511,12 +526,22 @@ function renderRecordingCatalog(recordings, activeName) {
       ? new Date(entry.start_time.sec * 1000).toLocaleString() : "unknown time";
     detail.textContent = `${started} · ${formatDuration(entry.duration_sec)} · ${formatBytes(entry.size_bytes)} · ${(entry.profile || "unknown").toUpperCase()}`;
     info.append(title, detail);
+    const actions = document.createElement("div");
+    actions.className = "catalog-actions";
+    const download = document.createElement("a");
+    download.className = "button-link";
+    download.textContent = "Download";
+    download.href = `/recordings/${encodeURIComponent(entry.name)}/download`;
+    download.download = "";
+    download.setAttribute("aria-disabled", String(recorderActive));
+    if (recorderActive) download.addEventListener("click", (event) => event.preventDefault());
     const button = document.createElement("button");
     button.className = "danger";
     button.textContent = "Delete";
-    button.disabled = role !== "controller" || entry.name === activeName;
+    button.disabled = role !== "controller" || recorderActive;
     button.addEventListener("click", () => confirmRecordingDelete(entry.name));
-    item.append(info, button);
+    actions.append(download, button);
+    item.append(info, actions);
     list.append(item);
   });
 }
@@ -1223,6 +1248,8 @@ $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_o
 function toggleRecording() {
   const state = (latest.recording_state || {}).state;
   if ([1, 2].includes(state)) {
+    recordingStopPending = true;
+    renderRecording(latest.recording_state || {});
     send({ action: "stop_recording" });
   } else if (state !== 3) {
     send({

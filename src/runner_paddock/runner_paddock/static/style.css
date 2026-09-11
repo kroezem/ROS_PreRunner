@@ -186,6 +186,11 @@ summary { cursor: pointer; }
 #btn-record { min-width: 9rem; font-weight: 800; }
 #btn-record small { display: block; color: var(--muted); font-size: .58rem; }
 #btn-record.active { border-color: #ff6b6b; background: #941f1f; animation: rec-pulse 1.4s ease-in-out infinite; }
+#btn-record[data-state="starting"] { border-color: #d09b3b; background: #604514; animation: none; }
+#btn-record[data-state="stopping"] { border-color: #d09b3b; background: #604514; animation: none; }
+#btn-record[data-state="failed"], .status-chip[data-state="failed"] { border-color: #ef5b5b; color: #ff9b9b; }
+.status-chip[data-state="starting"], .status-chip[data-state="stopping"] { border-color: #d09b3b; color: #ffd27d; }
+.status-chip[data-state="recording"] { border-color: #ef5b5b; color: #ff9b9b; }
 @keyframes rec-pulse { 50% { box-shadow: 0 0 0 .18rem rgb(255 80 80 / 22%); } }
 ul.catalog { display: grid; gap: .4rem; margin: .6rem 0 0; padding: 0; list-style: none; }
 ul.catalog li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem; align-items: center; padding: .58rem; border: 1px solid #293639; border-radius: .4rem; background: #0c1314; font-size: .72rem; }
@@ -193,7 +198,9 @@ ul.catalog li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 
 .catalog-info strong, .catalog-info span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .catalog-info span { margin-top: .14rem; color: var(--muted); font-size: .61rem; }
 .catalog-actions { display: flex; gap: .25rem; }
-.catalog-actions button { min-height: 2.4rem; font-size: .64rem; }
+.catalog-actions button, .button-link { min-height: 2.4rem; font-size: .64rem; }
+.button-link { display: inline-flex; align-items: center; padding: .48rem .72rem; border: 1px solid var(--accent); border-radius: .45rem; color: #edf3f3; text-decoration: none; }
+.button-link[aria-disabled="true"] { opacity: .38; cursor: not-allowed; }
 pre { max-height: 18rem; overflow: auto; padding: .65rem; border: 1px solid var(--border); border-radius: .4rem; background: #080d0e; font-size: .63rem; white-space: pre-wrap; }
 dialog { width: min(25rem, calc(100% - 2rem)); border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); color: #edf3f3; box-shadow: 0 1rem 4rem #000; }
 dialog::backdrop { background: rgb(0 0 0 / 72%); }

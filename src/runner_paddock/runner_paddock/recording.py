@@ -80,6 +80,7 @@ PROFILES = {
     'everything': None,
 }
 SAFE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$')
+DEFAULT_RECORDING_DIRECTORY = Path('/home/matti/runner_ws/bags')
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,39 @@ def read_recording_info(path: Path) -> RecordingInfo | None:
         size_bytes=directory_size(path),
         output_path=str(path),
     )
+
+
+def resolve_finalized_mcap(root: Path, name: str) -> Path:
+    """Resolve one finalized, single-file MCAP strictly below ``root``."""
+    basename = safe_recording_name(name)
+    if basename != name:
+        raise ValueError('recording name is not canonical')
+    catalog_root = root.resolve()
+    target = (catalog_root / basename).resolve()
+    if target.parent != catalog_root or read_recording_info(target) is None:
+        raise ValueError('recording does not exist or is not finalized')
+    try:
+        document = yaml.safe_load(
+            (target / 'metadata.yaml').read_text(encoding='utf-8')
+        )
+        relative_paths = document[
+            'rosbag2_bagfile_information'
+        ]['relative_file_paths']
+    except (KeyError, OSError, TypeError, yaml.YAMLError):
+        raise ValueError('recording metadata has no MCAP file') from None
+    if not isinstance(relative_paths, list) or len(relative_paths) != 1:
+        raise ValueError('recording does not contain exactly one MCAP file')
+    relative_path = relative_paths[0]
+    if not isinstance(relative_path, str):
+        raise ValueError('recording metadata has an invalid MCAP path')
+    mcap = (target / relative_path).resolve()
+    if (
+        mcap.parent != target
+        or mcap.suffix.lower() != '.mcap'
+        or not mcap.is_file()
+    ):
+        raise ValueError('recording metadata has an invalid MCAP path')
+    return mcap
 
 
 class RecordingExecutor:

@@ -15,6 +15,7 @@ from runner_teleop.teleop_node import _shape_manual_command
 from runner_teleop.teleop_node import _validate_fixed_throttle_config
 from runner_teleop.teleop_node import _validate_manual_trigger_expo
 from runner_teleop.teleop_node import BRAKE_MODE
+from runner_teleop.teleop_node import DEFAULT_FIXED_THROTTLE_SETPOINT
 from runner_teleop.teleop_node import DPAD_VERTICAL_AXIS_INDEX
 from runner_teleop.teleop_node import expected_race_esc_pulse_us
 from runner_teleop.teleop_node import FIXED_THROTTLE_INHIBITED_MODE
@@ -679,7 +680,10 @@ def test_invalid_fixed_throttle_parameters_are_rejected(
 
 
 def test_default_fixed_throttle_configuration_is_valid():
-    _validate_fixed_throttle_config(0.30, 0.01, 0.00, 0.50)
+    assert DEFAULT_FIXED_THROTTLE_SETPOINT == 0.00
+    _validate_fixed_throttle_config(
+        DEFAULT_FIXED_THROTTLE_SETPOINT, 0.01, 0.00, 0.50
+    )
 
 
 @pytest.mark.parametrize('expo', [-0.01, 1.01, math.nan, math.inf, 1])

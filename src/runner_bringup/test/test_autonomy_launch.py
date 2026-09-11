@@ -81,7 +81,7 @@ def test_local_control_parameters_live_only_in_persistent_launch():
         "'manual_trigger_expo': 0.50",
         "'controller_timeout': 0.15",
         "'keyboard_state_timeout': 0.15",
-        "'fixed_throttle_initial_setpoint': 0.30",
+        "'fixed_throttle_initial_setpoint': 0.00",
         "executable='keyboard_bridge'",
         "'input_timeout': 0.15",
         "'speed_cap': 0.50",

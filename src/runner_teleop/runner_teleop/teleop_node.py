@@ -41,6 +41,7 @@ RELEASE_BRAKE_MODE = 'release_brake'
 DEFAULT_INPUT_TIMEOUT = 0.15
 DEFAULT_MANUAL_TRIGGER_EXPO = 0.50
 DEFAULT_RELEASE_BRAKE_DURATION = 0.35
+DEFAULT_FIXED_THROTTLE_SETPOINT = 0.00
 
 NEUTRAL_US = 1500
 FWD_ONSET_US = 1550
@@ -159,7 +160,10 @@ class TeleopNode(Node):
         self.declare_parameter(
             'manual_trigger_expo', DEFAULT_MANUAL_TRIGGER_EXPO
         )
-        self.declare_parameter('fixed_throttle_initial_setpoint', 0.30)
+        self.declare_parameter(
+            'fixed_throttle_initial_setpoint',
+            DEFAULT_FIXED_THROTTLE_SETPOINT,
+        )
         self.declare_parameter('fixed_throttle_step', 0.01)
         self.declare_parameter('fixed_throttle_max_setpoint', 0.50)
         self.declare_parameter('fixed_throttle_min_setpoint', 0.00)

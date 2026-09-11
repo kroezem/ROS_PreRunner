@@ -22,6 +22,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import RecordingEntry, RecordingRequest, RecordingState
+from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
 from runner_paddock.recording import RecordingExecutor
 
 
@@ -31,7 +32,7 @@ class RecordingExecutorNode(Node):
     def __init__(self) -> None:
         super().__init__('runner_recording_executor')
         root = Path(str(self.declare_parameter(
-            'recording_directory', '/home/matti/runner_ws/bags'
+            'recording_directory', str(DEFAULT_RECORDING_DIRECTORY)
         ).value))
         self._executor = RecordingExecutor(root)
         self._lease_id = ''

@@ -57,9 +57,9 @@ If X takes over while R1 is held, releasing X does not resume fixed throttle.
 Teleop reports `fixed_throttle_inhibited` and publishes full brake until R1
 is released. R1 must then be pressed again to request fixed throttle.
 
-The production defaults are an initial setpoint of `0.30`, step `0.01`,
+The production defaults are an initial setpoint of `0.00`, step `0.01`,
 minimum `0.00`, and maximum `0.50`. The selected setpoint persists only for
-the teleop process lifetime and resets to `0.30` at every process start unless
+the teleop process lifetime and resets to `0.00` at every process start unless
 the production launch explicitly overrides the initial parameter. Every R1
 press logs the selected setpoint and its legacy expected-ESC-pulse diagnostic.
 That diagnostic is not used by the MD13S motor mapping and is not measured

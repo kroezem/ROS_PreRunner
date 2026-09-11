@@ -24,6 +24,7 @@ from typing import AsyncIterator
 import uuid
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi import WebSocket
 from fastapi import WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -31,6 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from runner_paddock.client_stream import ClientHub
 from runner_paddock.client_stream import StateStreamer
 from runner_paddock.protocol import encode_message
+from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
+from runner_paddock.recording import resolve_finalized_mcap
 from runner_paddock.ros_runtime import RosRuntime
 from runner_paddock.state_cache import StateCache
 import uvicorn
@@ -40,13 +43,21 @@ STATIC_DIRECTORY = Path(str(files('runner_paddock.static')))
 
 
 def create_app(
-    *, cache: StateCache | None = None, runtime: RosRuntime | None = None
+    *, cache: StateCache | None = None, runtime: RosRuntime | None = None,
+    recording_root: Path | None = None,
 ) -> FastAPI:
     """Build one web application around an injectable ROS lifecycle."""
     state_cache = cache if cache is not None else StateCache()
     ros_runtime = runtime if runtime is not None else RosRuntime(state_cache)
     hub = ClientHub()
     streamer = StateStreamer(state_cache, hub)
+    catalog_root = (
+        recording_root
+        if recording_root is not None
+        else Path(os.environ.get(
+            'PADDOCK_RECORDING_DIRECTORY', DEFAULT_RECORDING_DIRECTORY
+        ))
+    ).resolve()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -85,6 +96,37 @@ def create_app(
     @app.get('/', include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIRECTORY / 'index.html')
+
+    @app.get('/recordings/{name}/download', include_in_schema=False)
+    async def download_recording(name: str) -> FileResponse:
+        snapshot = state_cache.state_snapshot()
+        source = snapshot['health']['sources']['recording_state']
+        if not source['fresh']:
+            raise HTTPException(
+                status_code=503,
+                detail='authoritative recording catalog is unavailable',
+            )
+        recording = snapshot.get('recording_state') or {}
+        if recording.get('state') in (1, 2, 3):
+            raise HTTPException(
+                status_code=409,
+                detail='recording download unavailable while recorder is active',
+            )
+        catalog_names = {
+            entry.get('name') for entry in recording.get('recordings', ())
+            if isinstance(entry, dict)
+        }
+        if name not in catalog_names:
+            raise HTTPException(status_code=404, detail='recording not in catalog')
+        try:
+            mcap = resolve_finalized_mcap(catalog_root, name)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        return FileResponse(
+            mcap,
+            media_type='application/octet-stream',
+            filename=mcap.name,
+        )
 
     @app.websocket('/ws')
     async def websocket_state(websocket: WebSocket) -> None:

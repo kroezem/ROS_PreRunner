@@ -158,6 +158,67 @@ def test_static_shell_lifecycle_and_two_clients():
     assert len(runtime.disconnected) == 2
 
 
+def test_finalized_recording_download_is_catalog_and_root_scoped(tmp_path):
+    root = tmp_path / 'bags'
+    bag = root / 'finished'
+    bag.mkdir(parents=True)
+    mcap = bag / 'finished_0.mcap'
+    mcap.write_bytes(b'MCAP download')
+    (bag / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 2\n'
+        '  relative_file_paths:\n    - finished_0.mcap\n',
+        encoding='utf-8',
+    )
+    cache = _initial_cache()
+    cache.update('recording_state', {
+        'state': 0,
+        'recordings': [{'name': 'finished'}],
+    })
+    app = create_app(
+        cache=cache, runtime=FakeRuntime(), recording_root=root
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/recordings/finished/download')
+        missing = client.get('/recordings/not-cataloged/download')
+
+    assert response.status_code == 200
+    assert response.content == b'MCAP download'
+    assert 'filename="finished_0.mcap"' in response.headers[
+        'content-disposition'
+    ]
+    assert missing.status_code == 404
+
+
+def test_recording_download_is_blocked_while_recorder_active(tmp_path):
+    cache = _initial_cache()
+    cache.update('recording_state', {
+        'state': 3,
+        'recordings': [{'name': 'finished'}],
+    })
+    app = create_app(
+        cache=cache, runtime=FakeRuntime(), recording_root=tmp_path
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/recordings/finished/download')
+
+    assert response.status_code == 409
+
+
+def test_recording_download_requires_fresh_authoritative_catalog(tmp_path):
+    app = create_app(
+        cache=_initial_cache(), runtime=FakeRuntime(), recording_root=tmp_path
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/recordings/finished/download')
+
+    assert response.status_code == 503
+
+
 def test_ws_action_round_trip_and_lease_role():
     runtime = FakeRuntime()
     app = create_app(cache=_initial_cache(), runtime=runtime)

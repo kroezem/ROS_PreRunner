@@ -21,6 +21,7 @@ import pytest
 
 import runner_paddock.recording as recording
 from runner_paddock.recording import RecordingExecutor
+from runner_paddock.recording import resolve_finalized_mcap
 from runner_paddock.recording import RUNNER_DEBUG_TOPICS
 from runner_paddock.recording import safe_recording_name
 
@@ -107,6 +108,43 @@ def test_catalog_reads_rosbag_metadata_and_delete_is_explicit(tmp_path):
     assert entry.size_bytes > 0
     executor.delete(9, 'finished')
     assert not bag.exists()
+
+
+def test_download_resolver_uses_finalized_metadata_path(tmp_path):
+    root = tmp_path / 'bags'
+    bag = root / 'finished'
+    bag.mkdir(parents=True)
+    mcap = bag / 'finished_0.mcap'
+    mcap.write_bytes(b'MCAP data')
+    (bag / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 2\n'
+        '  relative_file_paths:\n    - finished_0.mcap\n',
+        encoding='utf-8',
+    )
+
+    assert resolve_finalized_mcap(root, 'finished') == mcap
+    with pytest.raises(ValueError):
+        resolve_finalized_mcap(root, '../finished')
+
+
+def test_download_resolver_rejects_metadata_escape(tmp_path):
+    root = tmp_path / 'bags'
+    bag = root / 'finished'
+    bag.mkdir(parents=True)
+    outside = root / 'outside.mcap'
+    outside.write_bytes(b'not part of the bag')
+    (bag / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 2\n'
+        '  relative_file_paths:\n    - ../outside.mcap\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(ValueError, match='invalid MCAP path'):
+        resolve_finalized_mcap(root, 'finished')
 
 
 def test_catalog_reuses_metadata_until_directory_changes(tmp_path, monkeypatch):
