@@ -257,8 +257,21 @@ def summarize_plateaus(segments, samples, bag_start_ns):
 
 def fit_models(plateaus):
     steady = [item for item in plateaus if item['classification'] == 'steady']
+    forward_commands = {
+        round(abs(item['command']), 6)
+        for item in steady if item['direction'] == 'forward'
+    }
+    reverse_commands = {
+        round(abs(item['command']), 6)
+        for item in steady if item['direction'] == 'reverse'
+    }
+    common_commands = forward_commands & reverse_commands
     cohorts = {
         'symmetric': steady,
+        'symmetric_common_range': [
+            item for item in steady
+            if round(abs(item['command']), 6) in common_commands
+        ],
         'forward': [item for item in steady if item['direction'] == 'forward'],
         'reverse': [item for item in steady if item['direction'] == 'reverse'],
     }
