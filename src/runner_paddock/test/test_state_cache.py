@@ -68,6 +68,15 @@ def test_invalidate_discards_large_value_and_advances_revision_once():
     assert cache.large_snapshot('map') == (2, None)
 
 
+def test_grid_updates_retain_replacement_payload_without_copying():
+    cache = StateCache(clock=lambda: 1.0)
+    grid = {'frame_id': 'map', 'data': [0, 100, -1]}
+
+    cache.update('map', grid)
+
+    assert cache.large_snapshot('map')[1] is grid
+
+
 def test_cpu_and_battery_freshness_expires_instead_of_becoming_zero():
     now = [1.0]
     cache = StateCache(clock=lambda: now[0])

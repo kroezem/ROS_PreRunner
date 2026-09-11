@@ -20,6 +20,7 @@ import math
 import pytest
 
 from runner_paddock.protocol import encode_message
+from runner_paddock.protocol import ValidatedGridData
 
 
 def test_frame_has_protocol_version_and_type():
@@ -42,3 +43,17 @@ def test_non_json_values_and_keys_are_rejected():
         encode_message('state', value=(1, 2))
     with pytest.raises(TypeError, match='non-string object key'):
         encode_message('state', value={1: 'not allowed'})
+
+
+def test_validated_grid_data_preserves_json_array_protocol():
+    data = ValidatedGridData([-1, 0, 100])
+    frame = json.loads(encode_message('map', width=3, height=1, data=data))
+    assert frame['data'] == [-1, 0, 100]
+    with pytest.raises(TypeError, match='immutable'):
+        data.append(0)
+
+
+@pytest.mark.parametrize('data', [[0, 101], [-2, 0], [0, 1.5], [0, True]])
+def test_validated_grid_data_rejects_bad_cells(data):
+    with pytest.raises((TypeError, ValueError), match='OccupancyGrid data'):
+        ValidatedGridData(data)

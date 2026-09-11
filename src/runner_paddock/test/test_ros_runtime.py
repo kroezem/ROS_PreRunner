@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
+import pytest
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.msg import ParameterValue
 from runner_interfaces.msg import ConfigState
@@ -31,7 +32,7 @@ from runner_paddock.gateway import GatewayResult
 from runner_paddock.gateway import InitialPoseIntent
 from runner_paddock.gateway import ObstacleProcessingIntent
 from runner_paddock.ros_runtime import RosRuntime
-from runner_paddock.ros_state_node import RosStateNode
+from runner_paddock.ros_state_node import _grid, RosStateNode
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
 
@@ -327,6 +328,25 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
     revision, active_map = cache.large_snapshot('map')
     assert revision == 3
     assert active_map['runtime_epoch'] == 5
+
+
+def test_grid_validation_preserves_cells_and_rejects_bad_input():
+    message = OccupancyGrid()
+    message.header.frame_id = 'map'
+    message.info.resolution = 0.05
+    message.info.width = 3
+    message.info.height = 1
+    message.data = [-1, 0, 100]
+
+    assert _grid(message)['data'] == [-1, 0, 100]
+
+    message.data = [-1, 0, 101]
+    with pytest.raises(ValueError, match=r'outside \[-1, 100\]'):
+        _grid(message)
+
+    message.data = [0, 100]
+    with pytest.raises(ValueError, match='dimensions do not match'):
+        _grid(message)
 
 
 def test_queued_previous_runtime_map_is_rejected_after_resubscribe():

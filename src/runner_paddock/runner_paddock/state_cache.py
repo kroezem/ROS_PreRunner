@@ -33,6 +33,9 @@ class _Entry:
 class StateCache:
     """Hold immutable-by-convention JSON values behind one short lock."""
 
+    _GRID_SOURCES = ('map', 'global_costmap', 'local_costmap')
+    _LARGE_SOURCES = (*_GRID_SOURCES, 'plan')
+
     _EXPIRY_SEC = {
         'pose': 0.5,
         'mode': 0.5,
@@ -92,7 +95,9 @@ class StateCache:
         if source not in self._entries:
             raise KeyError(source)
         now = self._clock()
-        copied = deepcopy(value)
+        # ROS callbacks build replacement-only large payloads. Retaining their
+        # reference avoids walking every grid merely to make an identical copy.
+        copied = value if source in self._GRID_SOURCES else deepcopy(value)
         with self._lock:
             entry = self._entries[source]
             changed = entry.value != copied
@@ -153,7 +158,7 @@ class StateCache:
         value. The stable reference avoids copying a potentially large grid
         while holding the cache lock.
         """
-        if source not in ('map', 'plan', 'global_costmap', 'local_costmap'):
+        if source not in self._LARGE_SOURCES:
             raise KeyError(source)
         with self._lock:
             entry = self._entries[source]

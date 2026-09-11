@@ -90,6 +90,14 @@ def test_frontend_assets_are_packaged_at_runtime_location():
     }
 
 
+def test_hidden_diagnostics_skip_periodic_stringification():
+    app_source = (STATIC_DIRECTORY / 'app.js').read_text(encoding='utf-8')
+
+    assert 'if (!diagnosticsVisible(debugDetails)) return;' in app_source
+    assert 'if (!diagnosticsVisible(healthDetails)) return;' in app_source
+    assert 'details.closest("[hidden]")' in app_source
+
+
 def test_static_shell_lifecycle_and_two_clients():
     runtime = FakeRuntime()
     app = create_app(cache=_initial_cache(), runtime=runtime)

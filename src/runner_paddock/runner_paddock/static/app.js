@@ -441,7 +441,7 @@ function render() {
     initialPoseInteraction.preview = null;
     setMapMode("view");
   }
-  $("health-debug").textContent = JSON.stringify(latest.health || {}, null, 2);
+  healthDebugRender();
   renderGoalControls();
   renderInitialPoseControls();
   renderMap();
@@ -1381,10 +1381,25 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) { stopRun(); releaseManual(); }
 });
 
+function diagnosticsVisible(details) {
+  return details.open && !document.hidden && !details.closest("[hidden]");
+}
+
+const healthDetails = $("health-debug").closest("details");
+const debugDetails = $("debug").closest("details");
+
+function healthDebugRender() {
+  if (!diagnosticsVisible(healthDetails)) return;
+  $("health-debug").textContent = JSON.stringify(latest.health || {}, null, 2);
+}
+
 function debugRender() {
+  if (!diagnosticsVisible(debugDetails)) return;
   $("debug").textContent = JSON.stringify(latest, (key, value) => key === "data" ? "[grid]" : value, 2);
 }
 
+healthDetails.addEventListener("toggle", healthDebugRender);
+debugDetails.addEventListener("toggle", debugRender);
 window.setInterval(debugRender, 500);
 initializeLayerControls();
 setMapMode("view");

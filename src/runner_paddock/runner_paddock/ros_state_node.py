@@ -64,6 +64,7 @@ from runner_paddock.gateway import (
     RecordingRequestIntent,
 )
 from runner_paddock.grid_geometry import compose, PlanarPose
+from runner_paddock.protocol import ValidatedGridData
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
 from tf2_ros import Buffer
@@ -173,11 +174,9 @@ def _grid(message: OccupancyGrid, *, origin: dict | None = None) -> dict:
         raise ValueError('OccupancyGrid resolution must be positive')
     width = int(info.width)
     height = int(info.height)
-    data = [int(value) for value in message.data]
+    data = ValidatedGridData(message.data)
     if width * height != len(data):
         raise ValueError('OccupancyGrid dimensions do not match data')
-    if any(value < -1 or value > 100 for value in data):
-        raise ValueError('OccupancyGrid data is outside [-1, 100]')
     return {
         'stamp': _stamp(message.header.stamp),
         'frame_id': message.header.frame_id,
