@@ -186,7 +186,7 @@ def create_app(
 
 
 def main() -> None:
-    """Run Paddock on loopback with the single-worker process model."""
+    """Run Paddock with the single-worker process model."""
     uvicorn.run(
         'runner_paddock.web_app:create_app',
         factory=True,

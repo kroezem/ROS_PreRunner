@@ -140,10 +140,11 @@ rejects the selected or active-autonomy map. It holds at most one control lease
 at a time (one controller, any number of observers); it manufactures no
 renewals — an intent is published only in direct response to a fresh browser
 message, so a silent browser lets the Pi-side lease expire. It still runs
-unprivileged as `matti`,
-binds `127.0.0.1` only (`PADDOCK_WEB_HOST`/`PADDOCK_WEB_PORT` in the unit),
-runs one uvicorn worker with no reload, and has no `systemctl`/sudoers grant —
-it cannot touch the hardware tier and can only *request* mode changes through
+unprivileged as `matti`, binds all interfaces on port 8000
+(`PADDOCK_WEB_HOST`/`PADDOCK_WEB_PORT` in
+the unit) so the field AP is usable, runs one uvicorn worker with no reload,
+and has no `systemctl`/sudoers grant — it cannot touch the hardware tier and
+can only *request* mode changes through
 the lease-checked mode supervisor / map executor / command authority. `KillSignal=SIGINT` gives uvicorn the same
 graceful shutdown path as an interactive Ctrl-C, after which the
 `/runner_paddock_web_state` node leaves the graph. Runtime dependencies
@@ -161,10 +162,17 @@ reports applied only after a subsequent map-frame slam_toolbox `/pose` sample.
 The browser remains a requester and slam_toolbox remains the only `map→odom`
 owner; this path does not publish TF or modify a saved map bundle.
 
-**Reaching Paddock: Tailscale Serve, not a LAN port (Stage 3C).** The backend
-only ever binds `127.0.0.1:8000`; it is not reachable from the LAN or from
-the tailnet IP directly. The network-facing boundary is Tailscale Serve,
-configured tailnet-only (no Funnel — never public internet):
+**Reaching Paddock.** The backend binds `0.0.0.0:8000` so clients on the
+Runner-hosted field AP can use `http://10.42.0.1:8000/` (or, where mDNS is
+available, `http://makro-runner.local:8000/`). The AP and captive-discovery
+install is documented in [`../network/README.md`](../network/README.md).
+This changes only transport reachability: same-origin `/ws` handling and all
+lease/disconnect/deadman behavior remain in the existing gateway and Pi-side
+supervisors.
+
+For deliberate non-field use, Tailscale Serve remains configured tailnet-only
+(no Funnel — never public internet) and may continue proxying the same local
+port:
 
 ```sh
 tailscale serve --bg --https=443 http://127.0.0.1:8000
