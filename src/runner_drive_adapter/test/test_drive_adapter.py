@@ -506,6 +506,61 @@ def test_combined_live_gain_update_is_atomic_on_rejection():
     assert adapter.integrator_state == 0.004
 
 
+@pytest.mark.parametrize(
+    ('parameter', 'value', 'speed', 'measured', 'field', 'expected'),
+    [
+        (
+            'maximum_commanded_speed', 0.50, 0.60, 0.50,
+            'effective_speed', 0.50,
+        ),
+        (
+            'feedforward_effort_per_speed', 0.10, 0.45, 0.45,
+            'feedforward_throttle', 0.0624,
+        ),
+        (
+            'feedforward_effort_intercept', 0.020, 0.45, 0.45,
+            'feedforward_throttle', 0.07346,
+        ),
+        (
+            'output_max', 0.10, 0.60, 0.0,
+            'final_throttle', 0.10,
+        ),
+    ],
+)
+def test_live_speed_parameter_changes_next_cycle_behavior(
+    parameter, value, speed, measured, field, expected
+):
+    adapter = DriveAdapter(AdapterConfig())
+
+    adapter.set_live_parameters(**{parameter: value})
+    decision = _update(adapter, 0.0, speed=speed, measured=measured)
+
+    assert getattr(adapter.config, parameter) == value
+    assert getattr(decision, field) == pytest.approx(expected)
+
+
+def test_combined_live_speed_update_is_atomic_on_rejection():
+    adapter = DriveAdapter(AdapterConfig())
+    original = adapter.config
+
+    with pytest.raises(ValueError, match='maximum linear feedforward'):
+        adapter.set_live_parameters(
+            maximum_commanded_speed=1.0,
+            output_max=0.10,
+        )
+
+    assert adapter.config is original
+
+
+def test_non_authorized_parameter_cannot_claim_live_application():
+    adapter = DriveAdapter(AdapterConfig())
+
+    with pytest.raises(ValueError, match='not live-tunable'):
+        adapter.set_live_parameters(integrator_bound=0.004)
+
+    assert adapter.config.integrator_bound == 0.005
+
+
 def test_freeze_enum_values_match_the_typed_adapter_state_interface():
     assert int(IntegratorFreezeReason.NONE) == AdapterState.INTEGRATOR_ACTIVE
     assert (

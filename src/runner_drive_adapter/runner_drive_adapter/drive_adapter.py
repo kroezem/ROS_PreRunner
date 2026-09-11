@@ -24,6 +24,14 @@ MAXIMUM_OUTPUT_AUTHORITY = 0.14
 MINIMUM_EXPECTED_FEEDFORWARD = 0.04
 MAX_INTEGRATION_DT_SEC = 0.5
 SELECTION_ABS_TOLERANCE = 1e-9
+LIVE_TUNABLE_PARAMETERS = (
+    'maximum_commanded_speed',
+    'feedforward_effort_per_speed',
+    'feedforward_effort_intercept',
+    'output_max',
+    'proportional_gain',
+    'integral_gain',
+)
 
 
 class IntegratorFreezeReason(IntEnum):
@@ -302,6 +310,14 @@ class DriveAdapter:
             )
             if value is not None
         }
+        self.set_live_parameters(**updates)
+
+    def set_live_parameters(self, **updates: float) -> None:
+        """Validate and atomically apply authorized runtime parameters."""
+        unsupported = set(updates) - set(LIVE_TUNABLE_PARAMETERS)
+        if unsupported:
+            names = ', '.join(sorted(unsupported))
+            raise ValueError(f'parameters are not live-tunable: {names}')
         for name, value in updates.items():
             if isinstance(value, bool) or not isinstance(value, float):
                 raise TypeError(f'{name} must be a double')
@@ -309,7 +325,7 @@ class DriveAdapter:
             **{**self.config.__dict__, **updates}
         )
         self.config = candidate
-        if integral_gain is not None:
+        if 'integral_gain' in updates:
             self._integrator = 0.0
             self._previous_encoder_sample_time = None
 

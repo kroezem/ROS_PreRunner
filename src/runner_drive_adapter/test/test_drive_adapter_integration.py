@@ -283,6 +283,61 @@ def test_graph_ownership_staleness_and_diagnostics():
             Parameter('integral_gain', Parameter.Type.DOUBLE, 0.0)
         ])[0]
         assert result.successful
+
+        live_values = {
+            'maximum_commanded_speed': 0.50,
+            'feedforward_effort_per_speed': 0.12,
+            'feedforward_effort_intercept': 0.018,
+            'output_max': 0.10,
+            'proportional_gain': 0.04,
+            'integral_gain': 0.005,
+        }
+        result = adapter.set_parameters_atomically([
+            Parameter(name, Parameter.Type.DOUBLE, value)
+            for name, value in live_values.items()
+        ])
+        assert result.successful
+        for name, expected in live_values.items():
+            assert adapter.get_parameter(name).value == expected
+            assert getattr(adapter.config, name) == expected
+            assert getattr(adapter.adapter.config, name) == expected
+
+        adapter.adapter.update_command(0.60, 0.0, 10.0)
+        adapter.adapter.update_encoder(
+            False,
+            0.50 / adapter.config.encoder_metres_per_edge,
+            1,
+            10.0,
+            10.0,
+        )
+        decision = adapter.adapter.step(10.0)
+        assert decision.effective_speed == 0.50
+        assert decision.feedforward_throttle == 0.078
+        assert decision.final_throttle == 0.078
+
+        before_readback = {
+            name: adapter.get_parameter(name).value for name in live_values
+        }
+        before_active = adapter.adapter.config
+        result = adapter.set_parameters_atomically([
+            Parameter(
+                'maximum_commanded_speed', Parameter.Type.DOUBLE, 1.0
+            ),
+            Parameter('output_max', Parameter.Type.DOUBLE, 0.10),
+        ])
+        assert not result.successful
+        assert 'maximum linear feedforward' in result.reason
+        assert adapter.adapter.config is before_active
+        assert {
+            name: adapter.get_parameter(name).value for name in live_values
+        } == before_readback
+
+        result = adapter.set_parameters([
+            Parameter('integrator_bound', Parameter.Type.DOUBLE, 0.004)
+        ])[0]
+        assert not result.successful
+        assert adapter.get_parameter('integrator_bound').value == 0.005
+        assert adapter.adapter.config.integrator_bound == 0.005
     finally:
         executor.remove_node(probe)
         executor.remove_node(adapter)

@@ -9,11 +9,15 @@ remains pending.
 
 The adapter's bounded parallel-form integrator uses the encoder sample stamps
 for `dt` and a symmetric `integrator_bound` in normalized effort. Ki is 0.01
-in the committed origin. Successful live `proportional_gain` and
-`integral_gain` writes are applied on the next adapter control cycle. A Kp write
-does not reset integral state; a successful Ki write retains its existing
-reset. No other adapter parameter is live-effective. The observer remains
-read-only.
+in the committed origin. Successful live writes to
+`maximum_commanded_speed`, `feedforward_effort_per_speed`,
+`feedforward_effort_intercept`, `output_max`, `proportional_gain`, and
+`integral_gain` are validated together and applied as one immutable
+configuration swap for the next adapter control cycle. A Kp write does not
+reset integral state; a successful Ki write retains its existing reset. Other
+adapter configuration parameters reject runtime writes so ROS parameter
+read-back cannot diverge silently from active controller state. The observer
+remains read-only.
 
 `integrator_freeze_reason` evaluates the existing conditions independently of
 the configured Ki. If conditions coincide, its deterministic precedence from highest to
@@ -85,7 +89,7 @@ The old ESC pulse calculations and messages in DualSense teleop are adjacent
 cleanup only. They remain inert with respect to the published normalized effort
 and are deliberately outside this consolidation.
 
-## Five-parameter live tuning panel
+## Nine-parameter live tuning panel
 
 Create one Foxglove **Parameters** panel named `Speed loop — live subset` and
 show only these exact node/parameter pairs:
@@ -95,15 +99,20 @@ show only these exact node/parameter pairs:
 | `/controller_server` | `FollowPath.desired_linear_vel` | `0.45` |
 | `/controller_server` | `FollowPath.min_approach_linear_velocity` | `0.25` |
 | `/controller_server` | `FollowPath.regulated_linear_scaling_min_speed` | `0.30` |
+| `/drive_adapter` | `maximum_commanded_speed` | `0.60` |
+| `/drive_adapter` | `feedforward_effort_per_speed` | `0.1188` |
+| `/drive_adapter` | `feedforward_effort_intercept` | `0.0174` |
+| `/drive_adapter` | `output_max` | `0.14` |
 | `/drive_adapter` | `proportional_gain` | `0.05` |
 | `/drive_adapter` | `integral_gain` | `0.01` |
 
 The three `FollowPath` values are protected by RPP's dynamic-parameter mutex.
-The two adapter values use one validated config swap in its parameter callback.
-All five are read back independently on `/speed_envelope/status`; an override
+The six adapter values use one validated config swap in its parameter callback.
+All nine are read back independently on `/speed_envelope/status`; an override
 sets that entry to `DIVERGENCE_DIFFERENT`, and restoring the value returns it to
-`DIVERGENCE_MATCH`. The panel must not include any other speed-envelope value,
-because no other adapter parameter is authorized for live application.
+`DIVERGENCE_MATCH`. No other adapter parameter is authorized for live
+application; attempted writes are rejected rather than creating parameter
+read-back that differs from active controller state.
 
 ## Active-route hardware verification
 

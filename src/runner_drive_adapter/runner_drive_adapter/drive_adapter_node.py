@@ -29,7 +29,11 @@ from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from runner_drive_adapter.drive_adapter import AdapterConfig, DriveAdapter
+from runner_drive_adapter.drive_adapter import (
+    AdapterConfig,
+    DriveAdapter,
+    LIVE_TUNABLE_PARAMETERS,
+)
 from runner_interfaces.msg import AdapterState, ConvertedCommand, EncoderState
 from runner_interfaces.msg import ManualDemand
 from std_msgs.msg import String
@@ -85,6 +89,7 @@ class DriveAdapterNode(Node):
         )
         for name in names:
             self.declare_parameter(name, getattr(defaults, name))
+        self._config_parameter_names = frozenset(names)
         values = {name: self.get_parameter(name).value for name in names}
         try:
             config = AdapterConfig(**values)
@@ -199,16 +204,26 @@ class DriveAdapterNode(Node):
         )
 
     def _on_parameters(self, parameters) -> SetParametersResult:
-        """Atomically apply live Kp/Ki; only a Ki write resets state."""
+        """Atomically apply the authorized live adapter configuration."""
+        static = sorted({
+            parameter.name for parameter in parameters
+            if parameter.name in self._config_parameter_names
+            and parameter.name not in LIVE_TUNABLE_PARAMETERS
+        })
+        if static:
+            return SetParametersResult(
+                successful=False,
+                reason='parameters are not live-tunable: ' + ', '.join(static),
+            )
         changes = {
             parameter.name: parameter.value
             for parameter in parameters
-            if parameter.name in ('proportional_gain', 'integral_gain')
+            if parameter.name in LIVE_TUNABLE_PARAMETERS
         }
         if not changes:
             return SetParametersResult(successful=True)
         try:
-            self.adapter.set_controller_gains(**changes)
+            self.adapter.set_live_parameters(**changes)
         except (TypeError, ValueError) as error:
             return SetParametersResult(
                 successful=False,
