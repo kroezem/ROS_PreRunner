@@ -28,6 +28,14 @@ from runner_interfaces.msg import ConfigState
 from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
+from runner_paddock.autonomy_tuning import (
+    ADAPTER_OWNER,
+    CONFIDENT,
+    CONTROLLER_OWNER,
+    PARAMETERS as TUNING_PARAMETERS,
+    TIMID,
+)
+from runner_paddock.gateway import AutonomyTuningIntent
 from runner_paddock.gateway import GatewayResult
 from runner_paddock.gateway import InitialPoseIntent
 from runner_paddock.gateway import ObstacleProcessingIntent
@@ -122,15 +130,72 @@ def _ready_initial_pose_cache(*, stopped=True, stationary=True):
 
 
 def _initial_pose_node(cache, subscribers=1):
-    return SimpleNamespace(
-        _cache=cache,
-        _initial_pose_pub=_InitialPosePublisher(subscribers),
-        _initial_pose_lock=threading.Lock(),
-        _pending_initial_pose=None,
-        _initial_pose_rejection=RosStateNode._initial_pose_rejection,
-        _initial_pose_status=RosStateNode._initial_pose_status,
-        get_clock=lambda: _Clock(),
-    )
+    node = RosStateNode.__new__(RosStateNode)
+    node._cache = cache
+    node._initial_pose_pub = _InitialPosePublisher(subscribers)
+    node._initial_pose_lock = threading.Lock()
+    node._pending_initial_pose = None
+    node._initial_pose_request_id = 0
+    node._global_clear_client = _ClearClient()
+    node._local_clear_client = _ClearClient()
+    node.get_clock = lambda: _Clock()
+    node.get_logger = lambda: SimpleNamespace(warning=lambda _message: None)
+    return node
+
+
+class _TuningClient:
+    def __init__(self, owner, state, operation):
+        self.owner = owner
+        self.state = state
+        self.operation = operation
+        self.requests = []
+
+    def service_is_ready(self):
+        return True
+
+    def call_async(self, request):
+        self.requests.append(request)
+        if self.operation == 'get':
+            response = SimpleNamespace(values=[ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE,
+                double_value=self.state[name],
+            ) for name in request.names])
+        else:
+            for parameter in request.parameters:
+                self.state[parameter.name] = parameter.value.double_value
+            response = SimpleNamespace(result=SimpleNamespace(
+                successful=True, reason='',
+            ))
+        return _ResponseFuture(response)
+
+
+def _tuning_node(values):
+    node = RosStateNode.__new__(RosStateNode)
+    node._cache = StateCache()
+    node._tuning_lock = threading.Lock()
+    node._tuning_request_id = 0
+    node._tuning_operation = None
+    node._tuning_state = {
+        'available': False, 'preset': 'custom', 'values': {},
+        'status': 'unavailable', 'detail': 'waiting', 'request_id': 0,
+    }
+    states = {
+        owner: {
+            spec.parameter_name: values[field]
+            for field, spec in TUNING_PARAMETERS.items()
+            if spec.owner == owner
+        }
+        for owner in (CONTROLLER_OWNER, ADAPTER_OWNER)
+    }
+    node._tuning_get_clients = {
+        owner: _TuningClient(owner, state, 'get')
+        for owner, state in states.items()
+    }
+    node._tuning_set_clients = {
+        owner: _TuningClient(owner, state, 'set')
+        for owner, state in states.items()
+    }
+    return node
 
 
 def _obstacle_node(*, current, set_success=True):
@@ -403,6 +468,7 @@ def test_backend_publishes_slam_toolbox_initialpose_with_map_semantics():
     intent = InitialPoseIntent(x=1.25, y=-0.5, yaw=0.75)
 
     result = RosStateNode._set_initial_pose(node, intent, 'controller')
+    RosStateNode._advance_initial_pose_transaction(node)
 
     assert result.accepted
     assert len(node._initial_pose_pub.messages) == 1
@@ -421,11 +487,11 @@ def test_backend_publishes_slam_toolbox_initialpose_with_map_semantics():
     assert message.pose.covariance[7] == 0.25
     assert message.pose.covariance[35] == 0.06853891909122467
     status = node._cache.state_snapshot()['initial_pose']
-    assert status['state'] == 'accepted'
+    assert status['state'] == 'localizing'
     assert status['map'] == 'studio'
 
 
-def test_initial_pose_rejection_is_visible_and_publishes_nothing():
+def test_initial_pose_waits_for_stop_and_stationary_before_publish():
     node = _initial_pose_node(
         _ready_initial_pose_cache(stopped=False, stationary=False)
     )
@@ -434,12 +500,21 @@ def test_initial_pose_rejection_is_visible_and_publishes_nothing():
         node, InitialPoseIntent(1.0, 2.0, 0.0), 'controller'
     )
 
-    assert not result.accepted
-    assert result.reason == 'initial pose requires healthy applied STOP'
+    assert result.accepted
     assert not node._initial_pose_pub.messages
     status = node._cache.state_snapshot()['initial_pose']
-    assert status['state'] == 'rejected'
-    assert status['detail'] == result.reason
+    assert status['state'] == 'stopping'
+
+    node._cache.update('stop_state', {
+        'stopped': True, 'locked': True, 'healthy': True, 'applied': True,
+    })
+    node._cache.update('encoder_state', {'stationary': True})
+    RosStateNode._advance_initial_pose_transaction(node)
+
+    assert len(node._initial_pose_pub.messages) == 1
+    assert node._cache.state_snapshot()['initial_pose'][
+        'state'
+    ] == 'localizing'
 
 
 def test_post_request_slam_toolbox_pose_marks_seed_applied():
@@ -448,7 +523,7 @@ def test_post_request_slam_toolbox_pose_marks_seed_applied():
     RosStateNode._set_initial_pose(
         node, InitialPoseIntent(1.0, 2.0, 0.2), 'controller'
     )
-    node.get_logger = lambda: SimpleNamespace(warning=lambda _message: None)
+    RosStateNode._advance_initial_pose_transaction(node)
     observed = PoseWithCovarianceStamped()
     observed.header.frame_id = 'map'
     observed.header.stamp = Time(sec=13)
@@ -461,3 +536,69 @@ def test_post_request_slam_toolbox_pose_marks_seed_applied():
     status = cache.state_snapshot()['initial_pose']
     assert status['state'] == 'applied'
     assert status['observed']['pose']['position']['x'] == 1.04
+    assert node._global_clear_client.calls == 1
+    assert node._local_clear_client.calls == 1
+    assert cache.state_snapshot()['stop_state']['stopped']
+
+
+def test_initial_pose_clear_failure_is_terminal_and_visible():
+    cache = _ready_initial_pose_cache()
+    node = _initial_pose_node(cache)
+    node._local_clear_client.ready = False
+    RosStateNode._set_initial_pose(
+        node, InitialPoseIntent(1.0, 2.0, 0.2), 'controller'
+    )
+    RosStateNode._advance_initial_pose_transaction(node)
+    observed = PoseWithCovarianceStamped()
+    observed.header.frame_id = 'map'
+    observed.header.stamp = Time(sec=13)
+    observed.pose.pose.orientation.w = 1.0
+
+    RosStateNode._on_localizer_pose(node, observed)
+
+    status = cache.state_snapshot()['initial_pose']
+    assert status['state'] == 'rejected'
+    assert 'local costmap clear service unavailable' in status['detail']
+    assert node._global_clear_client.calls == 0
+
+
+def test_timid_confident_and_custom_are_classified_from_live_readback():
+    node = _tuning_node(TIMID)
+    RosStateNode._start_tuning_read(node)
+    timid = node._cache.state_snapshot()['autonomy_tuning']
+    assert timid['available']
+    assert timid['preset'] == 'timid'
+    assert timid['values'] == TIMID
+
+    result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='confident'), 'controller'
+    )
+    confident = node._cache.state_snapshot()['autonomy_tuning']
+    assert result.accepted
+    assert confident['status'] == 'applied'
+    assert confident['preset'] == 'confident'
+    assert confident['values'] == CONFIDENT
+
+    custom_values = {**CONFIDENT, 'lookahead_time': 1.01}
+    result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(values=custom_values), 'controller'
+    )
+    custom = node._cache.state_snapshot()['autonomy_tuning']
+    assert result.accepted
+    assert custom['preset'] == 'custom'
+    assert custom['values']['lookahead_time'] == 1.01
+
+
+def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write():
+    node = _tuning_node(TIMID)
+
+    RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='confident'), 'controller'
+    )
+
+    for client in node._tuning_set_clients.values():
+        assert len(client.requests) == 1
+        assert client.requests[0].__class__.__name__.endswith('Request')
+        assert len(client.requests[0].parameters) > 1
+    for client in node._tuning_get_clients.values():
+        assert len(client.requests) == 1

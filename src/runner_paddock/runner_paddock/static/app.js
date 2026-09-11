@@ -292,6 +292,44 @@ function renderObstacleProcessing(costmap, state) {
   });
 }
 
+function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
+  const values = tuning.values || {};
+  const liveAdapter = adapterFresh ? adapter : {};
+  const available = tuning.available === true;
+  const preset = available ? String(tuning.preset || "custom") : "custom";
+  text("autonomy-preset", available ? preset.toUpperCase() : "UNAVAILABLE");
+  document.querySelectorAll("[data-speed-preset]").forEach((button) => {
+    const active = available && button.dataset.speedPreset === preset;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  document.querySelectorAll("[data-tuning-field]").forEach((input) => {
+    const value = values[input.dataset.tuningField];
+    if (document.activeElement !== input) input.value = Number.isFinite(value) ? String(value) : "";
+  });
+  text("autonomy-tuning-result", `${String(tuning.status || "unavailable").toUpperCase()} — ${tuning.detail || "waiting for live ROS parameter read-back"}`);
+  text("autonomy-speed-nominal", Number.isFinite(values.desired_linear_vel)
+    ? `${values.desired_linear_vel.toFixed(2)} m/s` : "—");
+  text("autonomy-speed-commanded", Number.isFinite(liveAdapter.commanded_speed)
+    ? `${liveAdapter.commanded_speed.toFixed(2)} m/s` : "—");
+  text("autonomy-speed-effective", Number.isFinite(liveAdapter.effective_speed)
+    ? `${liveAdapter.effective_speed.toFixed(2)} m/s` : "—");
+  text("autonomy-speed-measured", Number.isFinite(liveAdapter.measured_speed)
+    ? `${liveAdapter.measured_speed.toFixed(2)} m/s` : "—");
+
+  let reason = "—";
+  if (navActive && Number.isFinite(liveAdapter.commanded_speed) &&
+      Number.isFinite(liveAdapter.effective_speed) &&
+      Math.abs(liveAdapter.commanded_speed - liveAdapter.effective_speed) > 1e-6) {
+    reason = "Adapter ceiling/floor";
+  } else if (navActive && Number.isFinite(liveAdapter.commanded_speed) &&
+      Number.isFinite(values.desired_linear_vel) &&
+      Math.abs(liveAdapter.commanded_speed) + 1e-6 < values.desired_linear_vel) {
+    reason = "Nav2 regulation";
+  }
+  text("autonomy-limit-reason", reason);
+}
+
 function telemetryValue(source, valid, value, suffix, digits) {
   if (!source || !source.available) return "unavailable";
   const rendered = valid && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "unavailable value";
@@ -313,6 +351,7 @@ function render() {
   const recording = latest.recording_state || {};
   const config = latest.config || {};
   const obstacleProcessing = latest.obstacle_processing || {};
+  const tuning = latest.autonomy_tuning || {};
   const systemTelemetry = latest.system_telemetry || {};
   const battery = latest.battery || {};
   const sources = (latest.health || {}).sources || {};
@@ -335,6 +374,10 @@ function render() {
     (local.connected ? "connected, idle" : "disconnected"));
   renderObstacleProcessing("global", obstacleProcessing.global || {});
   renderObstacleProcessing("local", obstacleProcessing.local || {});
+  renderAutonomyTuning(
+    tuning, adapter, auth.autonomy_action_active === true,
+    (sources.adapter_state || {}).fresh === true,
+  );
   text("system-cpu-load", telemetryValue(
     sources.system_telemetry,
     systemTelemetry.cpu_valid,
@@ -399,7 +442,8 @@ function render() {
     "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
-    "#btn-apply-manual-speed, [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
+    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-engineering, " +
+    "[data-speed-preset], [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
   ).forEach((button) => {
     button.disabled = !controller;
   });
@@ -423,6 +467,13 @@ function render() {
   $("btn-initial-pose-mode").hidden = !autonomyControl;
   $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
   $("btn-clear-stop").hidden = !(stop.stopped || stop.clear_pending || auth.stop_applied);
+  $("btn-clear-stop").disabled = !controller || [
+    "stopping", "localizing", "clearing",
+  ].includes((latest.initial_pose || {}).state);
+  const tuningReady = controller && tuning.available === true && tuning.status !== "applying";
+  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-engineering").forEach((button) => {
+    button.disabled = !tuningReady;
+  });
   if (!runAvailable) stopRun();
 
   const preview = goalInteraction.preview;
@@ -444,6 +495,12 @@ function render() {
     initialPoseInteraction.awaiting = false;
     initialPoseInteraction.preview = null;
     setMapMode("view");
+  } else if (initialPreview && initialPoseInteraction.awaiting &&
+      initialPose.state === "rejected" &&
+      Math.abs(initialRequested.x - initialPreview.x) < 1e-6 &&
+      Math.abs(initialRequested.y - initialPreview.y) < 1e-6 &&
+      Math.abs(initialRequested.yaw - initialPreview.yaw) < 1e-6) {
+    initialPoseInteraction.awaiting = false;
   }
   healthDebugRender();
   renderGoalControls();
@@ -927,7 +984,7 @@ function renderInitialPoseControls() {
     : statusMatches && status.state === "rejected"
       ? `REJECTED · ${status.detail || "backend rejected initial pose"}`
     : initialPoseInteraction.awaiting
-      ? "Accepted by backend — awaiting slam_toolbox pose…"
+      ? `${String(status.state || "accepted").toUpperCase()} · ${status.detail || "awaiting backend transaction"}`
       : `INITIAL · x ${preview.x.toFixed(2)} · y ${preview.y.toFixed(2)} · yaw ${preview.yaw.toFixed(2)}`;
   const visible = Boolean(status.state);
   $("initial-pose-status").hidden = !visible || mapMode === "initial-pose";
@@ -1236,6 +1293,23 @@ $("btn-stop").addEventListener("click", () => {
 });
 $("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
+document.querySelectorAll("[data-speed-preset]").forEach((button) => {
+  button.addEventListener("click", () => send({
+    action: "set_autonomy_tuning",
+    preset: button.dataset.speedPreset,
+  }));
+});
+function applyTuningForm() {
+  const tuning = latest.autonomy_tuning || {};
+  if (!tuning.available) return;
+  const values = { ...(tuning.values || {}) };
+  document.querySelectorAll("[data-tuning-field]").forEach((input) => {
+    values[input.dataset.tuningField] = Number(input.value);
+  });
+  send({ action: "set_autonomy_tuning", values });
+}
+$("btn-apply-speed-policy").addEventListener("click", applyTuningForm);
+$("btn-apply-engineering").addEventListener("click", applyTuningForm);
 ["global", "local"].forEach((costmap) => {
   [true, false].forEach((enabled) => {
     $(`btn-${costmap}-obstacles-${enabled ? "on" : "off"}`).addEventListener("click", () => send({

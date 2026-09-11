@@ -17,6 +17,7 @@
 import itertools
 
 from runner_paddock.gateway import (
+    AutonomyTuningIntent,
     ClearCostmapsIntent,
     ConfigRequestIntent,
     ControlEvent,
@@ -194,16 +195,42 @@ def test_initial_pose_is_lease_scoped_finite_and_map_frame_only():
     }
     assert not gw.handle('observer', action).accepted
     gw.handle('c1', {'action': 'acquire'})
+    gw.handle('c1', {'action': 'run', 'held': True})
 
     result = gw.handle('c1', action)
 
     assert result.accepted
-    assert result.intents == (InitialPoseIntent(
+    assert result.intents[0].event == ControlEvent.STOP
+    assert gw.public_state()['run_pressed'] is False
+    assert result.intents[1] == InitialPoseIntent(
         x=1.25, y=-0.5, yaw=0.75, frame='map'
-    ),)
+    )
     assert not gw.handle('c1', {**action, 'frame': 'odom'}).accepted
     assert not gw.handle('c1', {
         **action, 'x': float('nan')
+    }).accepted
+
+
+def test_autonomy_tuning_is_lease_scoped_and_structured():
+    gw = _gateway()
+    assert not gw.handle('observer', {
+        'action': 'set_autonomy_tuning', 'preset': 'timid',
+    }).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    preset = gw.handle('c1', {
+        'action': 'set_autonomy_tuning', 'preset': 'confident',
+    })
+    custom = gw.handle('c1', {
+        'action': 'set_autonomy_tuning', 'values': {'lookahead_time': 1.1},
+    })
+
+    assert preset.intents == (AutonomyTuningIntent(preset='confident'),)
+    assert custom.intents == (AutonomyTuningIntent(
+        values={'lookahead_time': 1.1}
+    ),)
+    assert not gw.handle('c1', {
+        'action': 'set_autonomy_tuning', 'preset': 'fastest',
     }).accepted
 
 

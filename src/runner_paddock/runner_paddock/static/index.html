@@ -61,6 +61,20 @@
       </section>
 
       <section id="control-autonomy" class="runtime-control autonomy-control" hidden>
+        <div class="autonomy-policy-compact">
+          <div class="preset-row" aria-label="Adaptive speed preset">
+            <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
+            <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
+            <span id="autonomy-preset" class="status-chip">CUSTOM</span>
+          </div>
+          <dl class="speed-readout">
+            <div><dt>Nominal</dt><dd id="autonomy-speed-nominal">—</dd></div>
+            <div><dt>Nav2 command</dt><dd id="autonomy-speed-commanded">—</dd></div>
+            <div><dt>Adapter target</dt><dd id="autonomy-speed-effective">—</dd></div>
+            <div><dt>Measured</dt><dd id="autonomy-speed-measured">—</dd></div>
+          </dl>
+          <p id="autonomy-limit-reason" class="hint">—</p>
+        </div>
         <div class="autonomy-actions" aria-label="Autonomy setup actions">
           <button id="btn-initial-pose-mode" type="button" class="initial-pose-action" data-map-mode="initial-pose">SET INITIAL POSE</button>
           <button id="btn-goal-mode" type="button" class="goal-action" data-map-mode="goal">SET GOAL</button>
@@ -141,6 +155,36 @@
             <div><strong>Local obstacle processing</strong><div class="inline"><button id="btn-local-obstacles-on" type="button">ON</button><button id="btn-local-obstacles-off" type="button" class="ghost">OFF</button></div><dl class="kv"><dt>Requested</dt><dd id="local-obstacles-requested">—</dd><dt>Applied</dt><dd id="local-obstacles-applied">—</dd><dt>Current</dt><dd id="local-obstacles-current">unavailable</dd><dt>Result</dt><dd id="local-obstacles-result">Waiting for Nav2…</dd></dl></div>
           </div>
         </div>
+        <details class="setting-group tuning-section" open>
+          <summary>Advanced speed policy</summary>
+          <p class="hint">Every displayed value is live ROS read-back. Applying edits writes each parameter's existing owner atomically.</p>
+          <div class="tuning-grid">
+            <label>Nominal speed <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Absolute ceiling <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Regulated minimum <input data-tuning-field="regulated_linear_scaling_min_speed" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Cost slowdown distance <input data-tuning-field="cost_scaling_dist" type="number" min="0.01" step="0.01"> m</label>
+            <label>Cost slowdown gain <input data-tuning-field="cost_scaling_gain" type="number" min="0.01" max="1" step="0.01"></label>
+            <label>Curvature radius <input data-tuning-field="regulated_linear_scaling_min_radius" type="number" min="0.01" step="0.01"> m</label>
+            <label>Minimum lookahead <input data-tuning-field="min_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
+            <label>Maximum lookahead <input data-tuning-field="max_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
+            <label>Lookahead time <input data-tuning-field="lookahead_time" type="number" min="0.01" step="0.01"> s</label>
+            <label>Collision horizon <input data-tuning-field="max_allowed_time_to_collision_up_to_carrot" type="number" min="0.01" step="0.01"> s</label>
+          </div>
+          <button id="btn-apply-speed-policy" type="button">APPLY SPEED POLICY</button>
+        </details>
+        <details class="setting-group tuning-section">
+          <summary>Engineering / controller</summary>
+          <p class="hint">Controller calibration. Presets currently restore the same characterized values.</p>
+          <div class="tuning-grid">
+            <label>Kp <input data-tuning-field="proportional_gain" type="number" min="0.001" step="0.001"></label>
+            <label>Ki <input data-tuning-field="integral_gain" type="number" min="0" step="0.001"></label>
+            <label>Feedforward slope <input data-tuning-field="feedforward_effort_per_speed" type="number" min="0.001" step="0.0001"></label>
+            <label>Feedforward intercept <input data-tuning-field="feedforward_effort_intercept" type="number" step="0.0001"></label>
+            <label>Output limit <input data-tuning-field="output_max" type="number" min="0.001" max="0.14" step="0.001"></label>
+          </div>
+          <button id="btn-apply-engineering" type="button">APPLY ENGINEERING</button>
+        </details>
+        <p id="autonomy-tuning-result" class="state-detail">Waiting for live ROS parameter read-back…</p>
         <details class="numeric-goal setting-group"><summary>Numeric goal fallback</summary><div class="inline"><label>x <input id="goal-x" type="number" step="0.05" value="0"></label><label>y <input id="goal-y" type="number" step="0.05" value="0"></label><label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label></div><button id="btn-select-goal">Select numeric goal</button></details>
       </section>
 

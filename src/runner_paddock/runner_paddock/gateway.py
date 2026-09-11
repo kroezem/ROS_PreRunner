@@ -130,6 +130,14 @@ class ObstacleProcessingIntent:
 
 
 @dataclass(frozen=True)
+class AutonomyTuningIntent:
+    """Apply one complete preset or manually edited live tuning snapshot."""
+
+    preset: str = ''
+    values: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class InitialPoseIntent:
     """One validated map-frame seed for slam_toolbox localization."""
 
@@ -377,6 +385,27 @@ class OperatorGateway:
             'controller',
         )
 
+    def _do_set_autonomy_tuning(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        """Validate the shape of a lease-scoped live tuning request."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        preset = str(action.get('preset', '')).strip().lower()
+        values = action.get('values', {})
+        if preset:
+            if preset not in ('timid', 'confident') or values:
+                return self._reject(conn_id, 'invalid autonomy preset request')
+        elif not isinstance(values, dict):
+            return self._reject(conn_id, 'autonomy tuning values must be an object')
+        return GatewayResult(
+            True,
+            f'autonomy tuning {preset or "custom"} requested',
+            (AutonomyTuningIntent(preset=preset, values=values),),
+            'controller',
+        )
+
     def _do_set_config(self, conn_id: str, action: dict) -> GatewayResult:
         """Validate one allowlisted operational configuration request."""
         owned = self._require_owner(conn_id)
@@ -562,10 +591,15 @@ class OperatorGateway:
         frame = str(action.get('frame', 'map')) or 'map'
         if frame != 'map':
             return self._reject(conn_id, 'initial pose frame must be map')
+        self._run_pressed = False
+        self._manual_active = False
         return GatewayResult(
             True,
             f'initial pose ({x:.2f}, {y:.2f}, {yaw:.2f}) requested',
-            (InitialPoseIntent(x=x, y=y, yaw=yaw, frame=frame),),
+            (
+                self._control(ControlEvent.STOP),
+                InitialPoseIntent(x=x, y=y, yaw=yaw, frame=frame),
+            ),
             'controller',
         )
 

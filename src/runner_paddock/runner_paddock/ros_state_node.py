@@ -28,6 +28,7 @@ from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.msg import ParameterValue
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import SetParametersAtomically
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -51,7 +52,17 @@ from runner_interfaces.msg import PaddockControlLease
 from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
+from runner_paddock.autonomy_tuning import (
+    ADAPTER_OWNER,
+    CONTROLLER_OWNER,
+    matching_preset,
+    PARAMETERS as TUNING_PARAMETERS,
+    PRESETS as TUNING_PRESETS,
+    validate_values as validate_tuning_values,
+    values_for_owner,
+)
 from runner_paddock.gateway import (
+    AutonomyTuningIntent,
     ClearCostmapsIntent,
     ConfigRequestIntent,
     ControlEventIntent,
@@ -106,6 +117,10 @@ BATTERY_TOPIC = '/battery'
 MAP_FRAME = 'map'
 ROBOT_FRAME = 'base_link'
 INITIAL_POSE_CONFIRM_TIMEOUT_SEC = 5.0
+INITIAL_POSE_STOP_TIMEOUT_SEC = 5.0
+INITIAL_POSE_CLEAR_TIMEOUT_SEC = 2.0
+TUNING_REFRESH_SEC = 1.0
+TUNING_REQUEST_TIMEOUT_SEC = 2.0
 # Match slam_toolbox's RViz SetInitialPose defaults. slam_toolbox 2.8.5 uses
 # x/y/yaw as a scan-matching seed and ignores this input covariance, but a
 # complete, realistic planar covariance remains part of Runner's interface.
@@ -199,6 +214,7 @@ class RosStateNode(Node):
         self._gateway_lock = threading.Lock()
         self._initial_pose_lock = threading.Lock()
         self._pending_initial_pose = None
+        self._initial_pose_request_id = 0
         self._map_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -346,12 +362,46 @@ class RosStateNode(Node):
             )
         self._publish_obstacle_state()
 
+        self._tuning_lock = threading.Lock()
+        self._tuning_request_id = 0
+        self._tuning_operation = None
+        self._tuning_state = {
+            'available': False,
+            'preset': 'custom',
+            'values': {},
+            'status': 'unavailable',
+            'detail': 'waiting for live ROS parameter read-back',
+            'request_id': 0,
+        }
+        tuning_nodes = {
+            owner: next(
+                spec.node_name for spec in TUNING_PARAMETERS.values()
+                if spec.owner == owner
+            )
+            for owner in (CONTROLLER_OWNER, ADAPTER_OWNER)
+        }
+        self._tuning_get_clients = {
+            owner: self.create_client(
+                GetParameters, f'{node_name}/get_parameters'
+            )
+            for owner, node_name in tuning_nodes.items()
+        }
+        self._tuning_set_clients = {
+            owner: self.create_client(
+                SetParametersAtomically,
+                f'{node_name}/set_parameters_atomically',
+            )
+            for owner, node_name in tuning_nodes.items()
+        }
+        self._publish_tuning_state()
+
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = TransformListener(
             self._tf_buffer, self, spin_thread=False
         )
         self.create_timer(0.1, self._update_pose)
         self.create_timer(OBSTACLE_REFRESH_SEC, self._refresh_obstacle_states)
+        self.create_timer(TUNING_REFRESH_SEC, self._refresh_tuning_state)
         self._publish_gateway_state()
 
     def _on_map(self, message: OccupancyGrid, identity: tuple) -> None:
@@ -734,38 +784,23 @@ class RosStateNode(Node):
 
         with self._initial_pose_lock:
             pending = self._pending_initial_pose
-            if pending is None or stamp_ns < pending['request_stamp_ns']:
+            if pending is None or pending['phase'] != 'awaiting_pose' \
+                    or stamp_ns < pending['request_stamp_ns']:
                 return
-            self._pending_initial_pose = None
         snapshot = self._cache.state_snapshot()
-        mode = snapshot.get('mode') or {}
-        map_state = snapshot.get('map_state') or {}
-        if (
-            int(mode.get('runtime_epoch') or 0)
-            != pending['status']['runtime_epoch']
-            or (map_state.get('selected_map_applied') or '')
-            != pending['status']['map']
-            or (mode.get('active_autonomy_map') or '')
-            != pending['status']['map']
-        ):
-            self._cache.update('initial_pose', {
-                **pending['status'],
-                'state': 'rejected',
-                'detail': 'runtime or active map changed before application',
-                'observed': None,
-            })
+        reason = self._initial_pose_context_changed(pending, snapshot)
+        if not reason:
+            reason = self._initial_pose_safety_rejection(snapshot)
+        if reason:
+            self._fail_initial_pose(pending, reason)
             return
-        self._cache.update('initial_pose', {
-            **pending['status'],
-            'state': 'applied',
-            'detail': 'slam_toolbox published a subsequent localized pose',
-            'observed': {
-                'stamp': stamp,
-                'frame_id': message.header.frame_id,
-                'pose': observed,
-                'covariance': covariance,
-            },
-        })
+        observed_state = {
+            'stamp': stamp,
+            'frame_id': message.header.frame_id,
+            'pose': observed,
+            'covariance': covariance,
+        }
+        self._start_initial_pose_clear(pending, observed_state)
 
     def _on_recording_state(self, message: RecordingState) -> None:
         try:
@@ -1051,12 +1086,272 @@ class RosStateNode(Node):
                 state['detail'] = 'set accepted but read-back unavailable'
             self._publish_obstacle_state()
 
+    # -- live autonomy tuning --------------------------------------------
+
+    @staticmethod
+    def _double_parameters(response, owner: str) -> dict[str, float]:
+        fields = [
+            (field, spec) for field, spec in TUNING_PARAMETERS.items()
+            if spec.owner == owner
+        ]
+        values = getattr(response, 'values', ())
+        if len(values) != len(fields):
+            raise ValueError('get_parameters returned an incomplete result')
+        result = {}
+        for (field, _spec), value in zip(fields, values):
+            if value.type != ParameterType.PARAMETER_DOUBLE:
+                raise ValueError(f'{field} is missing or is not double')
+            result[field] = float(value.double_value)
+        return result
+
+    def _publish_tuning_state(self) -> None:
+        with self._tuning_lock:
+            state = dict(self._tuning_state)
+            state['values'] = dict(state['values'])
+        self._cache.update('autonomy_tuning', state)
+
+    def _refresh_tuning_state(self) -> None:
+        """Refresh every displayed value from its live ROS parameter owner."""
+        with self._tuning_lock:
+            operation = self._tuning_operation
+            if operation is not None \
+                    and time.monotonic() >= operation['deadline']:
+                self._tuning_operation = None
+                self._tuning_state.update({
+                    'status': 'failed',
+                    'detail': f'{operation["kind"]} timed out',
+                    'available': False,
+                    'preset': 'custom',
+                    'values': {},
+                })
+                operation = None
+        if operation is None:
+            self._publish_tuning_state()
+        self._start_tuning_read()
+
+    def _start_tuning_read(self, verification: dict | None = None) -> None:
+        with self._tuning_lock:
+            if self._tuning_operation is not None:
+                return
+            self._tuning_request_id += 1
+            request_id = self._tuning_request_id
+            self._tuning_operation = {
+                'kind': 'read',
+                'request_id': request_id,
+                'pending': set(self._tuning_get_clients),
+                'values': {},
+                'errors': [],
+                'verification': verification,
+                'deadline': time.monotonic() + TUNING_REQUEST_TIMEOUT_SEC,
+            }
+        for owner, client in self._tuning_get_clients.items():
+            fields = [
+                (field, spec) for field, spec in TUNING_PARAMETERS.items()
+                if spec.owner == owner
+            ]
+            if not client.service_is_ready():
+                self._finish_tuning_read(
+                    owner, request_id, None,
+                    error=f'{owner} parameter read service unavailable',
+                )
+                continue
+            request = GetParameters.Request()
+            request.names = [spec.parameter_name for _field, spec in fields]
+            try:
+                future = client.call_async(request)
+            except Exception as error:  # noqa: B902
+                self._finish_tuning_read(
+                    owner, request_id, None,
+                    error=f'{owner} parameter read failed to start: {error}',
+                )
+                continue
+            future.add_done_callback(
+                lambda done, item=owner, rid=request_id:
+                self._finish_tuning_read(item, rid, done)
+            )
+
+    def _finish_tuning_read(
+        self, owner: str, request_id: int, future, error: str = ''
+    ) -> None:
+        observed = {}
+        if not error:
+            try:
+                observed = self._double_parameters(future.result(), owner)
+            except Exception as exception:  # noqa: B902
+                error = f'{owner} parameter read failed: {exception}'
+        with self._tuning_lock:
+            operation = self._tuning_operation
+            if operation is None or operation['kind'] != 'read' \
+                    or operation['request_id'] != request_id \
+                    or owner not in operation['pending']:
+                return
+            operation['pending'].remove(owner)
+            operation['values'].update(observed)
+            if error:
+                operation['errors'].append(error)
+            if operation['pending']:
+                return
+            self._tuning_operation = None
+            errors = operation['errors']
+            values = operation['values']
+            verification = operation['verification']
+            if errors:
+                self._tuning_state.update({
+                    'available': False,
+                    'preset': 'custom',
+                    'values': {},
+                    'status': 'failed' if verification else 'unavailable',
+                    'detail': '; '.join(errors),
+                })
+            else:
+                matches_request = (
+                    verification is None
+                    or values == verification['requested']
+                )
+                set_errors = [] if verification is None else verification[
+                    'set_errors'
+                ]
+                applied = not set_errors and matches_request
+                if verification is None:
+                    status = 'current'
+                    detail = 'live ROS parameter read-back'
+                elif applied:
+                    status = 'applied'
+                    detail = 'atomic owner writes confirmed by live read-back'
+                else:
+                    status = 'failed'
+                    problems = list(set_errors)
+                    if not matches_request:
+                        problems.append('live read-back differs from request')
+                    detail = '; '.join(problems)
+                self._tuning_state.update({
+                    'available': True,
+                    'preset': matching_preset(values),
+                    'values': values,
+                    'status': status,
+                    'detail': detail,
+                })
+        self._publish_tuning_state()
+
+    def _request_autonomy_tuning(
+        self, intent: AutonomyTuningIntent, role: str
+    ) -> GatewayResult:
+        try:
+            requested = validate_tuning_values(
+                dict(TUNING_PRESETS[intent.preset])
+                if intent.preset else intent.values
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            return GatewayResult(False, str(error), (), role)
+        unavailable = [
+            owner for owner, client in self._tuning_set_clients.items()
+            if not client.service_is_ready()
+        ]
+        if unavailable:
+            return GatewayResult(
+                False,
+                'atomic parameter service unavailable: '
+                + ', '.join(unavailable),
+                (), role,
+            )
+        with self._tuning_lock:
+            if self._tuning_operation is not None:
+                return GatewayResult(
+                    False, 'autonomy tuning operation already in progress',
+                    (), role,
+                )
+            self._tuning_request_id += 1
+            request_id = self._tuning_request_id
+            owners = set(self._tuning_set_clients)
+            self._tuning_operation = {
+                'kind': 'set',
+                'request_id': request_id,
+                'pending': owners,
+                'requested': requested,
+                'errors': [],
+                'deadline': time.monotonic() + TUNING_REQUEST_TIMEOUT_SEC,
+            }
+            self._tuning_state.update({
+                'status': 'applying',
+                'detail': f'applying {intent.preset or "custom"} atomically',
+                'request_id': request_id,
+            })
+        self._publish_tuning_state()
+        for owner, client in self._tuning_set_clients.items():
+            request = SetParametersAtomically.Request()
+            request.parameters = [
+                Parameter(
+                    name=name,
+                    value=ParameterValue(
+                        type=ParameterType.PARAMETER_DOUBLE,
+                        double_value=value,
+                    ),
+                )
+                for name, value in values_for_owner(requested, owner).items()
+            ]
+            try:
+                future = client.call_async(request)
+            except Exception as error:  # noqa: B902
+                self._finish_tuning_set(
+                    owner, request_id, None,
+                    error=f'{owner} atomic write failed to start: {error}',
+                )
+                continue
+            future.add_done_callback(
+                lambda done, item=owner, rid=request_id:
+                self._finish_tuning_set(item, rid, done)
+            )
+        return GatewayResult(
+            True,
+            f'{intent.preset or "custom"} tuning accepted; awaiting read-back',
+            (), role,
+        )
+
+    def _finish_tuning_set(
+        self, owner: str, request_id: int, future, error: str = ''
+    ) -> None:
+        if not error:
+            try:
+                result = future.result().result
+                if not result.successful:
+                    error = result.reason or f'{owner} rejected atomic write'
+            except Exception as exception:  # noqa: B902
+                error = f'{owner} atomic write failed: {exception}'
+        with self._tuning_lock:
+            operation = self._tuning_operation
+            if operation is None or operation['kind'] != 'set' \
+                    or operation['request_id'] != request_id \
+                    or owner not in operation['pending']:
+                return
+            operation['pending'].remove(owner)
+            if error:
+                operation['errors'].append(error)
+            if operation['pending']:
+                return
+            requested = operation['requested']
+            errors = operation['errors']
+            self._tuning_operation = None
+        self._start_tuning_read({
+            'requested': requested,
+            'set_errors': errors,
+        })
+
     # -- operator intent ---------------------------------------------------
 
     def submit(self, conn_id: str, action: dict) -> dict:
         """Validate one browser action, publish its intents, report outcome."""
         with self._gateway_lock:
             result = self._gateway.handle(conn_id, action)
+            with self._initial_pose_lock:
+                initial_pose_active = self._pending_initial_pose is not None
+            if result.accepted and action.get('action') == 'clear_stop' \
+                    and initial_pose_active:
+                result = GatewayResult(
+                    False,
+                    'CLEAR STOP blocked during initial pose transaction',
+                    (),
+                    result.role,
+                )
             if result.accepted and self._autonomy_without_map(action):
                 # Operator precondition: never send an AUTONOMY runtime request
                 # with no map selected -- that path stops the runtime and
@@ -1074,6 +1369,11 @@ class RosStateNode(Node):
                     break
                 if isinstance(intent, ObstacleProcessingIntent):
                     result = self._request_obstacle_processing(
+                        intent, result.role
+                    )
+                    break
+                if isinstance(intent, AutonomyTuningIntent):
+                    result = self._request_autonomy_tuning(
                         intent, result.role
                     )
                     break
@@ -1096,7 +1396,7 @@ class RosStateNode(Node):
     def _set_initial_pose(
         self, intent: InitialPoseIntent, role: str
     ) -> GatewayResult:
-        """Gate and publish a localization seed to slam_toolbox alone."""
+        """Begin STOP -> stationary -> pose -> confirmation -> clear."""
         snapshot = self._cache.state_snapshot()
         reason = self._initial_pose_rejection(snapshot)
         if not reason and self._initial_pose_pub.get_subscription_count() < 1:
@@ -1111,6 +1411,31 @@ class RosStateNode(Node):
             })
             return GatewayResult(False, reason, (), role)
 
+        with self._initial_pose_lock:
+            if self._pending_initial_pose is not None:
+                reason = 'initial pose transaction already in progress'
+                return GatewayResult(False, reason, (), role)
+            self._initial_pose_request_id += 1
+            self._pending_initial_pose = {
+                'request_id': self._initial_pose_request_id,
+                'phase': 'waiting_stop',
+                'deadline': time.monotonic() + INITIAL_POSE_STOP_TIMEOUT_SEC,
+                'status': status,
+                'intent': intent,
+            }
+        self._cache.update('initial_pose', {
+            **status,
+            'state': 'stopping',
+            'detail': 'STOP requested; awaiting applied STOP and stationary',
+            'observed': None,
+        })
+        return GatewayResult(
+            True, 'initial pose accepted; awaiting safe stopped state', (), role
+        )
+
+    def _publish_initial_pose(self, pending: dict) -> None:
+        """Publish the seed after stopped/stationary evidence is current."""
+        intent = pending['intent']
         now = self.get_clock().now()
         message = PoseWithCovarianceStamped()
         message.header.stamp = now.to_msg()
@@ -1122,37 +1447,31 @@ class RosStateNode(Node):
         message.pose.covariance[0] = INITIAL_POSE_X_VARIANCE
         message.pose.covariance[7] = INITIAL_POSE_Y_VARIANCE
         message.pose.covariance[35] = INITIAL_POSE_YAW_VARIANCE
-        accepted = {
-            **status,
-            'state': 'accepted',
-            'detail': 'published to slam_toolbox; awaiting localized pose',
-            'observed': None,
-        }
         with self._initial_pose_lock:
-            self._pending_initial_pose = {
+            current = self._pending_initial_pose
+            if current is not pending or current['phase'] != 'waiting_stop':
+                return
+            current.update({
+                'phase': 'awaiting_pose',
                 'request_stamp_ns': now.nanoseconds,
                 'deadline': time.monotonic()
                 + INITIAL_POSE_CONFIRM_TIMEOUT_SEC,
-                'status': status,
-            }
-            # Keep a very fast localizer response from being overwritten by
-            # the preceding accepted/awaiting state.
+            })
             self._initial_pose_pub.publish(message)
-            self._cache.update('initial_pose', accepted)
-        return GatewayResult(
-            True, 'initial pose accepted; awaiting slam_toolbox pose', (), role
-        )
+            self._cache.update('initial_pose', {
+                **pending['status'],
+                'state': 'localizing',
+                'detail': 'pose published; awaiting slam_toolbox confirmation',
+                'observed': None,
+            })
 
     @staticmethod
     def _initial_pose_rejection(snapshot: dict) -> str:
-        """Return the first stopped-localization safety precondition failure."""
+        """Return the first localization-context precondition failure."""
         health = snapshot.get('health') or {}
         sources = health.get('sources') or {}
         mode = snapshot.get('mode') or {}
         map_state = snapshot.get('map_state') or {}
-        stop = snapshot.get('stop_state') or {}
-        encoder = snapshot.get('encoder_state') or {}
-
         if not (sources.get('mode') or {}).get('fresh'):
             return 'runtime state unavailable or stale'
         if mode.get('mode') != ModeState.MODE_AUTONOMY \
@@ -1171,15 +1490,39 @@ class RosStateNode(Node):
             return 'a valid selected map is required'
         if active != selected:
             return 'selected map is not the active localization map'
+        return ''
+
+    @staticmethod
+    def _initial_pose_safety_rejection(snapshot: dict) -> str:
+        """Return why stopped and stationary evidence is not yet sufficient."""
+        sources = (snapshot.get('health') or {}).get('sources') or {}
+        stop = snapshot.get('stop_state') or {}
+        encoder = snapshot.get('encoder_state') or {}
         if not (sources.get('stop_state') or {}).get('fresh'):
             return 'STOP state unavailable or stale'
         if not (stop.get('stopped') and stop.get('locked')
                 and stop.get('healthy') and stop.get('applied')):
-            return 'initial pose requires healthy applied STOP'
+            return 'awaiting healthy applied STOP'
         if not (sources.get('encoder_state') or {}).get('fresh'):
             return 'encoder stationary state unavailable or stale'
         if not encoder.get('stationary'):
             return 'robot is not stationary'
+        return ''
+
+    @staticmethod
+    def _initial_pose_context_changed(pending: dict, snapshot: dict) -> str:
+        reason = RosStateNode._initial_pose_rejection(snapshot)
+        if reason:
+            return f'initial pose context lost: {reason}'
+        mode = snapshot.get('mode') or {}
+        map_state = snapshot.get('map_state') or {}
+        status = pending['status']
+        if (
+            int(mode.get('runtime_epoch') or 0) != status['runtime_epoch']
+            or (map_state.get('selected_map_applied') or '') != status['map']
+            or (mode.get('active_autonomy_map') or '') != status['map']
+        ):
+            return 'runtime or active map changed during initial pose'
         return ''
 
     @staticmethod
@@ -1203,6 +1546,147 @@ class RosStateNode(Node):
                 },
             },
         }
+
+    def _advance_initial_pose_transaction(self) -> None:
+        """Advance a pending seed only after fresh stopped-state evidence."""
+        with self._initial_pose_lock:
+            pending = self._pending_initial_pose
+        if pending is None or pending['phase'] != 'waiting_stop':
+            return
+        snapshot = self._cache.state_snapshot()
+        reason = self._initial_pose_context_changed(pending, snapshot)
+        if reason:
+            self._fail_initial_pose(pending, reason)
+            return
+        safety = self._initial_pose_safety_rejection(snapshot)
+        if safety:
+            self._cache.update('initial_pose', {
+                **pending['status'],
+                'state': 'stopping',
+                'detail': safety,
+                'observed': None,
+            })
+            return
+        if self._initial_pose_pub.get_subscription_count() < 1:
+            self._fail_initial_pose(
+                pending, 'slam_toolbox /initialpose subscriber unavailable'
+            )
+            return
+        self._publish_initial_pose(pending)
+
+    def _start_initial_pose_clear(
+        self, pending: dict, observed: dict
+    ) -> None:
+        """Clear both dynamic costmaps after localization confirmation."""
+        clients = {
+            'global': self._global_clear_client,
+            'local': self._local_clear_client,
+        }
+        unavailable = [
+            name for name, client in clients.items()
+            if not client.service_is_ready()
+        ]
+        if unavailable:
+            self._fail_initial_pose(
+                pending,
+                f"Nav2 {' and '.join(unavailable)} costmap clear service "
+                'unavailable after localization confirmation',
+                observed=observed,
+            )
+            return
+        with self._initial_pose_lock:
+            current = self._pending_initial_pose
+            if current is not pending or current['phase'] != 'awaiting_pose':
+                return
+            current.update({
+                'phase': 'clearing',
+                'deadline': time.monotonic() + INITIAL_POSE_CLEAR_TIMEOUT_SEC,
+                'clear_pending': set(clients),
+                'clear_errors': [],
+                'observed': observed,
+            })
+        self._cache.update('initial_pose', {
+            **pending['status'],
+            'state': 'clearing',
+            'detail': 'pose confirmed; clearing global and local costmaps',
+            'observed': observed,
+        })
+        for name, client in clients.items():
+            try:
+                future = client.call_async(ClearEntireCostmap.Request())
+            except Exception as error:  # noqa: B902
+                self._finish_initial_pose_clear(
+                    pending['request_id'], name, None,
+                    error=f'{name} clear failed to start: {error}',
+                )
+                continue
+            future.add_done_callback(
+                lambda done, costmap=name, rid=pending['request_id']:
+                self._finish_initial_pose_clear(rid, costmap, done)
+            )
+
+    def _finish_initial_pose_clear(
+        self, request_id: int, costmap: str, future, error: str = ''
+    ) -> None:
+        if not error:
+            try:
+                future.result()
+            except Exception as exception:  # noqa: B902
+                error = f'{costmap} clear failed: {exception}'
+        with self._initial_pose_lock:
+            pending = self._pending_initial_pose
+            if pending is None or pending['request_id'] != request_id \
+                    or pending['phase'] != 'clearing' \
+                    or costmap not in pending['clear_pending']:
+                return
+            pending['clear_pending'].remove(costmap)
+            if error:
+                pending['clear_errors'].append(error)
+            if pending['clear_pending']:
+                return
+            errors = list(pending['clear_errors'])
+            observed = pending['observed']
+        if errors:
+            self._fail_initial_pose(
+                pending, 'costmap clear failed: ' + '; '.join(errors),
+                observed=observed,
+            )
+            return
+        snapshot = self._cache.state_snapshot()
+        safety = self._initial_pose_context_changed(pending, snapshot)
+        if not safety:
+            safety = self._initial_pose_safety_rejection(snapshot)
+        if safety:
+            self._fail_initial_pose(
+                pending, f'safety invariant lost before completion: {safety}',
+                observed=observed,
+            )
+            return
+        with self._initial_pose_lock:
+            if self._pending_initial_pose is not pending:
+                return
+            self._pending_initial_pose = None
+        self._cache.update('initial_pose', {
+            **pending['status'],
+            'state': 'applied',
+            'detail': 'pose confirmed; global and local costmaps cleared; '
+            'STOP remains asserted',
+            'observed': observed,
+        })
+
+    def _fail_initial_pose(
+        self, pending: dict, detail: str, observed: dict | None = None
+    ) -> None:
+        with self._initial_pose_lock:
+            if self._pending_initial_pose is not pending:
+                return
+            self._pending_initial_pose = None
+        self._cache.update('initial_pose', {
+            **pending['status'],
+            'state': 'rejected',
+            'detail': detail,
+            'observed': observed,
+        })
 
     def _clear_costmaps(self, result: GatewayResult) -> GatewayResult:
         """Call both authoritative Nav2 clear services and await their replies."""
@@ -1339,6 +1823,7 @@ class RosStateNode(Node):
 
     def _update_pose(self) -> None:
         self._expire_initial_pose_confirmation()
+        self._advance_initial_pose_transaction()
         try:
             transform = self._tf_buffer.lookup_transform(
                 MAP_FRAME, ROBOT_FRAME, rclpy.time.Time()
@@ -1369,15 +1854,20 @@ class RosStateNode(Node):
             pass
 
     def _expire_initial_pose_confirmation(self) -> None:
-        """Make a missing post-seed localizer result explicit to operators."""
+        """Make a stalled initial-pose transaction explicit to operators."""
         with self._initial_pose_lock:
             pending = self._pending_initial_pose
             if pending is None or time.monotonic() < pending['deadline']:
                 return
-            self._pending_initial_pose = None
-        self._cache.update('initial_pose', {
-            **pending['status'],
-            'state': 'rejected',
-            'detail': 'application unconfirmed: no fresh slam_toolbox pose',
-            'observed': None,
-        })
+        details = {
+            'waiting_stop': 'timed out waiting for applied STOP and stationary',
+            'awaiting_pose': (
+                'application unconfirmed: no fresh slam_toolbox pose'
+            ),
+            'clearing': 'timed out clearing dynamic costmaps',
+        }
+        self._fail_initial_pose(
+            pending,
+            details.get(pending['phase'], 'initial pose transaction timed out'),
+            observed=pending.get('observed'),
+        )

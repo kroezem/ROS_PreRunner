@@ -61,6 +61,7 @@ class StateCache:
         'navigation_state', 'encoder_state', 'initial_pose',
         'recording_state',
         'system_telemetry', 'battery', 'obstacle_processing',
+        'autonomy_tuning',
     )
 
     def __init__(self, clock: Callable[[], float] = time.monotonic):
@@ -84,6 +85,7 @@ class StateCache:
             'system_telemetry': _Entry(),
             'battery': _Entry(),
             'obstacle_processing': _Entry(),
+            'autonomy_tuning': _Entry(),
             'map': _Entry(),
             'plan': _Entry(),
             'global_costmap': _Entry(),

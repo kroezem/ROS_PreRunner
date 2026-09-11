@@ -180,6 +180,18 @@ input#save-name { flex: 1; min-width: 8rem; width: auto; }
 .numeric-goal, .health-details, .debug-card { color: var(--muted); font-size: .73rem; }
 summary { cursor: pointer; }
 .hint { color: var(--muted); font-size: .67rem; line-height: 1.4; }
+.autonomy-policy-compact { display: grid; gap: .35rem; padding: .45rem; border: 1px solid var(--border); border-radius: .45rem; background: #0a1112; }
+.preset-row { display: flex; gap: .3rem; align-items: center; }
+.preset-row .status-chip { margin-left: auto; }
+.speed-preset.active { border-color: var(--accent); background: #17383b; }
+.speed-readout { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; margin: 0; }
+.speed-readout div { min-width: 0; }
+.speed-readout dt { color: var(--muted); font-size: .55rem; text-transform: uppercase; }
+.speed-readout dd { margin: .08rem 0 0; font-size: .76rem; font-weight: 750; }
+.tuning-section summary { font-weight: 750; }
+.tuning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; margin: .55rem 0; }
+.tuning-grid label { display: flex; flex-direction: column; gap: .2rem; color: var(--muted); font-size: .64rem; }
+.tuning-grid input { width: 100%; }
 .recording-form { display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; align-items: end; gap: .5rem; }
 .recording-form label { display: flex; flex-direction: column; gap: .22rem; color: var(--muted); font-size: .68rem; }
 .recording-form input { width: 100%; }
@@ -244,6 +256,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .config-tab { flex: 0 0 auto; width: auto; min-width: 5rem; min-height: 2.7rem; padding: .3rem .5rem; text-align: center; font-size: .58rem; }
   .config-panel { padding: .7rem; }
   .obstacle-controls { grid-template-columns: 1fr; }
+  .speed-readout, .tuning-grid { grid-template-columns: 1fr 1fr; }
   .panel-heading h2 { font-size: 1rem; }
   .setting-group { padding: .65rem; }
   .display-map-preview { height: clamp(15rem, 42vh, 22rem); }
