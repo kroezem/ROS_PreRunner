@@ -23,7 +23,6 @@ import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
-from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from runner_interfaces.msg import (
     CommandAuthorityState,
@@ -38,6 +37,7 @@ from runner_paddock.mode_runtime import (
     OP_NEW_MAP,
     SystemdManager,
 )
+from runner_paddock.qos_event_node import ExplicitQoSEventNode
 from runner_paddock.state_machine import Mode
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -59,7 +59,7 @@ SCAN_MAX_AGE_SEC = 1.5
 MAP_MAX_AGE_SEC = 15.0
 
 
-class ModeSupervisorNode(Node):
+class ModeSupervisorNode(ExplicitQoSEventNode):
     """Serialize typed mode requests and publish actual systemd state."""
 
     def __init__(self) -> None:

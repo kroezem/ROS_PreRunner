@@ -31,7 +31,6 @@ from rcl_interfaces.srv import SetParameters
 from rcl_interfaces.srv import SetParametersAtomically
 import rclpy
 from rclpy.duration import Duration
-from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import HistoryPolicy
 from rclpy.qos import QoSProfile
@@ -76,6 +75,7 @@ from runner_paddock.gateway import (
 )
 from runner_paddock.grid_geometry import compose, normalized_yaw, PlanarPose
 from runner_paddock.protocol import ValidatedGridData
+from runner_paddock.qos_event_node import ExplicitQoSEventNode
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
 from tf2_ros import Buffer
@@ -205,7 +205,7 @@ def _grid(message: OccupancyGrid, *, origin: dict | None = None) -> dict:
     }
 
 
-class RosStateNode(Node):
+class RosStateNode(ExplicitQoSEventNode):
     """Read established state topics and TF; write validated operator intent."""
 
     def __init__(self, cache: StateCache, *, context=None) -> None:
