@@ -1,6 +1,6 @@
 // Bump CACHE on every shell asset change: a same-named cache is never
 // refreshed, so a stale precache would outlive a redeploy.
-const CACHE = 'runner-paddock-shell-v12';
+const CACHE = 'runner-paddock-shell-v13';
 const ASSETS = [
   '/',
   '/static/app.js',
@@ -8,6 +8,11 @@ const ASSETS = [
   '/static/joystick_geometry.js',
   '/static/style.css',
   '/static/manifest.webmanifest',
+  '/static/icon.svg',
+  '/static/icon-192.png',
+  '/static/icon-512.png',
+  '/static/apple-touch-icon.png',
+  '/static/favicon.ico',
 ];
 
 self.addEventListener('install', (event) => {

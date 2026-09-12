@@ -10,6 +10,7 @@ setup(
     package_data={
         f'{package_name}.static': [
             '*.css', '*.html', '*.js', '*.webmanifest',
+            '*.png', '*.svg', '*.ico',
         ],
     },
     data_files=[
