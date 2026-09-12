@@ -44,7 +44,10 @@ input, select { min-height: 2.55rem; padding: .42rem; border: 1px solid var(--bo
 .primary-nav { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; padding: .22rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
 .primary-tab { min-height: 0; border-color: transparent; background: transparent; color: var(--muted); font-size: .72rem; font-weight: 900; letter-spacing: .08em; }
 .primary-tab.active { border-color: #16798a; background: #153c43; color: #fff; }
-.topbar button.stop { min-width: 7rem; min-height: 0; border: 2px solid #ef5b5b; background: #851f1f; font-size: 1.08rem; font-weight: 950; letter-spacing: .08em; box-shadow: 0 0 0 .18rem rgb(0 0 0 / 40%); }
+.topbar button.stop { --hold-progress: 0%; position: relative; min-width: 7rem; min-height: 0; overflow: hidden; border: 2px solid #ef5b5b; background: #851f1f; font-size: 1.08rem; font-weight: 950; letter-spacing: .08em; box-shadow: 0 0 0 .18rem rgb(0 0 0 / 40%); touch-action: none; user-select: none; -webkit-user-select: none; }
+.topbar button.stop::before { content: ""; position: absolute; left: 0; bottom: 0; width: var(--hold-progress); height: .38rem; background: #19c4df; transition: width 40ms linear; }
+.topbar button.stop span { position: relative; z-index: 1; }
+.topbar button.stop.release { border-color: #57d7e9; background: #153c43; font-size: .82rem; letter-spacing: .035em; }
 
 .primary-view { min-width: 0; min-height: 0; }
 #view-control { display: grid; grid-template-columns: minmax(0, 1fr) clamp(22rem, 34vw, 34rem); gap: .45rem; overflow: hidden; }
@@ -181,9 +184,10 @@ input#save-name { flex: 1; min-width: 8rem; width: auto; }
 summary { cursor: pointer; }
 .hint { color: var(--muted); font-size: .67rem; line-height: 1.4; }
 .autonomy-policy-compact { display: grid; gap: .35rem; padding: .45rem; border: 1px solid var(--border); border-radius: .45rem; background: #0a1112; }
-.preset-row { display: flex; gap: .3rem; align-items: center; }
+.preset-row { display: flex; gap: .3rem; align-items: center; color: var(--muted); font-size: .58rem; text-transform: uppercase; }
 .preset-row .status-chip { margin-left: auto; }
 .speed-preset.active { border-color: var(--accent); background: #17383b; }
+.preset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; margin: .55rem 0; }
 .speed-readout { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; margin: 0; }
 .speed-readout div { min-width: 0; }
 .speed-readout dt { color: var(--muted); font-size: .55rem; text-transform: uppercase; }
@@ -223,9 +227,10 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .console { grid-template-rows: 3.2rem minmax(0, 1fr); padding: max(.28rem, env(safe-area-inset-top)) max(.28rem, env(safe-area-inset-right)) max(.28rem, env(safe-area-inset-bottom)) max(.28rem, env(safe-area-inset-left)); gap: .3rem; }
   .topbar { gap: .35rem; }
   .topbar button.stop { min-width: 5.6rem; font-size: 1rem; }
+  .topbar button.stop.release { min-width: 7.2rem; font-size: .76rem; }
   .primary-tab { padding: .3rem; font-size: .64rem; }
   #view-control { grid-template-columns: 1fr; grid-template-rows: minmax(0, .96fr) minmax(0, 1fr); gap: .3rem; }
-  body[data-runtime="autonomy"] #view-control { grid-template-rows: minmax(0, 1.08fr) minmax(0, .92fr); }
+  body[data-runtime="autonomy"] #view-control { grid-template-rows: minmax(6rem, 1fr) auto; }
   body[data-runtime="idle"] #view-control { grid-template-rows: minmax(0, 1fr) auto; }
   .map-viewport, .control-zone { border-radius: .5rem; }
   .map-status { left: .35rem; right: .35rem; bottom: .35rem; max-width: none; font-size: .5rem; }
@@ -244,6 +249,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .joystick-knob { width: clamp(4rem, 24%, 5.5rem); }
   .motion-overlay { top: .55rem; }
   .autonomy-control { gap: .3rem; }
+  .autonomy-policy-compact .speed-readout { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .autonomy-actions { gap: .3rem; }
   .autonomy-actions button { min-height: 2.8rem; padding: .35rem; font-size: .64rem; }
   .run-row { gap: .3rem; min-height: 4.5rem; }
@@ -278,7 +284,7 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
 }
 
 @media (max-height: 34rem) and (orientation: landscape) {
-  .console { grid-template-rows: 3rem minmax(0, 1fr); padding: .25rem; gap: .25rem; }
+  .console { grid-template-rows: 3rem minmax(0, 1fr); padding: max(.25rem, env(safe-area-inset-top)) max(.25rem, env(safe-area-inset-right)) max(.25rem, env(safe-area-inset-bottom)) max(.25rem, env(safe-area-inset-left)); gap: .25rem; }
   #view-control { grid-template-columns: minmax(0, 1fr) minmax(18rem, 35vw); grid-template-rows: minmax(0, 1fr); }
   .control-zone { padding: .3rem; }
   .control-context { min-height: 1.6rem; }

@@ -117,6 +117,12 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="btn-confirm-initial-pose"' in response.text
         assert 'data-speed-preset="timid"' in response.text
         assert 'data-speed-preset="confident"' in response.text
+        control_html = response.text.split('id="view-control"', 1)[1].split(
+            'id="view-configure"', 1)[0]
+        assert 'data-speed-preset=' not in control_html
+        assert 'id="btn-clear-stop"' not in response.text
+        assert 'id="stop-label"' in response.text
+        assert '/static/hold_to_confirm.js' in response.text
         assert 'id="autonomy-speed-commanded"' in response.text
         assert 'id="autonomy-speed-effective"' in response.text
         assert 'data-tuning-field="desired_linear_vel"' in response.text

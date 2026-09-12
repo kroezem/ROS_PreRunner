@@ -25,6 +25,21 @@ let pendingDeleteRecordingName = "";
 let recordingCatalogKey = null;
 let recordingStopPending = false;
 let retainedPlan = null;
+let stopAsserted = false;
+
+const stopButton = $("btn-stop");
+const stopHold = new window.PaddockHoldToConfirm.HoldToConfirm({
+  durationMs: 2000,
+  onProgress(progress, active) {
+    stopButton.style.setProperty("--hold-progress", `${progress * 100}%`);
+    stopButton.classList.toggle("holding", active);
+  },
+  onComplete() {
+    if (stopAsserted && socketReady && role === "controller") {
+      send({ action: "clear_stop" });
+    }
+  },
+});
 
 const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
@@ -367,6 +382,8 @@ function render() {
   const health = (latest.health || {}).status || "?";
   const pose = latest.pose;
 
+  renderStopControl(stop);
+
   setBannerFromState(mode, auth, stop);
   text("g-backend", `${socketReady ? "connected" : "disconnected"} · ${health}`);
   text("system-health", health);
@@ -448,7 +465,7 @@ function render() {
 
   const controller = role === "controller";
   document.querySelectorAll(
-    "button.mode, #btn-clear-stop, #btn-clear-obstacles, #btn-new-map, " +
+    "button.mode, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
     "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-engineering, " +
@@ -456,7 +473,7 @@ function render() {
   ).forEach((button) => {
     button.disabled = !controller;
   });
-  $("btn-stop").disabled = !socketReady || !controller;
+  stopButton.disabled = !socketReady || !controller;
   $("btn-run").classList.toggle("armed", runHeld);
   const hasAutonomyMap = Boolean(mapState.selected_map_applied);
   document.querySelectorAll('button[data-mode="autonomy"]').forEach((button) => {
@@ -475,10 +492,6 @@ function render() {
   $("btn-goal-mode").disabled = !controller || !autonomyControl;
   $("btn-initial-pose-mode").hidden = !autonomyControl;
   $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
-  $("btn-clear-stop").hidden = !(stop.stopped || stop.clear_pending || auth.stop_applied);
-  $("btn-clear-stop").disabled = !controller || [
-    "stopping", "localizing", "clearing",
-  ].includes((latest.initial_pose || {}).state);
   const tuningReady = controller && tuning.available === true && tuning.status !== "applying";
   document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-engineering").forEach((button) => {
     button.disabled = !tuningReady;
@@ -1289,18 +1302,56 @@ function stopSummary(stop, auth) {
   return `${bits.join(", ")} · ${stop.reason || ""}`;
 }
 
+function renderStopControl(stop) {
+  const asserted = stop.stopped === true;
+  if (!asserted || !socketReady || role !== "controller") stopHold.cancel();
+  stopAsserted = asserted;
+  text("stop-label", asserted ? "RELEASE STOP" : "STOP");
+  stopButton.classList.toggle("release", asserted);
+  stopButton.setAttribute("aria-label", asserted
+    ? "Hold for 2 seconds to release STOP" : "Assert STOP");
+}
+
 function fmt(value) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 }
 
 // --- controls and deadman ----------------------------------------------
 
-$("btn-stop").addEventListener("click", () => {
+stopButton.addEventListener("click", (event) => {
+  if (stopAsserted) {
+    event.preventDefault();
+    return;
+  }
   stopRun();
   releaseManual();
   send({ action: "stop" });
 });
-$("btn-clear-stop").addEventListener("click", () => send({ action: "clear_stop" }));
+stopButton.addEventListener("pointerdown", (event) => {
+  if (!stopAsserted || stopButton.disabled || event.button !== 0) return;
+  event.preventDefault();
+  stopButton.setPointerCapture(event.pointerId);
+  stopHold.start();
+});
+["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => {
+  stopButton.addEventListener(name, () => stopHold.cancel());
+});
+stopButton.addEventListener("keydown", (event) => {
+  if (stopAsserted && !stopButton.disabled && [" ", "Enter"].includes(event.key)) {
+    event.preventDefault();
+    stopHold.start();
+  }
+});
+stopButton.addEventListener("keyup", (event) => {
+  if ([" ", "Enter"].includes(event.key)) stopHold.cancel();
+});
+stopButton.addEventListener("contextmenu", (event) => {
+  if (stopAsserted) event.preventDefault();
+});
+window.addEventListener("blur", () => stopHold.cancel());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopHold.cancel();
+});
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
 document.querySelectorAll("[data-speed-preset]").forEach((button) => {
   button.addEventListener("click", () => send({

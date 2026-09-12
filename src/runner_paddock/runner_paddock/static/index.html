@@ -18,7 +18,7 @@
       <button class="primary-tab active" data-view="control" aria-pressed="true">CONTROL</button>
       <button class="primary-tab" data-view="configure" aria-pressed="false">CONFIGURE</button>
     </nav>
-    <button id="btn-stop" class="stop">STOP</button>
+    <button id="btn-stop" class="stop" type="button"><span id="stop-label">STOP</span></button>
   </header>
 
   <section id="view-control" class="primary-view active" aria-label="Control">
@@ -65,11 +65,7 @@
 
       <section id="control-autonomy" class="runtime-control autonomy-control" hidden>
         <div class="autonomy-policy-compact">
-          <div class="preset-row" aria-label="Adaptive speed preset">
-            <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
-            <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
-            <span id="autonomy-preset" class="status-chip">CUSTOM</span>
-          </div>
+          <div class="preset-row"><span>Adaptive speed policy</span><span id="autonomy-preset" class="status-chip">CUSTOM</span></div>
           <dl class="speed-readout">
             <div><dt>Nominal</dt><dd id="autonomy-speed-nominal">—</dd></div>
             <div><dt>Nav2 command</dt><dd id="autonomy-speed-commanded">—</dd></div>
@@ -118,7 +114,6 @@
         <div class="setting-group">
           <div class="group-heading"><h3>Readiness &amp; safety</h3><span>authoritative state</span></div>
           <dl class="kv"><dt>Backend</dt><dd id="g-backend">—</dd><dt>Runtime</dt><dd id="g-runtime">—</dd><dt>Readiness</dt><dd id="g-ready">—</dd><dt>Global STOP</dt><dd id="g-stop">—</dd><dt>Active autonomy map</dt><dd id="a-map">—</dd></dl>
-          <button id="btn-clear-stop" class="clear-stop" hidden>CLEAR STOP</button>
         </div>
       </section>
 
@@ -161,6 +156,10 @@
         <details class="setting-group tuning-section" open>
           <summary>Advanced speed policy</summary>
           <p class="hint">Every displayed value is live ROS read-back. Applying edits writes each parameter's existing owner atomically.</p>
+          <div class="preset-actions" aria-label="Adaptive speed preset">
+            <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
+            <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
+          </div>
           <div class="tuning-grid">
             <label>Nominal speed <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
             <label>Absolute ceiling <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
@@ -241,6 +240,6 @@
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
   <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
 </main>
-<script src="/static/map_geometry.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/app.js" defer></script>
+<script src="/static/map_geometry.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/hold_to_confirm.js" defer></script><script src="/static/app.js" defer></script>
 </body>
 </html>
