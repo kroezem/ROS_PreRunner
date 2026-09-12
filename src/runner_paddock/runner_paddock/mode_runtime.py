@@ -149,8 +149,8 @@ class SystemdManager:
         proxy = self._bus.get_object(SYSTEMD_BUS_NAME, path)
         return dbus.Interface(proxy, DBUS_PROPERTIES_IFACE)
 
-    def state(self, unit: str) -> UnitState:
-        """Read state without treating inactive units as command failures."""
+    def state(self, unit: str, *, process_details: bool = False) -> UnitState:
+        """Read unit state, optionally including diagnostic cgroup members."""
         try:
             properties = self._unit_properties(unit)
             active_state = str(properties.Get(SYSTEMD_UNIT_IFACE, 'ActiveState'))
@@ -159,7 +159,10 @@ class SystemdManager:
             control_group = str(
                 properties.Get(SYSTEMD_SERVICE_IFACE, 'ControlGroup')
             )
-            cgroup_processes = self._cgroup_processes(control_group)
+            cgroup_processes = (
+                self._cgroup_processes(control_group)
+                if process_details else ()
+            )
         except dbus.exceptions.DBusException as error:
             raise RuntimeError(f'cannot inspect {unit}: {error}') from error
         return UnitState(
@@ -312,6 +315,13 @@ class ModeRuntime:
         blockers = []
         for unit in MODE_UNITS:
             state = self.systemd.state(unit)
+            if state.cleanly_inactive:
+                continue
+            # Process enumeration is diagnostic evidence for teardown and can
+            # walk every /proc/<pid>/cmdline in the cgroup.  Keep it off the
+            # steady-state readiness path and request it only for a unit that
+            # is actually blocking cleanup.
+            state = self.systemd.state(unit, process_details=True)
             if state.cleanly_inactive:
                 continue
             location = state.control_group or '<no cgroup reported>'

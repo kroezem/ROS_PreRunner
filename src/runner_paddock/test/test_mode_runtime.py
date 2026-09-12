@@ -44,9 +44,11 @@ class FakeSystemd:
             AUTONOMY_UNIT: UnitState('inactive', 'dead'),
         }
         self.operations = []
+        self.state_inspections = []
         self.fail_start = False
 
-    def state(self, unit):
+    def state(self, unit, *, process_details=False):
+        self.state_inspections.append((unit, process_details))
         return self.units[unit]
 
     def stop(self, unit):
@@ -384,6 +386,32 @@ def test_cgroup_blocker_detail_names_unit_pid_and_command(tmp_path):
     assert 'cgroup /system.slice/runner-mode-autonomy.service' in detail
     assert 'PID 1974 ros2 run runner_paddock mode_launcher autonomy' in detail
     assert any('PID 1974' in state.detail for state in published)
+
+
+def test_stable_refresh_skips_process_details_but_cleanup_requests_them(tmp_path):
+    value, systemd, _graph, _published = runtime(tmp_path)
+    value.transition(Mode.MAPPING, 1)
+
+    systemd.state_inspections.clear()
+    refreshed = value.refresh()
+
+    assert refreshed.ready
+    assert systemd.state_inspections == [(MAPPING_UNIT, False)]
+
+    systemd.units[MAPPING_UNIT] = UnitState(
+        'deactivating',
+        'stop-sigterm',
+        main_pid=1974,
+        control_group='/system.slice/runner-mode-mapping.service',
+        cgroup_processes=((1974, 'mapping owner'),),
+    )
+    systemd.state_inspections.clear()
+
+    clean, reason = value._unit_cleanup_status()
+
+    assert not clean
+    assert 'PID 1974 mapping owner' in reason
+    assert (MAPPING_UNIT, True) in systemd.state_inspections
 
 
 def test_start_failure_cleans_partial_graph_and_faults_idle(tmp_path):
