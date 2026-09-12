@@ -44,9 +44,7 @@ input, select { min-height: 2.55rem; padding: .42rem; border: 1px solid var(--bo
 .primary-nav { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; padding: .22rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--surface); }
 .primary-tab { min-height: 0; border-color: transparent; background: transparent; color: var(--muted); font-size: .72rem; font-weight: 900; letter-spacing: .08em; }
 .primary-tab.active { border-color: #16798a; background: #153c43; color: #fff; }
-.topbar button.stop { --hold-progress: 0%; position: relative; min-width: 7rem; min-height: 0; overflow: hidden; border: 2px solid #ef5b5b; background: #851f1f; font-size: 1.08rem; font-weight: 950; letter-spacing: .08em; box-shadow: 0 0 0 .18rem rgb(0 0 0 / 40%); touch-action: none; user-select: none; -webkit-user-select: none; }
-.topbar button.stop::before { content: ""; position: absolute; left: 0; bottom: 0; width: var(--hold-progress); height: .38rem; background: #19c4df; transition: width 40ms linear; }
-.topbar button.stop span { position: relative; z-index: 1; }
+.topbar button.stop { min-width: 7rem; min-height: 0; border: 2px solid #ef5b5b; background: #851f1f; font-size: 1.08rem; font-weight: 950; letter-spacing: .08em; box-shadow: 0 0 0 .18rem rgb(0 0 0 / 40%); }
 .topbar button.stop.release { border-color: #57d7e9; background: #153c43; font-size: .82rem; letter-spacing: .035em; }
 
 .primary-view { min-width: 0; min-height: 0; }

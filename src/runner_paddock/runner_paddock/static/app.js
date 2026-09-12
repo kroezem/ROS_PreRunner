@@ -28,18 +28,6 @@ let retainedPlan = null;
 let stopAsserted = false;
 
 const stopButton = $("btn-stop");
-const stopHold = new window.PaddockHoldToConfirm.HoldToConfirm({
-  durationMs: 2000,
-  onProgress(progress, active) {
-    stopButton.style.setProperty("--hold-progress", `${progress * 100}%`);
-    stopButton.classList.toggle("holding", active);
-  },
-  onComplete() {
-    if (stopAsserted && socketReady && role === "controller") {
-      send({ action: "clear_stop" });
-    }
-  },
-});
 const takeoverButton = $("btn-takeover");
 const takeoverHold = new window.PaddockHoldToConfirm.HoldToConfirm({
   durationMs: 2000,
@@ -1321,12 +1309,11 @@ function stopSummary(stop, auth) {
 
 function renderStopControl(stop) {
   const asserted = stop.stopped === true;
-  if (!asserted || !socketReady || role !== "controller") stopHold.cancel();
   stopAsserted = asserted;
   text("stop-label", asserted ? "RELEASE STOP" : "STOP");
   stopButton.classList.toggle("release", asserted);
   stopButton.setAttribute("aria-label", asserted
-    ? "Hold for 2 seconds to release STOP" : "Assert STOP");
+    ? "Release STOP" : "Assert STOP");
 }
 
 function fmt(value) {
@@ -1337,37 +1324,12 @@ function fmt(value) {
 
 stopButton.addEventListener("click", (event) => {
   if (stopAsserted) {
-    event.preventDefault();
+    send({ action: "clear_stop" });
     return;
   }
   stopRun();
   releaseManual();
   send({ action: "stop" });
-});
-stopButton.addEventListener("pointerdown", (event) => {
-  if (!stopAsserted || stopButton.disabled || event.button !== 0) return;
-  event.preventDefault();
-  stopButton.setPointerCapture(event.pointerId);
-  stopHold.start();
-});
-["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => {
-  stopButton.addEventListener(name, () => stopHold.cancel());
-});
-stopButton.addEventListener("keydown", (event) => {
-  if (stopAsserted && !stopButton.disabled && [" ", "Enter"].includes(event.key)) {
-    event.preventDefault();
-    stopHold.start();
-  }
-});
-stopButton.addEventListener("keyup", (event) => {
-  if ([" ", "Enter"].includes(event.key)) stopHold.cancel();
-});
-stopButton.addEventListener("contextmenu", (event) => {
-  if (stopAsserted) event.preventDefault();
-});
-window.addEventListener("blur", () => stopHold.cancel());
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopHold.cancel();
 });
 takeoverButton.addEventListener("pointerdown", (event) => {
   if (takeoverButton.disabled || event.button !== 0) return;

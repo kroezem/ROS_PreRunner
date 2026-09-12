@@ -102,6 +102,16 @@ def test_hidden_diagnostics_skip_periodic_stringification():
     assert 'details.closest("[hidden]")' in app_source
 
 
+def test_release_stop_is_one_click_while_takeover_keeps_hold():
+    app_source = (STATIC_DIRECTORY / 'app.js').read_text(encoding='utf-8')
+
+    assert 'stopButton.addEventListener("click"' in app_source
+    assert app_source.count('send({ action: "clear_stop" })') == 1
+    assert 'stopHold' not in app_source
+    assert 'const takeoverHold = new window.PaddockHoldToConfirm' in app_source
+    assert 'durationMs: 2000' in app_source
+
+
 def test_static_shell_lifecycle_and_two_clients():
     runtime = FakeRuntime()
     app = create_app(cache=_initial_cache(), runtime=runtime)
