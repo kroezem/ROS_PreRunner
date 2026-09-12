@@ -102,14 +102,15 @@ def test_hidden_diagnostics_skip_periodic_stringification():
     assert 'details.closest("[hidden]")' in app_source
 
 
-def test_release_stop_is_one_click_while_takeover_keeps_hold():
+def test_release_stop_and_takeover_are_one_click_actions():
     app_source = (STATIC_DIRECTORY / 'app.js').read_text(encoding='utf-8')
 
     assert 'stopButton.addEventListener("click"' in app_source
     assert app_source.count('send({ action: "clear_stop" })') == 1
     assert 'stopHold' not in app_source
-    assert 'const takeoverHold = new window.PaddockHoldToConfirm' in app_source
-    assert 'durationMs: 2000' in app_source
+    assert 'takeoverButton.addEventListener("click"' in app_source
+    assert app_source.count('send({ action: "takeover" })') == 1
+    assert 'takeoverHold' not in app_source
 
 
 def test_static_shell_lifecycle_and_two_clients():
@@ -138,7 +139,7 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="stop-label"' in response.text
         assert 'id="btn-takeover"' in response.text
         assert 'TAKE CONTROL' in response.text
-        assert '/static/hold_to_confirm.js' in response.text
+        assert '/static/hold_to_confirm.js' not in response.text
         assert 'id="autonomy-speed-commanded"' in response.text
         assert 'id="autonomy-speed-effective"' in response.text
         assert 'data-tuning-field="desired_linear_vel"' in response.text
