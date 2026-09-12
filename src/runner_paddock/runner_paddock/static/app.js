@@ -104,6 +104,7 @@ function initializeLayerControls() {
     visible.addEventListener("change", () => {
       layerSettings[kind].visible = visible.checked;
       saveLayerSettings();
+      sendVisualizationDemand();
       renderMap();
     });
     color.addEventListener("input", () => {
@@ -119,6 +120,17 @@ function initializeLayerControls() {
       saveLayerSettings();
       renderMap();
     });
+  });
+}
+
+function sendVisualizationDemand() {
+  send({
+    action: "visualization_demand",
+    layers: [
+      "map",
+      ...["global_costmap", "local_costmap", "plan"]
+        .filter((kind) => layerSettings[kind].visible),
+    ],
   });
 }
 
@@ -148,6 +160,7 @@ function connect() {
   socket.addEventListener("open", () => {
     socketReady = true;
     setBanner("Connected — acquiring control lease…", "connected");
+    sendVisualizationDemand();
     send({ action: "acquire" });
     heartbeatTimer = window.setInterval(() => {
       if (role === "controller" && !runHeld) send({ action: "heartbeat" });

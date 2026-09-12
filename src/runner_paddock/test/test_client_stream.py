@@ -60,6 +60,9 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         cache.update('plan', {'frame_id': 'map', 'poses': []})
         hub = ClientHub()
         first = hub.register()
+        hub.set_visualization_demand(
+            first, frozenset(('map', 'global_costmap', 'plan'))
+        )
 
         hub.publish(cache)
         assert first.pending_count == 4
@@ -70,6 +73,9 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         assert first.pending_count == 0
 
         second = hub.register()
+        hub.set_visualization_demand(
+            second, frozenset(('map', 'global_costmap', 'plan'))
+        )
         hub.publish(cache)
         assert first.pending_count == 0
         assert second.pending_count == 4
@@ -246,6 +252,7 @@ def test_map_invalidation_sends_revisioned_tombstone():
         cache.update('map', {'frame_id': 'map', 'data': [100]})
         hub = ClientHub()
         client = hub.register()
+        hub.set_visualization_demand(client, frozenset(('map',)))
         hub.publish(cache)
         initial = [json.loads(await client.next_frame()) for _ in range(2)]
         assert {frame['type'] for frame in initial} == {'state', 'map'}
@@ -256,5 +263,32 @@ def test_map_invalidation_sends_revisioned_tombstone():
         tombstone = next(frame for frame in frames if frame['type'] == 'map')
         assert tombstone['cleared'] is True
         assert tombstone['revision'] == 2
+
+    asyncio.run(scenario())
+
+
+def test_hidden_layer_is_filtered_and_enable_sends_cached_latest():
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        cache.update('plan', {'frame_id': 'map', 'poses': []})
+        hub = ClientHub()
+        client = hub.register()
+
+        hub.publish(cache)
+        assert json.loads(await client.next_frame())['type'] == 'state'
+        assert client.pending_count == 0
+
+        hub.set_visualization_demand(client, frozenset(('plan',)))
+        hub.publish(cache)
+        assert json.loads(await client.next_frame())['type'] == 'plan'
+
+        hub.set_visualization_demand(client, frozenset())
+        cache.update('plan', {'frame_id': 'map', 'poses': [{'x': 1.0}]})
+        hub.publish(cache)
+        pending = [
+            json.loads(await client.next_frame())
+            for _ in range(client.pending_count)
+        ]
+        assert all(frame['type'] != 'plan' for frame in pending)
 
     asyncio.run(scenario())

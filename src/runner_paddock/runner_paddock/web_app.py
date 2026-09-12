@@ -31,6 +31,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from runner_paddock.client_stream import ClientHub
 from runner_paddock.client_stream import StateStreamer
+from runner_paddock.client_stream import VISUALIZATION_KINDS
 from runner_paddock.protocol import encode_message
 from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
 from runner_paddock.recording import resolve_finalized_mcap
@@ -156,6 +157,23 @@ def create_app(
                         action.get('action')
                         if isinstance(action, dict) else None
                     )
+                    if name == 'visualization_demand':
+                        requested = action.get('layers')
+                        if not isinstance(requested, list) or any(
+                            not isinstance(kind, str)
+                            or kind not in VISUALIZATION_KINDS
+                            for kind in requested
+                        ):
+                            continue
+                        demand = frozenset(requested)
+                        hub.set_visualization_demand(client, demand)
+                        await loop.run_in_executor(
+                            None,
+                            ros_runtime.set_visualization_demand,
+                            conn_id,
+                            demand,
+                        )
+                        continue
                     # ROS publish + lease bookkeeping runs off the event loop.
                     outcome = await loop.run_in_executor(
                         None, ros_runtime.submit, conn_id, action

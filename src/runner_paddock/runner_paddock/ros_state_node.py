@@ -224,6 +224,15 @@ class RosStateNode(ExplicitQoSEventNode):
         )
         self._map_subscription = None
         self._map_subscription_identity = None
+        self._map_runtime_identity = None
+        self._visualization_lock = threading.Lock()
+        self._visualization_demands: dict[str, frozenset[str]] = {}
+        self._visualization_applied: frozenset[str] = frozenset()
+        self._visualization_subscriptions = {
+            'global_costmap': None,
+            'local_costmap': None,
+            'plan': None,
+        }
         self._obstacle_lock = threading.Lock()
         self._obstacle_request_id = 0
         self._obstacle_refresh_id = 0
@@ -247,19 +256,7 @@ class RosStateNode(ExplicitQoSEventNode):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(
-            OccupancyGrid,
-            GLOBAL_COSTMAP_TOPIC,
-            self._on_global_costmap,
-            map_qos,
-        )
-        self.create_subscription(
-            OccupancyGrid,
-            LOCAL_COSTMAP_TOPIC,
-            self._on_local_costmap,
-            map_qos,
-        )
-        self.create_subscription(Path, PLAN_TOPIC, self._on_plan, latest_qos)
+        self._latest_qos = latest_qos
         self.create_subscription(
             ModeState, MODE_STATE_TOPIC, self._on_mode, map_qos
         )
@@ -395,6 +392,7 @@ class RosStateNode(ExplicitQoSEventNode):
             self._tf_buffer, self, spin_thread=False
         )
         self.create_timer(0.1, self._update_pose)
+        self.create_timer(0.1, self._reconcile_visualization_subscriptions)
         self.create_timer(OBSTACLE_REFRESH_SEC, self._refresh_obstacle_states)
         self.create_timer(TUNING_REFRESH_SEC, self._refresh_tuning_state)
         self._publish_gateway_state()
@@ -429,30 +427,77 @@ class RosStateNode(ExplicitQoSEventNode):
         return int(message.runtime_epoch), mode, applied_map
 
     def _select_map_subscription(self, identity: tuple | None) -> None:
-        """Replace the map reader at runtime boundaries to reacquire durability."""
-        if identity == getattr(self, '_map_subscription_identity', None):
+        """Record a runtime boundary; the demand reconciler owns the reader."""
+        if identity == getattr(self, '_map_runtime_identity', None):
             return
+        self._map_runtime_identity = identity
         previous = self._map_subscription
         self._map_subscription = None
         self._map_subscription_identity = None
         self._cache.invalidate('map')
         if previous is not None:
             self.destroy_subscription(previous)
-        if identity is None:
-            return
-        self._map_subscription_identity = identity
-        try:
-            self._map_subscription = self.create_subscription(
-                OccupancyGrid,
-                MAP_TOPIC,
-                lambda message, expected=identity: RosStateNode._on_map(
-                    self, message, expected
-                ),
-                self._map_qos,
-            )
-        except Exception:
+
+    def set_visualization_demand(
+        self, conn_id: str, demand: frozenset[str]
+    ) -> None:
+        """Store one connection's optional topic demand for ROS-thread apply."""
+        allowed = frozenset(('map', 'global_costmap', 'local_costmap', 'plan'))
+        if not demand <= allowed:
+            raise ValueError('unknown visualization kind')
+        with self._visualization_lock:
+            self._visualization_demands[conn_id] = demand
+
+    def _reconcile_visualization_subscriptions(self) -> None:
+        """Create and destroy optional readers from aggregate client demand."""
+        with self._visualization_lock:
+            demand = frozenset().union(*self._visualization_demands.values()) \
+                if self._visualization_demands else frozenset()
+
+        specifications = {
+            'global_costmap': (
+                OccupancyGrid, GLOBAL_COSTMAP_TOPIC,
+                self._on_global_costmap, self._map_qos,
+            ),
+            'local_costmap': (
+                OccupancyGrid, LOCAL_COSTMAP_TOPIC,
+                self._on_local_costmap, self._map_qos,
+            ),
+            'plan': (Path, PLAN_TOPIC, self._on_plan, self._latest_qos),
+        }
+        for kind, specification in specifications.items():
+            subscription = self._visualization_subscriptions[kind]
+            if kind in demand and subscription is None:
+                self._visualization_subscriptions[kind] = (
+                    self.create_subscription(*specification)
+                )
+            elif kind not in demand and subscription is not None:
+                self._visualization_subscriptions[kind] = None
+                self.destroy_subscription(subscription)
+
+        wants_map = 'map' in demand
+        identity = self._map_runtime_identity
+        if wants_map and identity is not None \
+                and self._map_subscription is None:
+            self._map_subscription_identity = identity
+            try:
+                self._map_subscription = self.create_subscription(
+                    OccupancyGrid,
+                    MAP_TOPIC,
+                    lambda message, expected=identity: RosStateNode._on_map(
+                        self, message, expected
+                    ),
+                    self._map_qos,
+                )
+            except Exception:
+                self._map_subscription_identity = None
+                raise
+        elif not wants_map and self._map_subscription is not None:
+            previous = self._map_subscription
+            self._map_subscription = None
             self._map_subscription_identity = None
-            raise
+            self.destroy_subscription(previous)
+        self._visualization_applied = demand
 
     def _on_global_costmap(self, message: OccupancyGrid) -> None:
         """Publish only an authoritative map-frame global costmap."""
@@ -1721,6 +1766,8 @@ class RosStateNode(ExplicitQoSEventNode):
 
     def disconnect(self, conn_id: str) -> None:
         """Release the lease if this browser connection held it."""
+        with self._visualization_lock:
+            self._visualization_demands.pop(conn_id, None)
         with self._gateway_lock:
             result = self._gateway.on_disconnect(conn_id)
             for intent in result.intents:

@@ -24,6 +24,9 @@ from runner_paddock.state_cache import StateCache
 LOGGER = logging.getLogger(__name__)
 STREAM_HZ = 10.0
 _FRAME_KINDS = ('map', 'global_costmap', 'local_costmap', 'plan', 'state')
+VISUALIZATION_KINDS = frozenset(
+    ('map', 'global_costmap', 'local_costmap', 'plan')
+)
 
 
 class ClientConnection:
@@ -39,6 +42,7 @@ class ClientConnection:
             'local_costmap': 0,
             'plan': 0,
         }
+        self.visualization_demand: frozenset[str] = frozenset()
         self.state_sections: dict[str, tuple[int, bool]] | None = None
 
     @property
@@ -95,6 +99,18 @@ class ClientHub:
     def unregister(self, client: ClientConnection) -> None:
         """Forget a reader; unregistering twice is harmless."""
         self._clients.discard(client)
+
+    def set_visualization_demand(
+        self, client: ClientConnection, demand: frozenset[str]
+    ) -> None:
+        """Select optional large frames delivered to one browser."""
+        if not demand <= VISUALIZATION_KINDS:
+            raise ValueError('unknown visualization kind')
+        enabled = demand - client.visualization_demand
+        client.visualization_demand = demand
+        for kind in enabled:
+            # Force the cached latest value (if any) to be sent immediately.
+            client.revisions[kind] = -1
 
     def close(self) -> None:
         """Wake every registered reader so its sender task can exit."""
@@ -159,7 +175,8 @@ class ClientHub:
             revision, value = cache.large_snapshot(kind)
             recipients = [
                 client for client in self._clients
-                if client.revisions[kind] != revision
+                if kind in client.visualization_demand
+                and client.revisions[kind] != revision
             ]
             if not recipients:
                 continue

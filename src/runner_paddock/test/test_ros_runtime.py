@@ -374,8 +374,12 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
         _map_qos=object(),
         _map_subscription=SimpleNamespace(callback=None),
         _map_subscription_identity=(4, ModeState.MODE_MAPPING, 'old-session'),
+        _map_runtime_identity=(4, ModeState.MODE_MAPPING, 'old-session'),
         create_subscription=create_subscription,
         destroy_subscription=destroyed.append,
+        _on_global_costmap=lambda _message: None,
+        _on_local_costmap=lambda _message: None,
+        _on_plan=lambda _message: None,
     )
 
     RosStateNode._on_mode(node, ModeState(
@@ -396,6 +400,17 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
         runtime_epoch=5,
         mapping_session_id='current-session',
     ))
+    assert node._map_subscription is None
+    assert node._map_subscription_identity is None
+
+    # A stable runtime alone does not subscribe; a client must demand the map.
+    node._visualization_lock = threading.Lock()
+    node._visualization_demands = {'browser': frozenset(('map',))}
+    node._visualization_subscriptions = {
+        'global_costmap': None, 'local_costmap': None, 'plan': None,
+    }
+    node._latest_qos = object()
+    RosStateNode._reconcile_visualization_subscriptions(node)
     assert node._map_subscription is subscriptions[-1]
     assert node._map_subscription_identity == (
         5, ModeState.MODE_MAPPING, 'current-session'
@@ -447,6 +462,60 @@ def test_queued_previous_runtime_map_is_rejected_after_resubscribe():
     )
 
     assert cache.large_snapshot('map') == (0, None)
+
+
+def test_visualization_demand_aggregates_clients_without_duplicate_readers():
+    created = []
+    destroyed = []
+
+    def create_subscription(_message_type, topic, _callback, _qos):
+        subscription = SimpleNamespace(topic=topic)
+        created.append(subscription)
+        return subscription
+
+    node = SimpleNamespace(
+        _visualization_lock=threading.Lock(),
+        _visualization_demands={},
+        _visualization_subscriptions={
+            'global_costmap': None, 'local_costmap': None, 'plan': None,
+        },
+        _visualization_applied=frozenset(),
+        _map_subscription=None,
+        _map_subscription_identity=None,
+        _map_runtime_identity=(9, ModeState.MODE_AUTONOMY, 'studio'),
+        _map_qos=object(),
+        _latest_qos=object(),
+        _on_global_costmap=lambda _message: None,
+        _on_local_costmap=lambda _message: None,
+        _on_plan=lambda _message: None,
+        create_subscription=create_subscription,
+        destroy_subscription=destroyed.append,
+    )
+
+    RosStateNode.set_visualization_demand(
+        node, 'first',
+        frozenset(('map', 'global_costmap', 'local_costmap', 'plan')),
+    )
+    RosStateNode._reconcile_visualization_subscriptions(node)
+    assert {subscription.topic for subscription in created} == {
+        '/map', '/global_costmap/costmap', '/local_costmap/costmap', '/plan',
+    }
+
+    RosStateNode.set_visualization_demand(node, 'second', frozenset(('plan',)))
+    RosStateNode._reconcile_visualization_subscriptions(node)
+    assert len(created) == 4
+
+    with node._visualization_lock:
+        node._visualization_demands.pop('first')
+    RosStateNode._reconcile_visualization_subscriptions(node)
+    assert {subscription.topic for subscription in destroyed} == {
+        '/map', '/global_costmap/costmap', '/local_costmap/costmap',
+    }
+
+    with node._visualization_lock:
+        node._visualization_demands.pop('second')
+    RosStateNode._reconcile_visualization_subscriptions(node)
+    assert len(destroyed) == 4
 
 
 def test_clear_costmaps_reports_both_nav2_service_responses():

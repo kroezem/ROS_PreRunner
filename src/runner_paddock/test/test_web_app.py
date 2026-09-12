@@ -31,6 +31,7 @@ class FakeRuntime:
         self.stopped = False
         self.actions = []
         self.disconnected = []
+        self.visualization_demands = {}
         self._owner = None
 
     def start(self):
@@ -60,8 +61,12 @@ class FakeRuntime:
 
     def disconnect(self, conn_id):
         self.disconnected.append(conn_id)
+        self.visualization_demands.pop(conn_id, None)
         if self._owner == conn_id:
             self._owner = None
+
+    def set_visualization_demand(self, conn_id, demand):
+        self.visualization_demands[conn_id] = demand
 
 
 def _initial_cache():
@@ -172,6 +177,12 @@ def test_static_shell_lifecycle_and_two_clients():
 
         with client.websocket_connect('/ws') as first:
             with client.websocket_connect('/ws') as second:
+                demand = {
+                    'action': 'visualization_demand',
+                    'layers': ['map', 'global_costmap', 'plan'],
+                }
+                first.send_json(demand)
+                second.send_json(demand)
                 first_types = {
                     first.receive_json()['type'] for _ in range(4)
                 }
@@ -187,6 +198,7 @@ def test_static_shell_lifecycle_and_two_clients():
 
     assert runtime.stopped
     assert len(runtime.disconnected) == 2
+    assert runtime.visualization_demands == {}
 
 
 def test_finalized_recording_download_is_catalog_and_root_scoped(tmp_path):

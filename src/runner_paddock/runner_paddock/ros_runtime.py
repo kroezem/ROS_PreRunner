@@ -58,6 +58,14 @@ class RosRuntime:
         if node is not None:
             node.disconnect(conn_id)
 
+    def set_visualization_demand(
+        self, conn_id: str, demand: frozenset[str]
+    ) -> None:
+        """Forward one browser's optional ROS topic demand."""
+        node = self._node
+        if node is not None:
+            node.set_visualization_demand(conn_id, demand)
+
     def start(self) -> None:
         """Initialize ROS and spin the read-only node on a dedicated thread."""
         if self._thread is not None:
