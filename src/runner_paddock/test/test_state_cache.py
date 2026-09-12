@@ -50,6 +50,24 @@ def test_health_reports_age_and_freshness_without_wall_clock_math():
     assert health['sources']['map']['fresh']
 
 
+def test_state_revision_changes_on_expiry_and_same_payload_recovery():
+    now = [20.0]
+    cache = StateCache(clock=lambda: now[0])
+    pose = {'x': 1.0}
+    cache.update('pose', pose)
+    fresh = cache.state_revision()
+
+    now[0] += 0.4
+    assert cache.state_revision() == fresh
+
+    now[0] += 0.2
+    stale = cache.state_revision()
+    assert stale != fresh
+
+    assert not cache.update('pose', pose)
+    assert cache.state_revision() == fresh
+
+
 def test_small_snapshots_do_not_expose_mutable_cache_state():
     cache = StateCache(clock=lambda: 1.0)
     cache.update('pose', {'position': {'x': 2.0}})

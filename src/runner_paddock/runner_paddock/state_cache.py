@@ -150,6 +150,25 @@ class StateCache:
             },
         }
 
+    def state_revision(self) -> tuple[tuple[int, ...], tuple[bool, ...]]:
+        """
+        Return the cheap semantic key for the next small-state frame.
+
+        Payload revisions cover received value changes.  Freshness is derived
+        directly from reception times so silence changes this key at an expiry
+        boundary without requiring a full copied snapshot.
+        """
+        now = self._clock()
+        with self._lock:
+            revisions = tuple(
+                self._entries[name].revision for name in self._entries
+            )
+            freshness = tuple(
+                self._source_is_fresh(name, entry, now)
+                for name, entry in self._entries.items()
+            )
+        return revisions, freshness
+
     def large_snapshot(
         self, source: str
     ) -> tuple[int, Optional[dict[str, Any]]]:
@@ -173,11 +192,17 @@ class StateCache:
         age = None if entry.received_at is None else max(
             0.0, now - entry.received_at
         )
-        expiry = self._EXPIRY_SEC.get(name)
-        fresh = available and (expiry is None or age <= expiry)
         return {
             'available': available,
-            'fresh': fresh,
+            'fresh': self._source_is_fresh(name, entry, now),
             'age_sec': age,
             'revision': entry.revision,
         }
+
+    def _source_is_fresh(
+        self, name: str, entry: _Entry, now: float
+    ) -> bool:
+        if entry.value is None or entry.received_at is None:
+            return False
+        expiry = self._EXPIRY_SEC.get(name)
+        return expiry is None or now - entry.received_at <= expiry

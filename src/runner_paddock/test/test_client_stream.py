@@ -17,6 +17,8 @@
 import asyncio
 import json
 
+import runner_paddock.client_stream as client_stream
+
 from runner_paddock.client_stream import ClientConnection
 from runner_paddock.client_stream import ClientHub
 from runner_paddock.state_cache import StateCache
@@ -65,12 +67,11 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         assert types == {'state', 'map', 'global_costmap', 'plan'}
 
         hub.publish(cache)
-        assert first.pending_count == 1
-        assert _frame_type(await first.next_frame()) == 'state'
+        assert first.pending_count == 0
 
         second = hub.register()
         hub.publish(cache)
-        assert first.pending_count == 1
+        assert first.pending_count == 0
         assert second.pending_count == 4
 
         cache.update('map', {'frame_id': 'map', 'data': [100]})
@@ -83,6 +84,65 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         hub.unregister(first)
         hub.unregister(second)
         assert hub.client_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_unchanged_state_is_encoded_once_and_reused_for_new_client(monkeypatch):
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        hub = ClientHub()
+        first = hub.register()
+        calls = 0
+        real_encode = client_stream.encode_message
+
+        def counted_encode(*args, **kwargs):
+            nonlocal calls
+            if args[0] == 'state':
+                calls += 1
+            return real_encode(*args, **kwargs)
+
+        monkeypatch.setattr(client_stream, 'encode_message', counted_encode)
+        hub.publish(cache)
+        hub.publish(cache)
+        assert calls == 1
+        assert first.pending_count == 1
+
+        second = hub.register()
+        hub.publish(cache)
+        assert calls == 1
+        assert second.pending_count == 1
+        assert await first.next_frame() == await second.next_frame()
+
+    asyncio.run(scenario())
+
+
+def test_silent_expiry_and_recovery_each_emit_state():
+    async def scenario():
+        now = [1.0]
+        cache = StateCache(clock=lambda: now[0])
+        pose = {'x': 1.0}
+        cache.update('pose', pose)
+        hub = ClientHub()
+        client = hub.register()
+
+        hub.publish(cache)
+        initial = json.loads(await client.next_frame())
+        assert initial['health']['sources']['pose']['fresh']
+
+        now[0] += 0.4
+        hub.publish(cache)
+        assert client.pending_count == 0
+
+        now[0] += 0.2
+        hub.publish(cache)
+        stale = json.loads(await client.next_frame())
+        assert not stale['health']['sources']['pose']['fresh']
+
+        assert not cache.update('pose', pose)
+        hub.publish(cache)
+        recovered = json.loads(await client.next_frame())
+        assert recovered['health']['sources']['pose']['fresh']
 
     asyncio.run(scenario())
 

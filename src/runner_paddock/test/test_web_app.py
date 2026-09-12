@@ -270,14 +270,14 @@ def test_ws_malformed_action_is_rejected_not_fatal():
             assert 'malformed' in ack['reason']
 
 
-def test_state_frames_arrive_at_approximately_ten_hz():
+def test_state_frames_are_change_gated_at_ten_hz():
     app = create_app(cache=StateCache(), runtime=FakeRuntime())
     with TestClient(app) as client:
         with client.websocket_connect('/ws') as websocket:
             websocket.receive_json()
+            app.state.cache.update('gateway', {'revision': 1})
             started = time.monotonic()
-            for _ in range(4):
-                assert websocket.receive_json()['type'] == 'state'
+            assert websocket.receive_json()['type'] == 'state'
             elapsed = time.monotonic() - started
 
-    assert 0.20 <= elapsed <= 0.80
+    assert elapsed <= 0.30

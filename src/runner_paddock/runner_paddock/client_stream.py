@@ -39,6 +39,7 @@ class ClientConnection:
             'local_costmap': 0,
             'plan': 0,
         }
+        self.state_revision = None
 
     @property
     def pending_count(self) -> int:
@@ -74,6 +75,8 @@ class ClientHub:
 
     def __init__(self) -> None:
         self._clients: set[ClientConnection] = set()
+        self._state_revision = None
+        self._state_frame: str | None = None
 
     @property
     def client_count(self) -> int:
@@ -100,13 +103,22 @@ class ClientHub:
         if not self._clients:
             return
 
-        try:
-            state_frame = encode_message('state', **cache.state_snapshot())
-        except (TypeError, ValueError) as error:
-            LOGGER.warning('Rejected invalid state snapshot: %s', error)
-        else:
+        state_revision = cache.state_revision()
+        if state_revision != self._state_revision:
+            try:
+                state_frame = encode_message(
+                    'state', **cache.state_snapshot()
+                )
+            except (TypeError, ValueError) as error:
+                LOGGER.warning('Rejected invalid state snapshot: %s', error)
+            else:
+                self._state_revision = state_revision
+                self._state_frame = state_frame
+        if self._state_frame is not None:
             for client in self._clients:
-                client.offer('state', state_frame)
+                if client.state_revision != self._state_revision:
+                    client.offer('state', self._state_frame)
+                    client.state_revision = self._state_revision
 
         for kind in ('map', 'global_costmap', 'local_costmap', 'plan'):
             revision, value = cache.large_snapshot(kind)
