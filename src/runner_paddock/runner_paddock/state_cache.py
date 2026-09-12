@@ -124,6 +124,13 @@ class StateCache:
 
     def state_snapshot(self) -> dict[str, Any]:
         """Copy small state plus local age/freshness and aggregate health."""
+        snapshot, _keys = self.state_snapshot_with_keys()
+        return snapshot
+
+    def state_snapshot_with_keys(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, tuple[int, bool]]]:
+        """Copy a complete small state and its atomic section keys."""
         now = self._clock()
         with self._lock:
             values = {
@@ -132,6 +139,10 @@ class StateCache:
             }
             sources = {
                 name: self._source_health(name, entry, now)
+                for name, entry in self._entries.items()
+            }
+            keys = {
+                name: (entry.revision, sources[name]['fresh'])
                 for name, entry in self._entries.items()
             }
 
@@ -148,7 +159,58 @@ class StateCache:
                 'status': health,
                 'sources': sources,
             },
+        }, keys
+
+    def state_section_keys(self) -> dict[str, tuple[int, bool]]:
+        """Return cheap payload/freshness keys for every state section."""
+        now = self._clock()
+        with self._lock:
+            return {
+                name: (
+                    entry.revision,
+                    self._source_is_fresh(name, entry, now),
+                )
+                for name, entry in self._entries.items()
+            }
+
+    def state_section_snapshot(
+        self, source: str,
+    ) -> tuple[tuple[int, bool], dict[str, Any]]:
+        """Copy one changed section and its health without walking peers."""
+        if source not in self._entries:
+            raise KeyError(source)
+        now = self._clock()
+        with self._lock:
+            entry = self._entries[source]
+            source_health = self._source_health(source, entry, now)
+            pose_fresh = self._source_is_fresh(
+                'pose', self._entries['pose'], now
+            )
+            map_fresh = self._source_is_fresh(
+                'map', self._entries['map'], now
+            )
+            pose_available = self._entries['pose'].value is not None
+            map_available = self._entries['map'].value is not None
+            value = (
+                deepcopy(entry.value) if source in self._SMALL_SOURCES
+                else None
+            )
+            key = (entry.revision, source_health['fresh'])
+
+        if not pose_available and not map_available:
+            status = 'starting'
+        elif pose_fresh and map_fresh:
+            status = 'ok'
+        else:
+            status = 'degraded'
+        fields = {
+            'section': source,
+            'source_health': source_health,
+            'health_status': status,
         }
+        if source in self._SMALL_SOURCES:
+            fields['value'] = value
+        return key, fields
 
     def state_revision(self) -> tuple[tuple[int, ...], tuple[bool, ...]]:
         """

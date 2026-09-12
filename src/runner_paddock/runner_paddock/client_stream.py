@@ -39,7 +39,7 @@ class ClientConnection:
             'local_costmap': 0,
             'plan': 0,
         }
-        self.state_revision = None
+        self.state_sections: dict[str, tuple[int, bool]] | None = None
 
     @property
     def pending_count(self) -> int:
@@ -48,7 +48,7 @@ class ClientConnection:
 
     def offer(self, kind: str, frame: str) -> None:
         """Replace the pending frame of one kind without ever blocking."""
-        if kind not in _FRAME_KINDS:
+        if kind not in _FRAME_KINDS and not kind.startswith('state:'):
             raise KeyError(kind)
         self._pending[kind] = frame
         self._available.set()
@@ -77,6 +77,9 @@ class ClientHub:
         self._clients: set[ClientConnection] = set()
         self._state_revision = None
         self._state_frame: str | None = None
+        self._section_frames: dict[
+            str, tuple[tuple[int, bool], str]
+        ] = {}
 
     @property
     def client_count(self) -> int:
@@ -103,22 +106,54 @@ class ClientHub:
         if not self._clients:
             return
 
-        state_revision = cache.state_revision()
-        if state_revision != self._state_revision:
+        section_keys = cache.state_section_keys()
+        unsynchronized = [
+            client for client in self._clients
+            if client.state_sections is None
+        ]
+        state_revision = tuple(section_keys.items())
+        if unsynchronized and state_revision != self._state_revision:
             try:
+                snapshot, snapshot_keys = cache.state_snapshot_with_keys()
                 state_frame = encode_message(
-                    'state', **cache.state_snapshot()
+                    'state', **snapshot
                 )
             except (TypeError, ValueError) as error:
                 LOGGER.warning('Rejected invalid state snapshot: %s', error)
             else:
-                self._state_revision = state_revision
+                section_keys = snapshot_keys
+                self._state_revision = tuple(snapshot_keys.items())
                 self._state_frame = state_frame
-        if self._state_frame is not None:
-            for client in self._clients:
-                if client.state_revision != self._state_revision:
-                    client.offer('state', self._state_frame)
-                    client.state_revision = self._state_revision
+        if unsynchronized and self._state_frame is not None:
+            for client in unsynchronized:
+                client.offer('state', self._state_frame)
+                client.state_sections = dict(section_keys)
+
+        for source, key in section_keys.items():
+            recipients = [
+                client for client in self._clients
+                if client.state_sections is not None
+                and client.state_sections.get(source) != key
+            ]
+            if not recipients:
+                continue
+            cached = self._section_frames.get(source)
+            if cached is None or cached[0] != key:
+                try:
+                    actual_key, fields = cache.state_section_snapshot(source)
+                    frame = encode_message('state_update', **fields)
+                except (TypeError, ValueError) as error:
+                    LOGGER.warning(
+                        'Rejected invalid %s state section: %s', source, error
+                    )
+                    continue
+                key = actual_key
+                self._section_frames[source] = (key, frame)
+            else:
+                frame = cached[1]
+            for client in recipients:
+                client.offer(f'state:{source}', frame)
+                client.state_sections[source] = key
 
         for kind in ('map', 'global_costmap', 'local_costmap', 'plan'):
             revision, value = cache.large_snapshot(kind)

@@ -277,7 +277,9 @@ def test_state_frames_are_change_gated_at_ten_hz():
             websocket.receive_json()
             app.state.cache.update('gateway', {'revision': 1})
             started = time.monotonic()
-            assert websocket.receive_json()['type'] == 'state'
+            frame = websocket.receive_json()
+            assert frame['type'] == 'state_update'
+            assert frame['section'] == 'gateway'
             elapsed = time.monotonic() - started
 
     assert elapsed <= 0.30

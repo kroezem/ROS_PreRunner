@@ -77,9 +77,9 @@ def test_map_and_plan_send_on_change_and_new_clients_get_latest():
         cache.update('map', {'frame_id': 'map', 'data': [100]})
         hub.publish(cache)
         assert first.pending_count == 2
-        assert second.pending_count == 4
-        assert first.pending_count <= 4
-        assert second.pending_count <= 4
+        assert second.pending_count == 5
+        assert first.pending_count <= 5
+        assert second.pending_count <= 5
 
         hub.unregister(first)
         hub.unregister(second)
@@ -137,12 +137,83 @@ def test_silent_expiry_and_recovery_each_emit_state():
         now[0] += 0.2
         hub.publish(cache)
         stale = json.loads(await client.next_frame())
-        assert not stale['health']['sources']['pose']['fresh']
+        assert stale['type'] == 'state_update'
+        assert stale['section'] == 'pose'
+        assert not stale['source_health']['fresh']
 
         assert not cache.update('pose', pose)
         hub.publish(cache)
         recovered = json.loads(await client.next_frame())
-        assert recovered['health']['sources']['pose']['fresh']
+        assert recovered['section'] == 'pose'
+        assert recovered['source_health']['fresh']
+
+    asyncio.run(scenario())
+
+
+def test_pose_change_only_rebuilds_and_encodes_pose_section(monkeypatch):
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        cache.update('pose', {'x': 1.0})
+        cache.update('mode', {'mode': 2})
+        hub = ClientHub()
+        client = hub.register()
+        hub.publish(cache)
+        await client.next_frame()
+        second = hub.register()
+        hub.publish(cache)
+        await second.next_frame()
+
+        snapshots = []
+        encoded = []
+        real_snapshot = cache.state_section_snapshot
+        real_encode = client_stream.encode_message
+
+        def counted_snapshot(source):
+            snapshots.append(source)
+            return real_snapshot(source)
+
+        def counted_encode(kind, **fields):
+            encoded.append((kind, fields.get('section')))
+            return real_encode(kind, **fields)
+
+        monkeypatch.setattr(cache, 'state_section_snapshot', counted_snapshot)
+        monkeypatch.setattr(client_stream, 'encode_message', counted_encode)
+
+        cache.update('pose', {'x': 2.0})
+        hub.publish(cache)
+        frame = json.loads(await client.next_frame())
+        second_frame = json.loads(await second.next_frame())
+
+        assert snapshots == ['pose']
+        assert encoded == [('state_update', 'pose')]
+        assert frame['section'] == 'pose'
+        assert frame['value'] == {'x': 2.0}
+        assert second_frame == frame
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_gets_complete_state_not_partial_update():
+    async def scenario():
+        cache = StateCache(clock=lambda: 1.0)
+        cache.update('pose', {'x': 1.0})
+        cache.update('mode', {'mode': 2})
+        hub = ClientHub()
+        first = hub.register()
+        hub.publish(cache)
+        await first.next_frame()
+
+        cache.update('pose', {'x': 2.0})
+        hub.publish(cache)
+        assert json.loads(await first.next_frame())['type'] == 'state_update'
+
+        second = hub.register()
+        hub.publish(cache)
+        frame = json.loads(await second.next_frame())
+        assert frame['type'] == 'state'
+        assert frame['pose'] == {'x': 2.0}
+        assert frame['mode'] == {'mode': 2}
+        assert frame['health']['sources']['pose']['fresh']
 
     asyncio.run(scenario())
 

@@ -158,6 +158,15 @@ function connect() {
     if (frame.type === "state") {
       Object.assign(latest, frame);
       render();
+    } else if (frame.type === "state_update") {
+      if (Object.prototype.hasOwnProperty.call(frame, "value")) {
+        latest[frame.section] = frame.value;
+      }
+      if (!latest.health) latest.health = { status: "starting", sources: {} };
+      if (!latest.health.sources) latest.health.sources = {};
+      latest.health.sources[frame.section] = frame.source_health;
+      latest.health.status = frame.health_status;
+      render();
     } else if (["map", "global_costmap", "local_costmap", "plan"].includes(frame.type)) {
       latest[frame.type] = frame.cleared ? null : frame;
       if (["map", "global_costmap", "local_costmap"].includes(frame.type)) {
