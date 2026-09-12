@@ -140,6 +140,7 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="btn-takeover"' in response.text
         assert 'TAKE CONTROL' in response.text
         assert '/static/hold_to_confirm.js' not in response.text
+        assert '/static/map_viewport_storage.js' in response.text
         assert 'id="autonomy-speed-commanded"' in response.text
         assert 'id="autonomy-speed-effective"' in response.text
         assert 'data-tuning-field="desired_linear_vel"' in response.text

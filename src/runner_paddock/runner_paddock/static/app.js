@@ -34,7 +34,9 @@ const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
 const mapGeometry = window.PaddockMapGeometry;
 const joystickGeometry = window.PaddockJoystickGeometry;
+const mapViewportStorage = window.PaddockMapViewportStorage;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
+let mapViewIdentity = null;
 const mapLayers = {
   map: { grid: null, raster: null },
   global_costmap: { grid: null, raster: null },
@@ -704,9 +706,42 @@ function setMetricMark(id, value, limit, available) {
 
 function updateMapLayer(kind, grid) {
   mapLayers[kind] = { grid, raster: makeGridRaster(grid, kind) };
-  if (kind === "map" && !grid) mapView.fitted = false;
+  if (kind === "map" && !grid) {
+    mapView.fitted = false;
+    mapViewIdentity = null;
+  }
+  if (kind === "map" && grid) restoreMapViewport();
   if (kind === "map" && !mapView.fitted) fitMap();
   renderMap();
+}
+
+function selectedMapIdentity() {
+  const identity = (latest.map_state || {}).selected_map_applied;
+  return typeof identity === "string" && identity ? identity : null;
+}
+
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch (error) {
+    return null;
+  }
+}
+
+function restoreMapViewport() {
+  const identity = selectedMapIdentity();
+  if (identity === mapViewIdentity) return;
+  mapViewIdentity = identity;
+  const saved = mapViewportStorage.load(browserStorage(), identity);
+  if (!saved) {
+    mapView.fitted = false;
+    return;
+  }
+  Object.assign(mapView, saved, { fitted: true });
+}
+
+function saveMapViewport() {
+  mapViewportStorage.save(browserStorage(), mapViewIdentity, mapView);
 }
 
 function hexChannels(color) {
@@ -1021,7 +1056,7 @@ function resizeMapCanvas() {
   }
 }
 
-function fitMap() {
+function fitMap(save = false) {
   const grid = mapLayers.map.grid;
   if (!grid || !mapCanvas.width || !mapCanvas.height) return;
   mapView.rotation = 0;
@@ -1034,6 +1069,7 @@ function fitMap() {
     mapCanvas.height / Math.max(bounds.maxY - bounds.minY, grid.resolution),
   ));
   mapView.fitted = true;
+  if (save) saveMapViewport();
   renderMap();
 }
 
@@ -1044,6 +1080,7 @@ function zoomMap(factor, screenX = mapCanvas.width / 2, screenY = mapCanvas.heig
   mapView.x += before.x - after.x;
   mapView.y += before.y - after.y;
   mapView.fitted = true;
+  saveMapViewport();
   renderMap();
 }
 
@@ -1162,11 +1199,12 @@ function endMapDrag(event) {
   if (!mapDrag || mapDrag.pointerId !== event.pointerId) return;
   mapDrag = null;
   mapCanvas.classList.remove("dragging");
+  saveMapViewport();
 }
 
 mapCanvas.addEventListener("pointerup", endMapDrag);
 mapCanvas.addEventListener("pointercancel", endMapDrag);
-$("btn-fit-map").addEventListener("click", fitMap);
+$("btn-fit-map").addEventListener("click", () => fitMap(true));
 $("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
 $("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
 document.querySelectorAll("[data-map-mode]").forEach((button) => {
