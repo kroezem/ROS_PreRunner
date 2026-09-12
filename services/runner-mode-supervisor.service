@@ -13,6 +13,7 @@ Group=matti
 WorkingDirectory=/home/matti/runner_ws
 RuntimeDirectory=runner-paddock
 RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
 Environment=ROS_LOG_DIR=/run/runner-paddock
 Environment=PADDOCK_MAP_DIRECTORY=/home/matti/runner_ws/maps
 Environment=PADDOCK_AUTONOMY_MAP_FILE=/run/runner-paddock/autonomy-map
