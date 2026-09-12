@@ -74,7 +74,7 @@ from runner_paddock.gateway import (
     OperatorGateway,
     RecordingRequestIntent,
 )
-from runner_paddock.grid_geometry import compose, PlanarPose
+from runner_paddock.grid_geometry import compose, normalized_yaw, PlanarPose
 from runner_paddock.protocol import ValidatedGridData
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
@@ -111,7 +111,6 @@ CONTROL_EVENT_TOPIC = '/paddock/control_event'
 MODE_REQUEST_TOPIC = '/paddock/mode_request'
 MAP_REQUEST_TOPIC = '/paddock/map_request'
 INITIAL_POSE_TOPIC = '/initialpose'
-LOCALIZER_POSE_TOPIC = '/pose'
 SYSTEM_TELEMETRY_TOPIC = '/system/telemetry'
 BATTERY_TOPIC = '/battery'
 MAP_FRAME = 'map'
@@ -119,6 +118,8 @@ ROBOT_FRAME = 'base_link'
 INITIAL_POSE_CONFIRM_TIMEOUT_SEC = 5.0
 INITIAL_POSE_STOP_TIMEOUT_SEC = 5.0
 INITIAL_POSE_CLEAR_TIMEOUT_SEC = 2.0
+INITIAL_POSE_POSITION_TOLERANCE_M = 0.25
+INITIAL_POSE_YAW_TOLERANCE_RAD = math.radians(15.0)
 TUNING_REFRESH_SEC = 1.0
 TUNING_REQUEST_TIMEOUT_SEC = 2.0
 # Match slam_toolbox's RViz SetInitialPose defaults. slam_toolbox 2.8.5 uses
@@ -308,12 +309,6 @@ class RosStateNode(Node):
         self.create_subscription(
             EncoderState, '/wheel/encoder_state', self._on_encoder_state,
             latest_qos,
-        )
-        self.create_subscription(
-            PoseWithCovarianceStamped,
-            LOCALIZER_POSE_TOPIC,
-            self._on_localizer_pose,
-            10,
         )
         self.create_subscription(
             SystemTelemetry,
@@ -764,47 +759,6 @@ class RosStateNode(Node):
             'stamp': _stamp(message.stamp),
             'stationary': bool(message.stationary),
         })
-
-    def _on_localizer_pose(
-        self, message: PoseWithCovarianceStamped
-    ) -> None:
-        """Confirm a seed only from subsequent slam_toolbox pose truth."""
-        try:
-            if message.header.frame_id != MAP_FRAME:
-                raise ValueError(
-                    f'expected {MAP_FRAME!r} frame, got '
-                    f'{message.header.frame_id!r}'
-                )
-            observed = _pose(message.pose.pose)
-            covariance = [float(value) for value in message.pose.covariance]
-            _finite(*covariance)
-            stamp = _stamp(message.header.stamp)
-            stamp_ns = stamp['sec'] * 1_000_000_000 + stamp['nanosec']
-        except (TypeError, ValueError) as error:
-            self.get_logger().warning(
-                f'Rejected invalid {LOCALIZER_POSE_TOPIC}: {error}'
-            )
-            return
-
-        with self._initial_pose_lock:
-            pending = self._pending_initial_pose
-            if pending is None or pending['phase'] != 'awaiting_pose' \
-                    or stamp_ns < pending['request_stamp_ns']:
-                return
-        snapshot = self._cache.state_snapshot()
-        reason = self._initial_pose_context_changed(pending, snapshot)
-        if not reason:
-            reason = self._initial_pose_safety_rejection(snapshot)
-        if reason:
-            self._fail_initial_pose(pending, reason)
-            return
-        observed_state = {
-            'stamp': stamp,
-            'frame_id': message.header.frame_id,
-            'pose': observed,
-            'covariance': covariance,
-        }
-        self._start_initial_pose_clear(pending, observed_state)
 
     def _on_recording_state(self, message: RecordingState) -> None:
         try:
@@ -1457,7 +1411,6 @@ class RosStateNode(Node):
                 return
             current.update({
                 'phase': 'awaiting_pose',
-                'request_stamp_ns': now.nanoseconds,
                 'deadline': time.monotonic()
                 + INITIAL_POSE_CONFIRM_TIMEOUT_SEC,
             })
@@ -1628,6 +1581,31 @@ class RosStateNode(Node):
                 lambda done, costmap=name, rid=pending['request_id']:
                 self._finish_initial_pose_clear(rid, costmap, done)
             )
+
+    def _confirm_initial_pose_from_tf(
+        self, observed: dict, map_from_robot: PlanarPose
+    ) -> None:
+        """Confirm a seed when existing map-frame TF agrees with it."""
+        with self._initial_pose_lock:
+            pending = self._pending_initial_pose
+            if pending is None or pending['phase'] != 'awaiting_pose':
+                return
+        intent = pending['intent']
+        position_error = math.hypot(
+            map_from_robot.x - intent.x, map_from_robot.y - intent.y
+        )
+        yaw_error = abs(normalized_yaw(map_from_robot.yaw - intent.yaw))
+        if position_error > INITIAL_POSE_POSITION_TOLERANCE_M \
+                or yaw_error > INITIAL_POSE_YAW_TOLERANCE_RAD:
+            return
+        snapshot = self._cache.state_snapshot()
+        reason = self._initial_pose_context_changed(pending, snapshot)
+        if not reason:
+            reason = self._initial_pose_safety_rejection(snapshot)
+        if reason:
+            self._fail_initial_pose(pending, reason)
+            return
+        self._start_initial_pose_clear(pending, observed)
 
     def _finish_initial_pose_clear(
         self, request_id: int, costmap: str, future, error: str = ''
@@ -1838,7 +1816,10 @@ class RosStateNode(Node):
                 translation.x, translation.y, translation.z,
                 rotation.x, rotation.y, rotation.z, rotation.w,
             )
-            self._cache.update('pose', {
+            map_from_robot = PlanarPose(
+                float(translation.x), float(translation.y), _yaw(rotation)
+            )
+            pose = {
                 'stamp': _stamp(transform.header.stamp),
                 'frame_id': transform.header.frame_id,
                 'child_frame_id': transform.child_frame_id,
@@ -1853,7 +1834,20 @@ class RosStateNode(Node):
                     'z': rotation.z,
                     'w': rotation.w,
                 },
-            })
+            }
+            self._cache.update('pose', pose)
+            self._confirm_initial_pose_from_tf(
+                {
+                    'stamp': pose['stamp'],
+                    'frame_id': pose['frame_id'],
+                    'pose': {
+                        'position': pose['position'],
+                        'orientation': pose['orientation'],
+                    },
+                    'source': 'map_to_base_link_tf',
+                },
+                map_from_robot,
+            )
         except (TransformException, ValueError):
             pass
 
@@ -1866,7 +1860,8 @@ class RosStateNode(Node):
         details = {
             'waiting_stop': 'timed out waiting for applied STOP and stationary',
             'awaiting_pose': (
-                'application unconfirmed: no fresh slam_toolbox pose'
+                'application unconfirmed: map-frame robot pose did not match '
+                'the requested initial pose'
             ),
             'clearing': 'timed out clearing dynamic costmaps',
         }

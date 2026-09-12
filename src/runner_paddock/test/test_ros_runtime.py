@@ -19,7 +19,6 @@ import threading
 from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 import pytest
 from rcl_interfaces.msg import ParameterType
@@ -141,6 +140,25 @@ def _initial_pose_node(cache, subscribers=1):
     node.get_clock = lambda: _Clock()
     node.get_logger = lambda: SimpleNamespace(warning=lambda _message: None)
     return node
+
+
+def _set_tf_pose(node, x, y, yaw, *, stamp_sec=11):
+    transform = SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=Time(sec=stamp_sec), frame_id='map'
+        ),
+        child_frame_id='base_link',
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x, y=y, z=0.0),
+            rotation=SimpleNamespace(
+                x=0.0, y=0.0,
+                z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0),
+            ),
+        ),
+    )
+    node._tf_buffer = SimpleNamespace(
+        lookup_transform=lambda *_args: transform
+    )
 
 
 class _TuningClient:
@@ -517,25 +535,27 @@ def test_initial_pose_waits_for_stop_and_stationary_before_publish():
     ] == 'localizing'
 
 
-def test_post_request_slam_toolbox_pose_marks_seed_applied():
+def test_correct_tf_confirms_when_pose_scan_stamp_predates_request():
     cache = _ready_initial_pose_cache()
     node = _initial_pose_node(cache)
     RosStateNode._set_initial_pose(
         node, InitialPoseIntent(1.0, 2.0, 0.2), 'controller'
     )
     RosStateNode._advance_initial_pose_transaction(node)
-    observed = PoseWithCovarianceStamped()
-    observed.header.frame_id = 'map'
-    observed.header.stamp = Time(sec=13)
-    observed.pose.pose.position.x = 1.04
-    observed.pose.pose.position.y = 1.98
-    observed.pose.pose.orientation.w = 1.0
+    # E1's scan-derived /pose timestamp was before the 12 s request. The
+    # existing post-request TF update is nevertheless the correct map-frame
+    # truth and agrees with the requested seed.
+    pre_request_pose_stamp = Time(sec=11, nanosec=939_210_000)
+    assert pre_request_pose_stamp.sec * 1_000_000_000 \
+        + pre_request_pose_stamp.nanosec < 12_000_000_034
+    _set_tf_pose(node, 1.04, 1.98, 0.2, stamp_sec=11)
 
-    RosStateNode._on_localizer_pose(node, observed)
+    RosStateNode._update_pose(node)
 
     status = cache.state_snapshot()['initial_pose']
     assert status['state'] == 'applied'
     assert status['observed']['pose']['position']['x'] == 1.04
+    assert status['observed']['source'] == 'map_to_base_link_tf'
     assert node._global_clear_client.calls == 1
     assert node._local_clear_client.calls == 1
     assert cache.state_snapshot()['stop_state']['stopped']
@@ -549,17 +569,35 @@ def test_initial_pose_clear_failure_is_terminal_and_visible():
         node, InitialPoseIntent(1.0, 2.0, 0.2), 'controller'
     )
     RosStateNode._advance_initial_pose_transaction(node)
-    observed = PoseWithCovarianceStamped()
-    observed.header.frame_id = 'map'
-    observed.header.stamp = Time(sec=13)
-    observed.pose.pose.orientation.w = 1.0
+    _set_tf_pose(node, 1.0, 2.0, 0.2)
 
-    RosStateNode._on_localizer_pose(node, observed)
+    RosStateNode._update_pose(node)
 
     status = cache.state_snapshot()['initial_pose']
     assert status['state'] == 'rejected'
     assert 'local costmap clear service unavailable' in status['detail']
     assert node._global_clear_client.calls == 0
+
+
+def test_incorrect_tf_pose_does_not_confirm_and_uses_existing_timeout():
+    cache = _ready_initial_pose_cache()
+    node = _initial_pose_node(cache)
+    RosStateNode._set_initial_pose(
+        node, InitialPoseIntent(1.0, 2.0, 0.2), 'controller'
+    )
+    RosStateNode._advance_initial_pose_transaction(node)
+    _set_tf_pose(node, 2.0, 2.0, 0.2)
+
+    RosStateNode._update_pose(node)
+
+    assert cache.state_snapshot()['initial_pose']['state'] == 'localizing'
+    node._pending_initial_pose['deadline'] = 0.0
+    RosStateNode._expire_initial_pose_confirmation(node)
+    status = cache.state_snapshot()['initial_pose']
+    assert status['state'] == 'rejected'
+    assert 'did not match' in status['detail']
+    assert node._global_clear_client.calls == 0
+    assert node._local_clear_client.calls == 0
 
 
 def test_timid_confident_and_custom_are_classified_from_live_readback():
