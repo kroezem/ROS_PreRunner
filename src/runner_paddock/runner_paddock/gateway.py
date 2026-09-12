@@ -252,6 +252,33 @@ class OperatorGateway:
             'controller',
         )
 
+    def _do_takeover(self, conn_id: str, _action: dict) -> GatewayResult:
+        """Revoke the current owner, then atomically grant a fresh lease."""
+        if self._owner_conn == conn_id:
+            return GatewayResult(
+                True, 'already holding the lease', (), 'controller'
+            )
+        if self._owner_conn is None:
+            return self._do_acquire(conn_id, _action)
+
+        lost = self._control(ControlEvent.LEASE_LOST)
+        self._owner_conn = None
+        self._client_id = ''
+        self._lease_id = ''
+        self._run_pressed = False
+        self._manual_active = False
+
+        self._owner_conn = conn_id
+        self._client_id = self._uuid_factory()
+        self._lease_id = self._uuid_factory()
+        acquired = self._control(ControlEvent.LEASE_ACQUIRED)
+        return GatewayResult(
+            True,
+            'control lease taken over',
+            (lost, acquired),
+            'controller',
+        )
+
     def _do_release(self, conn_id: str, _action: dict) -> GatewayResult:
         if conn_id != self._owner_conn:
             return self._reject(conn_id, 'not the lease owner')

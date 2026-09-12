@@ -50,6 +50,10 @@ class FakeRuntime:
             role = 'controller' if self._owner == conn_id else 'observer'
             return {'accepted': self._owner == conn_id,
                     'reason': 'lease', 'role': role}
+        if name == 'takeover':
+            self._owner = conn_id
+            return {'accepted': True, 'reason': 'taken over',
+                    'role': 'controller'}
         role = 'controller' if self._owner == conn_id else 'observer'
         return {'accepted': role == 'controller', 'reason': name or 'noop',
                 'role': role}
@@ -122,6 +126,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-speed-preset=' not in control_html
         assert 'id="btn-clear-stop"' not in response.text
         assert 'id="stop-label"' in response.text
+        assert 'id="btn-takeover"' in response.text
+        assert 'TAKE CONTROL' in response.text
         assert '/static/hold_to_confirm.js' in response.text
         assert 'id="autonomy-speed-commanded"' in response.text
         assert 'id="autonomy-speed-effective"' in response.text
@@ -260,6 +266,16 @@ def test_ws_action_round_trip_and_lease_role():
 
                 second.send_json({'action': 'stop'})
                 assert not _drain_until(second, 'ack')['accepted']
+
+                second.send_json({'action': 'takeover'})
+                takeover = _drain_until(second, 'ack')
+                assert takeover['accepted']
+                assert takeover['role'] == 'controller'
+
+                first.send_json({'action': 'run', 'held': True})
+                old_owner = _drain_until(first, 'ack')
+                assert not old_owner['accepted']
+                assert old_owner['role'] == 'observer'
 
     # Both connections released; the owner's disconnect frees the lease.
     assert runtime._owner is None

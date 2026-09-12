@@ -40,6 +40,19 @@ const stopHold = new window.PaddockHoldToConfirm.HoldToConfirm({
     }
   },
 });
+const takeoverButton = $("btn-takeover");
+const takeoverHold = new window.PaddockHoldToConfirm.HoldToConfirm({
+  durationMs: 2000,
+  onProgress(progress, active) {
+    takeoverButton.style.setProperty("--hold-progress", `${progress * 100}%`);
+    takeoverButton.classList.toggle("holding", active);
+  },
+  onComplete() {
+    if (socketReady && role === "observer" && (latest.gateway || {}).lease_held) {
+      send({ action: "takeover" });
+    }
+  },
+});
 
 const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
@@ -464,6 +477,10 @@ function render() {
   renderMetric("yaw", adapter.commanded_yaw_rate, adapter.measured_yaw_rate, 2.0);
 
   const controller = role === "controller";
+  const takeoverAvailable = socketReady && !controller && gw.lease_held === true;
+  takeoverButton.hidden = !takeoverAvailable;
+  takeoverButton.disabled = !takeoverAvailable;
+  if (!takeoverAvailable) takeoverHold.cancel();
   document.querySelectorAll(
     "button.mode, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
@@ -1351,6 +1368,30 @@ stopButton.addEventListener("contextmenu", (event) => {
 window.addEventListener("blur", () => stopHold.cancel());
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopHold.cancel();
+});
+takeoverButton.addEventListener("pointerdown", (event) => {
+  if (takeoverButton.disabled || event.button !== 0) return;
+  event.preventDefault();
+  takeoverButton.setPointerCapture(event.pointerId);
+  takeoverHold.start();
+});
+["pointerup", "pointercancel", "lostpointercapture"].forEach((name) => {
+  takeoverButton.addEventListener(name, () => takeoverHold.cancel());
+});
+takeoverButton.addEventListener("keydown", (event) => {
+  if (!takeoverButton.disabled && [" ", "Enter"].includes(event.key)) {
+    event.preventDefault();
+    takeoverHold.start();
+  }
+});
+takeoverButton.addEventListener("keyup", (event) => {
+  if ([" ", "Enter"].includes(event.key)) takeoverHold.cancel();
+});
+takeoverButton.addEventListener("click", (event) => event.preventDefault());
+takeoverButton.addEventListener("contextmenu", (event) => event.preventDefault());
+window.addEventListener("blur", () => takeoverHold.cancel());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) takeoverHold.cancel();
 });
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
 document.querySelectorAll("[data-speed-preset]").forEach((button) => {

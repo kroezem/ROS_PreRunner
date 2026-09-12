@@ -97,6 +97,31 @@ def test_stop_closes_and_disarms_autonomy():
     assert blocked.autonomy_command is None
 
 
+def test_lease_lost_then_fresh_acquire_never_restores_autonomy_run():
+    supervisor = autonomy_ready()
+    supervisor.receive_raw_autonomy(COMMAND, 0.010)
+
+    lost = control(supervisor, ControlEvent.LEASE_LOST, 4, 0.020)
+    acquired = control(
+        supervisor,
+        ControlEvent.LEASE_ACQUIRED,
+        5,
+        0.021,
+        client_id='phone-b',
+        lease_id='lease-b',
+    )
+    blocked = supervisor.receive_raw_autonomy(COMMAND, 0.022)
+
+    assert lost.accepted and lost.snapshot.brake_intent
+    assert not lost.snapshot.state.lease_active
+    assert acquired.accepted
+    assert acquired.snapshot.state.lease_client_id == 'phone-b'
+    assert not acquired.snapshot.state.run_held
+    assert acquired.snapshot.state.goal is None
+    assert acquired.snapshot.brake_intent
+    assert blocked.autonomy_command is None
+
+
 def test_clear_stop_requires_current_lease_and_order_and_stays_disarmed():
     supervisor = autonomy_ready()
 

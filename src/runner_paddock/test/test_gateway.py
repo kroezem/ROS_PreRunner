@@ -52,6 +52,30 @@ def test_single_lease_second_connection_is_observer():
                                 'mode': 'autonomy'}).accepted
 
 
+def test_takeover_revokes_old_lease_before_granting_one_fresh_owner():
+    gw = _gateway()
+    first = gw.handle('c1', {'action': 'acquire'}).intents[0]
+    gw.handle('c1', {'action': 'run', 'held': True})
+
+    takeover = gw.handle('c2', {'action': 'takeover'})
+
+    assert takeover.accepted and takeover.role == 'controller'
+    assert [intent.event for intent in takeover.intents] == [
+        ControlEvent.LEASE_LOST, ControlEvent.LEASE_ACQUIRED,
+    ]
+    lost, acquired = takeover.intents
+    assert (lost.client_id, lost.lease_id) == (
+        first.client_id, first.lease_id
+    )
+    assert (acquired.client_id, acquired.lease_id) != (
+        first.client_id, first.lease_id
+    )
+    assert gw.role_for('c1') == 'observer'
+    assert gw.role_for('c2') == 'controller'
+    assert not gw.public_state()['run_pressed']
+    assert not gw.handle('c1', {'action': 'run', 'held': True}).accepted
+
+
 def test_control_event_sequence_is_monotonic_and_lease_scoped():
     gw = _gateway()
     gw.handle('c1', {'action': 'acquire'})

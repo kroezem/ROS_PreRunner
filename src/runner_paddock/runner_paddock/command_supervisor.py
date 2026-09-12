@@ -506,6 +506,7 @@ class CommandSupervisor:
             ControlEvent.MANUAL_ACTIVE: Event.MANUAL_ACTIVE,
             ControlEvent.MANUAL_INACTIVE: Event.MANUAL_INACTIVE,
             ControlEvent.LEASE_RELEASED: Event.RELEASE_LEASE,
+            ControlEvent.LEASE_LOST: Event.LOSE_LEASE,
         }
         supported = event in (
             ControlEvent.HEARTBEAT,
