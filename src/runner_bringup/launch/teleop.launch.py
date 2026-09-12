@@ -1,6 +1,6 @@
-# Persistent local-control tier: one joy_node, keyboard bridge, runner_teleop,
-# and the existing twist_mux. Owned by runner-local-control.service and kept
-# alive across IDLE/MAPPING/AUTONOMY. map.launch.py and localize.launch.py are
+# Persistent local-control tier: one joy_node, runner_teleop, and the
+# existing twist_mux. Owned by runner-local-control.service and kept alive
+# across IDLE/MAPPING/AUTONOMY. map.launch.py and localize.launch.py are
 # application tiers that run alongside this launch and no longer construct
 # joy/teleop/mux nodes. Engineering direct runs must not start a second copy.
 
@@ -22,21 +22,6 @@ def generate_launch_description():
             package='joy',
             executable='joy_node',
             parameters=[{'autorepeat_rate': 20.0, 'deadzone': 0.05}],
-        ),
-        Node(
-            package='runner_teleop',
-            executable='keyboard_bridge',
-            name='keyboard_bridge',
-            output='screen',
-            parameters=[{
-                'bind_address': '0.0.0.0',
-                'port': 49321,
-                'allowed_source_ip': '',
-                'input_timeout': 0.15,
-                'speed_cap': 0.50,
-                'publication_rate': 20.0,
-                'autonomy_latch_timeout': 600.0,
-            }],
         ),
         Node(
             package='runner_teleop',

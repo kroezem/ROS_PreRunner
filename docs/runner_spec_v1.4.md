@@ -120,11 +120,11 @@ stop, or restart any of these; it can only *request* work from the tiers
 below.
 
 **Persistent local-control tier** (`runner-local-control.service`, launched
-via `runner_bringup/launch/teleop.launch.py`): one `joy_node`,
-`keyboard_bridge` (legacy, see §17), `runner_teleop` (DualSense local
-manual/fixed-throttle), and the single `twist_mux`. Alive across
-IDLE/MAPPING/AUTONOMY; application launches construct none of these nodes
-(`teleop.launch.py:1-5`).
+via `runner_bringup/launch/teleop.launch.py`): one `joy_node`, `runner_teleop`
+(DualSense local manual/fixed-throttle), and the single `twist_mux`. Alive
+across IDLE/MAPPING/AUTONOMY; application launches construct none of these
+nodes (`teleop.launch.py:1-5`). `keyboard_bridge` was removed (§17); Paddock
+and DualSense are the only supported operator paths.
 
 **Persistent STOP tier** (`runner-stop-enforcer.service`,
 `runner_stop_enforcer.py`): the durable global-STOP executor, independent of
@@ -197,7 +197,6 @@ with a reason and no intent is published.
 | DualSense | Independent local Bluetooth manual fallback and takeover; highest normal-source mux priority (100) |
 | Foxglove | Diagnostic visualization, TF/topic inspection, deeper engineering plots |
 | SSH / ROS parameters / `services/install.sh` | Engineering/deploy configuration, not the operator abstraction |
-| Laptop keyboard (`keyboard_bridge`) | Legacy local-manual-only input path; its original autonomy-arming purpose is dead code (§17) |
 
 ## 5. Runtime modes and lifecycle
 
@@ -390,7 +389,7 @@ flowchart LR
 | `/cmd_vel_auto_raw` | `Twist` | drive_adapter → authority | raw converted autonomy command |
 | `/cmd_vel_paddock_manual_raw` | `ConvertedCommand` | drive_adapter → authority | raw converted manual command + provenance |
 | `/cmd_vel_auto` (p50), `/cmd_vel_paddock` (p75) | `Twist` | authority → twist_mux | supervised, silent when not permitted |
-| `/cmd_vel_teleop` (p100) | `Twist` | runner_teleop → twist_mux | local DualSense/keyboard-fallback command |
+| `/cmd_vel_teleop` (p100) | `Twist` | runner_teleop → twist_mux | local DualSense command |
 | `/cmd_vel_stop` (p255), `/paddock/stop_lock` (lock 200) | `Twist`/`Bool` | stop_enforcer → twist_mux | zero + fail-closed lock heartbeat |
 | `/cmd_vel` | `Twist` | twist_mux → motor_node | final command, sole writer |
 | `/teleop/control_state` | `LocalControlState` | runner_teleop → authority, stop_enforcer, gateway | process/takeover epoch, neutral/released |
@@ -815,20 +814,15 @@ process.
   values, but no document yet states a measured maximum stale-nonzero-
   `/cmd_vel` duration across all of them in series. Treat the 0.5 s deadman
   as **provisional**, not a ratified final safety bound.
-- **`keyboard_bridge` is legacy, pending removal, not re-ratified.**
-  `keyboard_bridge.py` is still constructed by `teleop.launch.py` inside the
-  persistent local-control tier and still implements a 600 s
-  (`DEFAULT_AUTONOMY_LATCH_TIMEOUT`) UDP-armed autonomy latch and publishes
-  `/runner/route_control` — but nothing in the current graph consumes
-  `/runner/route_control` since `foxglove_goal_bridge` was retired in Stage
-  5, so the latch's original autonomy-arming purpose is dead code. Its
-  `/teleop/keyboard_state` output *is* still live-consumed by
-  `runner_teleop` as a genuine local keyboard-driving fallback
-  (brake/motion/suppress modes feeding `/cmd_vel_teleop` at mux priority
-  100) — that local-driving path works today and is not itself obsolete.
-  The obsolete part is specifically the latch/route-control bypass; it
-  should be removed rather than treated as a supported production
-  interface.
+- **`keyboard_bridge` has been removed.** The legacy laptop keyboard-control
+  path — its UDP-armed autonomy latch (dead code since `foxglove_goal_bridge`
+  was retired in Stage 5), `/runner/route_control` publishing, and its
+  `/teleop/keyboard_state` local-driving fallback into `runner_teleop` — is
+  gone from `teleop.launch.py`, the persistent local-control tier, and
+  Paddock's node-readiness set. Paddock and DualSense are the only supported
+  operator paths; `runner_teleop` still declares its `/teleop/keyboard_state`
+  subscription and `keyboard_state_timeout` parameter, but the topic now has
+  no publisher, so those branches are permanently inert.
 - **Deploy coherence is never assumed** (§15): a Pi that has not run
   `services/install.sh --check` / `--restart` (or rebooted) after a repo
   change may be running stale message schemas or logic.
@@ -907,7 +901,7 @@ guidance, not new implementation.
 | v1.3 subject | v1.4 disposition |
 |---|---|
 | §1 "Paddock becomes the normal operator interface" | **Delivered.** Paddock is the primary operator interface today, materially exceeding the v1.3 milestone (adds tuning, obstacle control, recording, map deletion, field AP) |
-| §5 "keyboard and Foxglove still own operational bypasses" | Foxglove bypass retired (Stage 5). `keyboard_bridge`'s autonomy-latch bypass is dead code, not re-ratified (§17); its local-driving path is retained and current |
+| §5 "keyboard and Foxglove still own operational bypasses" | Foxglove bypass retired (Stage 5). `keyboard_bridge` itself has since been removed entirely (§17); Paddock and DualSense are the only supported operator paths |
 | §9 "Remote manual ceiling 0.40 m/s… autonomy retains current maximum 0.60 m/s" | Manual ceiling unchanged at 0.40 m/s. Autonomy ceiling is now **policy-selected**: Timid retains 0.60 m/s; Confident is ratified at **1.00 m/s**, explicitly superseding the flat v1.3 figure (§12) |
 | §9, §14 "The frozen controller is retained" | Superseded: a defined parameter subset is validated, atomically applied, and live-effective (§12). Committed defaults are preserved as the Timid-equivalent baseline, not as an immutable runtime constraint |
 | §5 "Global STOP... required invariant" | Retained verbatim as implemented in `runner_stop_enforcer` (§6); NEW MAP is now explicitly confirmed **not** to assert/require/clear STOP (§5, §8) — a v1.3-era open question this document resolves with source evidence |

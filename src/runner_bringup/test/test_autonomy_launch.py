@@ -71,7 +71,7 @@ def test_no_launch_retains_removed_esc_mode():
 
 
 def test_local_control_parameters_live_only_in_persistent_launch():
-    """DualSense, keyboard bridge, and mux share one persistent launch."""
+    """The DualSense and mux share one persistent launch."""
     autonomy = AUTONOMY_LAUNCH.read_text()
     local = LOCAL_CONTROL_LAUNCH.read_text()
     bench = BENCH_LAUNCH.read_text()
@@ -82,9 +82,6 @@ def test_local_control_parameters_live_only_in_persistent_launch():
         "'controller_timeout': 0.15",
         "'keyboard_state_timeout': 0.15",
         "'fixed_throttle_initial_setpoint': 0.00",
-        "executable='keyboard_bridge'",
-        "'input_timeout': 0.15",
-        "'speed_cap': 0.50",
         "package='twist_mux'",
         'parameters=[mux_parameters]',
         "remappings=[('/cmd_vel_out', '/cmd_vel')]",
@@ -95,6 +92,9 @@ def test_local_control_parameters_live_only_in_persistent_launch():
         assert fragment in bench
 
     assert "package='runner_drive_adapter'" not in autonomy
+
+    assert "executable='keyboard_bridge'" not in local
+    assert "executable='keyboard_bridge'" not in bench
 
     assert "executable='speed_envelope_observer'" in autonomy
     assert "executable='speed_envelope_observer'" not in bench

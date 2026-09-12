@@ -67,7 +67,6 @@ COMMON_NODES = frozenset({
 PERSISTENT_LOCAL_NODES = frozenset({
     '/drive_adapter',
     '/joy_node',
-    '/keyboard_bridge',
     '/runner_teleop',
     '/twist_mux',
     '/runner_stop_enforcer',

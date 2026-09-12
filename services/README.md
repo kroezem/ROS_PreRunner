@@ -8,8 +8,8 @@ mode composites.
 
 ## Stage 3 persistent local control
 
-`runner-local-control.service` owns exactly one `joy_node`, keyboard bridge,
-`runner_teleop`, and the existing `twist_mux` in IDLE, MAPPING, and AUTONOMY.
+`runner-local-control.service` owns exactly one `joy_node`, `runner_teleop`,
+and the existing `twist_mux` in IDLE, MAPPING, and AUTONOMY.
 The STOP executor remains its separate persistent service. Application launches
 contain no local-control or mux nodes. Inactive teleop publishes status but no
 velocity; release emits a bounded brake before becoming silent. The mux
@@ -253,7 +253,7 @@ The persistent tier that `install.sh` enables:
 | `runner-encoder.service` | sole GPIO 22 encoder owner |
 | `runner-battery` / `runner-telemetry` / `runner-foxglove` | telemetry + diag |
 | `runner-stop-enforcer.service` | persistent global STOP executor + mux lock |
-| `runner-local-control.service` | joy + keyboard bridge + teleop + the one twist_mux |
+| `runner-local-control.service` | joy + teleop + the one twist_mux |
 | `runner-drive-adapter.service` | one shared Nav2/manual conversion controller |
 | `runner-command-authority.service` | sole supervised `/cmd_vel_auto` and `/cmd_vel_paddock` writer, lease + RUN |
 | `runner-mode-supervisor.service` | sole start/stop owner of the mode units |
