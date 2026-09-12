@@ -8,10 +8,13 @@ Project page: https://makro.ca/prerunner/
 
 ## Current implementation contract
 
-[Runner v1.3](docs/runner_spec_v1.3.md) is the ratified Paddock-first target.
-[Decision amendments](docs/decision_v1.3_paddock_first.md) qualify historical
-decisions by version and title. Implementation is staged; this link does not
-claim backend acceptance. Earlier specifications remain historical references.
+[Runner v1.4](docs/runner_spec_v1.4.md) is the current-state architecture
+specification, describing what is implemented at HEAD rather than a
+migration target. [Runner v1.3](docs/runner_spec_v1.3.md) (the Paddock-first
+migration plan) and its [decision amendments](docs/decision_v1.3_paddock_first.md)
+remain historical references; v1.4 records where current code/config
+supersedes their proposals or numeric limits. Earlier specifications remain
+historical references.
 
 ## Current Status
 

@@ -2,694 +2,859 @@
 
 **Current-state specification · 12 September 2026**
 
-Baseline: `/home/matti/runner_ws`, clean HEAD `044b4fb565eba71a70fdc56bdd790bd9da068986` ("Quiesce
-active mapping resets without global STOP"). Previous specification: `docs/runner_spec_v1.3.md`
-(ratified 7 September 2026 as a migration target). This document supersedes it: v1.3 described a
-staged migration from a transitional graph to a Paddock-first architecture; stages 0–8 of that
-migration have landed at HEAD, and this document describes **what is actually built and running**,
-not a plan to build it.
+Baseline: `/home/matti/runner_ws`, clean HEAD `044b4fb565eba71a70fdc56bdd790bd9da068986`
+("Quiesce active mapping resets without global STOP"), inspected directly from
+source, tests, configuration and systemd units. Previous specification:
+`docs/runner_spec_v1.3.md` (ratified 7 September 2026 against baseline
+`6a7c9611`), reconciled here against a workspace that has since implemented
+stages 0–8 of that migration plan and gone materially beyond it (live
+tuning, obstacle-layer controls, recording, map deletion, Wi-Fi field AP).
 
-**Reading convention.** "Current" means present in HEAD source, config, tests or service units, with
-a file reference. "Provisional" or "open" flags something deployed but not yet validated as final
-policy — do not read either word as "unimplemented." "Future" flags something intentionally not
-built. Historical D-numbers are always qualified by source version and subject; no new D-number is
-allocated here. Where this document's numeric claims differ from `docs/runner_spec_v1.3.md`, this
-document governs; v1.3 remains a historical record of the migration, not a competing current-state
-claim.
-
-**Deploy-coherence caveat.** This specification describes repository HEAD. `docs/paddock_v1.3_implementation.md`
-records that the persistent operator services on the physical Pi have, at various points, lagged
-several stages behind HEAD (stale `ModeState` schema, hand-copied unit files bypassing repo edits),
-and a recent validation pass separately observed `runner-map-executor` serving an older message
-schema on the deployed Pi. **HEAD source is not a claim about the currently running Pi process
-image.** A coherent deploy requires `colcon build` followed by `services/install.sh` (or `--restart`)
-per `services/README.md`; this document does not assert that step has been taken as of this writing.
+**Reading convention.** This document states what is implemented in source
+and covered by tests as **current**, distinguishes what is deployed but not
+yet hardware-validated or time-bounded as **provisional/open**, and reserves
+**future** for capability that does not exist yet. It does not restate v1.3's
+migration narrative except where §19 explicitly reconciles against it. Where
+current code or a decision Matti has ratified supersedes a v1.3 numeric limit
+or claim, this document states the current value and does not carry the old
+one forward as if still binding. Historical D-numbers are always qualified by
+source version and subject; no new D-number is allocated here. **Deploy
+coherence is not assumed**: this document describes the repository at HEAD,
+not necessarily the code the Pi's systemd units are currently executing. A
+recent validation found `runner-map-executor` serving an older message
+schema on the Pi; see §15 and §17.
 
 ## 1. Executive architecture summary
 
-Paddock is the delivered primary operator interface for runtime selection, manual driving,
-supervised autonomous missions, STOP, mapping sessions, map bundles, recording, live speed/controller
-tuning and health feedback. A persistent Pi-side command authority validates browser intent and
-grants bounded motion permission; neither the browser nor the authority can bypass actuator safety.
+Paddock (`runner_paddock`, served by `runner-paddock-web.service` on
+`0.0.0.0:8000`) is the delivered primary operator interface for runtime
+selection, manual driving, supervised autonomous missions, STOP, mapping
+sessions, complete map bundles (including deletion), live autonomy speed
+tuning, obstacle-layer control, MCAP recording, and initial-pose seeding. The
+browser holds at most one control lease; a persistent Pi-side command
+authority (`runner_command_authority`) validates every intent against
+continuously refreshed interlocks and grants bounded motion permission.
+Neither the browser nor the authority can reach the actuator directly.
 
 Runtime and motion authority remain independent dimensions:
 
-- **Runtime:** `IDLE` / `MAPPING` / `AUTONOMY` — the active application composition.
-- **Motion authority:** `NONE` / `DUALSENSE` / `PADDOCK_MANUAL` / `PADDOCK_AUTONOMY` — who currently
-  holds permission to command normal motion (`CommandAuthorityState.authority`).
-- **Global STOP** is a separate latched inhibit orthogonal to both: `runner_stop_enforcer` asserts or
-  clears it independently of runtime and authority.
+- **Runtime** (`ModeState.mode`): `IDLE / MAPPING / AUTONOMY`, with a
+  separate lifecycle `STATUS_STABLE / STATUS_TRANSITIONING / STATUS_FAULT`,
+  a monotonic `runtime_epoch`, a `mapping_session_id`, and continuously
+  refreshed `ready` / `readiness_reason`.
+- **Motion authority** (`CommandAuthorityState.authority`):
+  `AUTHORITY_NONE / AUTHORITY_DUALSENSE / AUTHORITY_PADDOCK_MANUAL /
+  AUTHORITY_PADDOCK_AUTONOMY`, derived purely from lease, mode, DualSense
+  presence, RUN, and goal state — never asserted independently of them
+  (`runner_paddock/state_machine.py:112-124`).
 
-One `twist_mux` (`src/runner_bringup/config/twist_mux.yaml`) remains the sole `/cmd_vel` writer.
-Precedence by mux priority: **global STOP zero (255) > STOP lock (200) > DualSense teleop (100) >
-Paddock manual (75) > supervised autonomy (50)**. Inactive sources are silent; a selected zero is a
-real braking command.
+One `twist_mux` remains the final arbiter and sole `/cmd_vel` writer, with
+priorities **STOP (255/lock 200) > DualSense teleop (100) > Paddock manual
+(75) > Paddock autonomy (50)**
+(`src/runner_bringup/config/twist_mux.yaml`). Inactive sources are silent; a
+selected zero is a real braking command; STOP is a latched, durably
+persisted global inhibit with explicit clear semantics.
 
-The full production command path is:
-
-```
-Nav2 controller_server --/cmd_vel_nav (SI Twist)--> drive_adapter --/cmd_vel_auto_raw-->
-  command_authority --/cmd_vel_auto (0.30s timeout, prio 50)--> twist_mux --/cmd_vel--> motor
-
-Paddock browser --/paddock/control_event--> command_authority --manual demand-->
-  drive_adapter --/cmd_vel_paddock_manual_raw--> command_authority --/cmd_vel_paddock
-  (0.30s timeout, prio 75)--> twist_mux
-
-joy_node --/joy--> runner_teleop --/cmd_vel_teleop (0.15s timeout, prio 100)--> twist_mux
-
-command_authority --/paddock/internal/stop_request--> runner_stop_enforcer
-  --/cmd_vel_stop (0.10s timeout, prio 255) + /paddock/stop_lock (0.15s lock timeout, prio 200)--> twist_mux
-```
-
-`drive_adapter` is the single shared longitudinal PI controller for both autonomy and manual demand;
-`command_authority` is the sole supervised writer to `/cmd_vel_auto` and `/cmd_vel_paddock`; the mux
-is the sole arbiter and `/cmd_vel` writer; `motor_node` is the sole actuator owner. This is fully
-wired and code-reachable at HEAD — it is not a migration target.
-
-A parallel, architecturally legacy local-motion path remains live: `keyboard_bridge`, part of the
-same persistent local-control tier, still receives UDP keyboard packets and can command
-`/cmd_vel_teleop` motion directly through `runner_teleop` (§4.5). This bypasses the Paddock lease
-model entirely (it is a local, not a leased-browser, path) but still terminates in the same
-STOP/mux-governed `/cmd_vel_teleop` slot as DualSense. It is retained today, not re-ratified as a
-production interface: Paddock is the ratified primary operator surface, and keyboard control is
-documented here as legacy pending removal.
+Reverse autonomy, obstacle-aware costmaps, a 7-state mission lifecycle, live
+speed-policy tuning (Timid/Confident/Custom), complete map bundle lifecycle
+(new/save/select/delete), MCAP recording, and a field Wi-Fi AP are all real,
+tested, current behavior — not proposals. The known open items are:
+end-to-end stale-command timing is still not formally budgeted (§6, §17);
+the 0.5 s motion deadman is a deployed but provisional value, not a ratified
+final bound; and Pi deploy coherence must be reverified after any change
+(services/install.sh --check`, §15).
 
 ## 2. Platform, geometry, hardware and safety boundaries
 
-Runner is the LaTrax Prerunner 1/18-scale research platform: Raspberry Pi 5, Ubuntu 24.04, ROS 2
-Jazzy, LD19 2D LiDAR, BNO085 IMU, hall-effect wheel encoder, Cytron MD13S motor driver, steering
-servo, X1201 UPS (`README.md`). Phase 1 (indoor navigation) is the established platform; there is no
-imposed thesis deadline for Phase 2 racing-speed work.
+Runner is the LaTrax Prerunner research platform: Raspberry Pi 5, Ubuntu
+24.04, ROS 2 Jazzy, LD19 lidar, BNO085 IMU, hall-effect wheel encoder, and a
+Cytron MD13S motor driver. Phase 1 (indoor/outdoor navigation) remains the
+established platform focus; this document does not change platform purpose.
 
-Geometry is unchanged from v1.2/v1.3 and confirmed in current config: wheelbase 0.178 m
-(`src/runner_drive_adapter/config/drive_adapter.yaml:5`, `AdapterConfig.wheelbase` default),
-maximum steering angle 0.3614 rad, physical minimum turning radius 0.470 m, and the Nav2 planner's
-configured `minimum_turning_radius: 0.60` m (`src/runner_bringup/config/nav2_params.yaml:30`). These
-remain distinct quantities; this document changes none of them.
+Geometry is unchanged from v1.2/v1.3: wheelbase 0.178 m, maximum steering
+0.3614 rad, physical minimum turning radius 0.470 m. The planner's minimum
+turning radius is **0.60 m**
+(`src/runner_bringup/config/nav2_params.yaml:28`, `SmacPlannerHybrid.
+minimum_turning_radius`) — a planning-time conservatism margin over the
+physical minimum, not a claim that the vehicle cannot turn tighter.
 
 | Resource / boundary | Current owner and rule |
 |---|---|
-| Motor effort PWM, steering PWM, direction GPIO | `runner-motor.service` / `motor_node`; sole continuous owner of GPIO12 (20 kHz hardware PWM) and GPIO23 DIR via `pinctrl-rp1`; GPIO13 is the 50 Hz steering PWM; never unexports either channel |
-| Encoder GPIO | `runner-encoder.service`; sole continuous owner of GPIO22; independent of application launches |
-| Motor watchdog | `motor_node`, `CMD_TIMEOUT_S = 0.2` (`src/runner_motor/runner_motor/motor_node.py:18`), checked on a 0.05 s timer (`:212`); on timeout, duty is driven to zero (active brake) and a log is emitted (`:279-286`). Unchanged since v1.2/v1.3. |
-| Direction/reversal | Motor-local gate; a negative demand means reverse, never brake; fail-closed at zero duty if encoder evidence of stationarity is absent at a direction-change request |
-| LD19 UART | LD19 driver process; sole owner of `/dev/ttyAMA0` |
-| BNO085 UART/reset | IMU process; sole owner of `/dev/ttyAMA2` |
-| `odom → base_link` | `ekf_node` (`src/runner_bringup/config/ekf.yaml`) fuses **RF2O `/odom_rf2o`** (x-linear velocity, yaw velocity) and **BNO085 `/imu/data`** (yaw velocity) only, at 15 Hz. The wheel encoder is **not** an EKF input at HEAD — it feeds `motor_node`, `drive_adapter` and `runner_stop_enforcer` direction/stationarity gating instead. This refines v1.3's data-flow diagram, which implied encoder→EKF fusion. |
-| `map → odom` | Exactly one `slam_toolbox` instance: mapping SLAM in `MODE_MAPPING`, localization SLAM (remapped, publishing `/slam_map`) in `MODE_AUTONOMY` |
-| `/map` | Mapping: `slam_toolbox`. Autonomy: `map_server`, sole publisher from the selected saved bundle. |
-| Static extrinsics | Static TF publishers, unchanged |
+| Motor effort PWM (GPIO12, 20 kHz), steering PWM (GPIO13, 50 Hz), direction GPIO23 | `runner-motor.service`, sole continuous owner, `pinctrl-rp1` GPIO chip by label; writes sysfs directly, never unexports either PWM channel |
+| Encoder GPIO22 | `runner-encoder.service`, sole continuous owner; `/wheel/encoder_state` feeds the motor reversal gate and every consumer's stationarity/direction evidence |
+| Motor watchdog | 200 ms `/cmd_vel` staleness → zero duty (active brake), checked every 50 ms; unchanged, no supervisor or browser component replaces it |
+| Direction/reversal gate | Motor-local; a negative demand means reverse, never brake; requires a fresh post-request stationary encoder sample before flipping DIR; no upstream component owns this permission |
+| LD19 UART (`/dev/ttyAMA0`) | LD19 driver process, application sensor tier |
+| BNO085 UART/reset (`/dev/ttyAMA2`) | IMU process, application sensor tier |
+| `odom → base_link` | `ekf_node` only; RF2O (`/odom_rf2o`) is an EKF input, never this TF owner |
+| `map → odom` | Exactly one `slam_toolbox` instance: mapping SLAM in MAPPING, localization SLAM (remapped `/slam_map`) in AUTONOMY |
+| Static extrinsics | Existing static TF publishers (`base_link_to_base_laser`, `base_link_to_imu_link`) |
+| `/map` | MAPPING: `slam_toolbox`. AUTONOMY: `map_server`. Enforced per-topic by `runner_mode_supervisor._ownership_ready` (`mode_supervisor_node.py:225-245`), not by node-name counting |
+| `/cmd_vel` | `twist_mux`, sole writer, unchanged |
 
-TF is a multi-publisher transport with single ownership **per edge**, not a single-writer topic;
-duplicate node *names* (the known double-listed RF2O DDS discovery artifact) are not evidence of a
-duplicate hardware owner (`docs/paddock_v1.3_implementation.md` Stage 4 notes; `mode_runtime.py`
-structural-readiness comments).
+TF is a multi-publisher transport with **single ownership per edge**, not a
+single-writer topic; the mode supervisor checks publisher-owner sets per
+critical topic/edge every readiness cycle and ignores endpoints whose node
+identity has not yet propagated through DDS discovery
+(`mode_supervisor_node.py:211-223`, carrying forward v1.3 §12's ruling that a
+duplicate node *name* is not proof of a duplicate owner).
 
-**Preserved hard safety limitations (do not treat as closed by this document):**
+Retained hard safety limitations, unchanged by anything in this document:
 
-- Paddock STOP is a software motion inhibit, not proof of mechanical stationarity or independent
-  power isolation.
-- The known motor SIGKILL/PWM-peripheral persistence hazard and the deferred heartbeat-gated FET
-  decision from v1.2 are unchanged; nothing here claims to close them.
-- The LD19 scan plane sits 0.1135 m above the floor (`docs/local_costmap_obstacles.md`,
-  `docs/global_costmap_obstacles.md`). Descending edges, thresholds, and objects below ≈0.11 m are
-  structurally invisible to the planar scan and cannot be corrected in costmap software. This is a
-  standing operating-envelope limit for both mapping and obstacle-aware autonomy, unchanged by
-  Section 13's obstacle-costmap coverage.
+- The planar LD19 scan cannot see descending edges or low obstacles;
+  supervised autonomous/manual driving is not gated on a negative-obstacle
+  sensor.
+- Paddock/global STOP is a software motion inhibit, not proof of mechanical
+  stationarity or independent power isolation.
+- The known motor SIGKILL/PWM-peripheral hazard and deferred
+  heartbeat-gated-FET decision (v1.2 subject, historically discussed as
+  D-82) remain open; nothing in this architecture claims to close them.
+  `runner_stop_enforcer` controls the existing mux/lock only.
 
 ## 3. Process tiers and ownership model
 
-Four tiers, unchanged in shape from v1.3 but now fully populated (`services/README.md`):
+**Hardware tier (persistent, unmanaged by Paddock):** `runner-pwm-setup`
+(oneshot exporter), `runner-motor`, `runner-encoder`, `runner-battery`,
+`runner-telemetry`, `runner-foxglove`. Paddock has no privilege to start,
+stop, or restart any of these; it can only *request* work from the tiers
+below.
 
-**Persistent hardware tier** (never in a mode composite): `runner-pwm-setup`, `runner-motor`,
-`runner-encoder`, `runner-battery`, `runner-telemetry`, `runner-foxglove`.
+**Persistent local-control tier** (`runner-local-control.service`, launched
+via `runner_bringup/launch/teleop.launch.py`): one `joy_node`,
+`keyboard_bridge` (legacy, see §17), `runner_teleop` (DualSense local
+manual/fixed-throttle), and the single `twist_mux`. Alive across
+IDLE/MAPPING/AUTONOMY; application launches construct none of these nodes
+(`teleop.launch.py:1-5`).
 
-**Persistent local-control tier** (`runner-local-control.service`, `teleop.launch.py`): one
-`joy_node`, `keyboard_bridge`, `runner_teleop`, and the one `twist_mux`. Independent of application
-launches and of web/authority/mode-supervisor health. `runner-stop-enforcer.service` is a separate
-persistent unit in this tier providing global STOP.
+**Persistent STOP tier** (`runner-stop-enforcer.service`,
+`runner_stop_enforcer.py`): the durable global-STOP executor, independent of
+every other Paddock process.
 
-**Persistent operator tier**: `runner-command-authority`, `runner-drive-adapter`,
-`runner-mode-supervisor`, `runner-map-executor`, `runner-recording-executor`, `runner-paddock-web`.
-These own permission, conversion, mode lifecycle, map bundles, recording and the browser gateway —
-never PWM, GPIO, systemd beyond the two narrowly-scoped mode units, or Nav2 internals directly.
+**Persistent operator tier:** `runner-command-authority.service`
+(`runner_command_authority`, lease/RUN/interlock supervision and the sole
+supervised writer of `/cmd_vel_auto` and `/cmd_vel_paddock`),
+`runner-drive-adapter.service` (`drive_adapter`, the one shared
+Nav2/manual-demand longitudinal+steering conversion), `runner-mode-supervisor
+.service` (`runner_mode_supervisor`, sole start/stop owner of the two
+application units via systemd D-Bus under a narrow polkit rule),
+`runner-map-executor.service` (`runner_map_executor`, map-session and bundle
+lifecycle), `runner-recording-executor.service` (`runner_recording_executor`,
+sole owner of the `ros2 bag record` process), and `runner-paddock-web.service`
+(the browser gateway). None of these owns process lifecycle for hardware or
+each other except the mode supervisor's narrowly scoped control of the two
+fixed mode units.
 
-**Application tier**: sensors + estimation + `slam_toolbox` (mapping) started by `map.launch.py`
-under `runner-mode-mapping.service`; sensors + estimation + localization `slam_toolbox` + `map_server`
-+ Nav2 + `runner_navigation_runtime` started by `autonomy.launch.py` under
-`runner-mode-autonomy.service`. Both are `Conflicts=`, `KillMode=control-group`, no `[Install]`
-section (never boot-enabled); `runner-mode-supervisor` is their sole start/stop owner, via the
-systemd D-Bus API under a narrow polkit rule (`services/49-runner-mode-units.rules`) scoped to
-`start`/`stop` on exactly those two unit names for user `matti`.
+**Application tier:** `runner-mode-mapping.service` (`map.launch.py`: common
+sensor/estimation tier + mapping `slam_toolbox`) and
+`runner-mode-autonomy.service` (`autonomy.launch.py`: the same common tier +
+localization `slam_toolbox` + `map_server` + Nav2 + `runner_navigation_runtime`
+as the sole Nav2 mission/action owner). The two units carry `Conflicts=`,
+`KillMode=control-group`, and no `[Install]` section — they cannot be
+enabled at boot and are only started/stopped by the mode supervisor
+(`services/README.md`).
 
-`services/install.sh` is the single source of truth for the systemd layout (`--check` reports drift,
-no-arg applies it, `--restart` cycles the operator/application tier in dependency order:
-`stop-enforcer → command-authority → local-control → drive-adapter → mode-supervisor →
-map-executor → recording-executor → paddock-web`). It never touches `runner-motor`/`runner-encoder`.
+Ownership summary: authority owns permission, not calculation; mode
+supervisor owns application process lifecycle, not permission; map executor
+owns bundle files and session bookkeeping, never process lifecycle (it
+forwards NEW MAP to the mode supervisor as a typed `ModeRequest`); drive
+adapter owns the one shared PI/feedforward conversion, not arbitration; mux
+owns final priority selection; motor owns hard actuator safety. Every gate
+decision publishes a reason string; there is no bare boolean "armed" flag.
 
-## 4. Paddock/operator surfaces and control roles
+## 4. Paddock operator surfaces and control roles
 
-| Surface | Current role |
+**Lease model.** `OperatorGateway` (`gateway.py`) holds exactly one control
+lease per browser connection at a time; every other connection is a
+read-only observer. An intent is produced only in direct response to a fresh
+browser message — the gateway manufactures no renewals — so a silent
+browser lets the Pi-side lease expire and RUN is revoked
+(`gateway.py:16-29`). Disconnect always releases the lease
+(`gateway.py:212-222`); a reconnecting browser starts with no lease, no RUN
+latch, and no goal.
+
+**Console layout** (`static/index.html`): a `CONTROL` view (map/costmap/plan
+canvas, big STOP, mode-specific manual joystick or autonomy run controls,
+compact Timid/Confident preset row) and a `CONFIGURE` view with tabs
+`RUNTIME / MAPPING / AUTONOMY / DISPLAY / RECORDING / SYSTEM`. All mutating
+controls are disabled for an observer connection.
+
+Operator-facing actions accepted by the gateway (`gateway.py:226-604`, one
+`_do_*` handler per action): `acquire` / `release` / `heartbeat`, `run`
+(hold-to-run), `stop` / `clear_stop`, `manual` (joystick demand),
+`select_mode`, `new_map` / `save_map` / `select_map` / `delete_map`,
+`select_goal` / `set_initial_pose`, `set_config` (manual speed ceiling),
+`set_autonomy_tuning` (preset or field values), `clear_obstacles` /
+`set_obstacle_processing`, `start_recording` / `stop_recording` /
+`delete_recording`. Every handler validates ownership and finiteness before
+producing a typed intent; malformed or unauthorized actions are rejected
+with a reason and no intent is published.
+
+**Other surfaces**, unchanged in role from v1.3:
+
+| Surface | Role |
 |---|---|
-| Paddock (browser) | Primary runtime, mapping, manual driving, mission, RUN/STOP, recording, live speed/controller tuning and health interface. Sole browser-side writer of `/paddock/control_event`, `/paddock/mode_request`, `/paddock/map_request`, `/paddock/recording_request`, autonomy-tuning writes, and the controlled `/initialpose` publisher. |
-| DualSense (Bluetooth, via `joy_node`/`runner_teleop`) | Independent local manual fallback and takeover; deadman button (`X`, index 0), fixed-throttle mode (`R1`), teleop-suppress (`L1`); local effort shaping unchanged from v1.2/v1.3 (§12) |
-| Keyboard (UDP, via `keyboard_bridge`) | **Legacy, pending removal.** Still built, still part of the persistent local-control tier launch, still capable of commanding `/cmd_vel_teleop` motion, still gates the global-obstacle-costmap clear/toggle route commands (§13). Not the ratified operator interface; see §4.5 and §19. |
-| Foxglove (`runner-foxglove.service`) | Diagnostic visualization, TF/topic inspection, plots, deeper engineering tools |
-| SSH/config files/ROS parameters | Engineering/debug configuration; not the normal operator abstraction |
-
-### 4.1 Lease model
-
-`runner_paddock/gateway.py` (`OperatorGateway`, pure/ROS-free) holds at most one control lease at a
-time — one *controller*, any number of *observers*. Every outbound intent is produced only in direct
-response to a fresh browser message; the gateway manufactures no renewals, so a silent browser lets
-the Pi-side lease expire and revokes RUN. `on_disconnect` always releases the lease
-(`EVENT_LEASE_RELEASED`); reconnection starts with no lease, no RUN latch, and no goal. A short lease
-lapse from the *same* client/lease id can be reinstated by a fresh heartbeat
-(`command_supervisor.py`'s `_lapsed_lease` backstop) without forcing a page reload — this is a UX
-convenience for Wi-Fi jitter, not a motion-grant carryover: RUN and manual demand are not restored by
-reinstatement.
-
-### 4.2 Global STOP (`runner_stop_enforcer`, `src/runner_paddock/runner_paddock/stop_enforcer.py`)
-
-STOP is a persistent, boot-independent, durably-recorded latch, unchanged in intent from v1.3's Q1
-and now fully implemented:
-
-- State persisted at `/home/matti/.local/state/runner/stop.json` with monotonic `generation`,
-  atomic write (`os.replace` + directory `fsync`) (`:50-65`). Unknown/corrupt state on startup is
-  treated as **STOP asserted** (`fault='STOP_STATE_UNKNOWN'`), never as clear (`:84-89`).
-- `/paddock/internal/stop_request` (`StopRequest`) is the sole assert/clear input, idempotent per
-  `(requester_id, request_id)`, rejecting stale/replayed ids (`:177-190`).
-- Assert is immediate and precedes disk I/O: generation increments, lock and zero publish happen
-  synchronously, persistence happens on a background thread (`:191-201`).
-- Clear requires: fresh encoder evidence of stationarity (≤0.20 s old), fresh local-control status
-  reporting released+neutral (≤0.20 s old), and no pending fault/persistence
-  (`clear_reason()`, `:152-164`). A satisfied clear request still enters a **0.40 s drain window**
-  (`DRAIN_TIME`) during which the lock stays asserted and any regression in the clear conditions
-  re-asserts STOP before the drain completes (`:231-244`). This is the "old stop velocity input must
-  age out" barrier from v1.3 §5, now concretely 0.40 s.
-- The 50 Hz lock/zero enforcement loop (`tick`, 0.02 s timer) is unconditional; status publication is
-  event-driven with a 20 Hz (`STATE_HEARTBEAT_PERIOD = 0.05`) liveness floor (`:266-280`).
-- `LOCK_TIMEOUT = 0.15` s: `twist_mux`'s lock treats an expired heartbeat as **locked** (fail-closed),
-  matching `locks.global_stop.timeout: 0.15` in `twist_mux.yaml`.
-
-Current `twist_mux.yaml` priorities and timeouts, exactly as deployed
-(`src/runner_bringup/config/twist_mux.yaml`):
-
-| Input | Topic | Timeout | Priority |
-|---|---|---|---|
-| Supervised autonomy | `/cmd_vel_auto` | 0.30 s | 50 |
-| Supervised Paddock manual | `/cmd_vel_paddock` | 0.30 s | 75 |
-| Local teleop (DualSense + keyboard, same slot) | `/cmd_vel_teleop` | 0.15 s | 100 |
-| Global STOP zero | `/cmd_vel_stop` | 0.10 s | 255 |
-| Global STOP lock | `/paddock/stop_lock` | 0.15 s | 200 |
-
-This confirms v1.3's Q1 priority ordering is deployed as specified, with the 0.30 s autonomy/manual
-timeouts, 0.15 s teleop timeout and 0.10/0.15 s STOP timeouts as the actual (not merely proposed)
-values.
-
-### 4.3 `/teleop/control_state` (`LocalControlState`)
-
-Published by `runner_teleop` at its 20 Hz (`0.05 s`) command timer. Fields actually present:
-`process_epoch` (per-process UUID), `takeover_epoch` (monotonic counter, incremented on every
-DualSense/fixed-throttle takeover rising edge — persists across intermediate status updates so a
-short local engagement cannot be missed, per v1.3 §11's requirement), `connected`, `active`
-(takeover currently held), `neutral`, `released`, `sample_age_sec`, `mode` (free-text diagnostic
-string, e.g. `manual`, `keyboard_motion`, `release_brake`). `runner_stop_enforcer` consumes
-`released`/`neutral` directly for its clear gate (§4.2).
-
-### 4.4 Drive adapter (`src/runner_drive_adapter`)
-
-Single shared longitudinal PI controller for both Nav2 autonomy and Paddock manual demand. Current
-committed defaults (`AdapterConfig`, `drive_adapter.py:83-105`, mirrored by the `TIMID` autonomy
-preset in `autonomy_tuning.py`):
-
-- Feedforward: `0.1188·|v| + 0.0174` (normalized effort)
-- Proportional gain 0.05, integral gain 0.01 (config file; dataclass default is 0.0 and is
-  overridden by `drive_adapter.yaml`/live tuning), integrator bound ±0.005, output magnitude cap
-  `MAXIMUM_OUTPUT_AUTHORITY = 0.14`
-- `minimum_moving_speed: 0.25` m/s (the frozen zero-or-≥0.25 contract, unchanged)
-
-These are the same numeric constants v1.3 recorded as "frozen." **"Frozen controller" is now obsolete
-language**: `1895caa` ("Make drive adapter tuning live-effective") makes exactly six parameters
-runtime-mutable via ROS parameter callback, gated by `LIVE_TUNABLE_PARAMETERS`
-(`drive_adapter.py:26-32`): `maximum_commanded_speed`, `feedforward_effort_per_speed`,
-`feedforward_effort_intercept`, `output_max`, `proportional_gain`, `integral_gain`. Every other
-adapter parameter remains immutable at runtime (`drive_adapter_node.py:211`, rejecting non-live-tunable
-parameter changes). The *values above remain the committed default/baseline*; live tuning is an
-intentional, bounded, validated capability layered on top (§12), not a repudiation of the calibration.
-
-Sole-writer topics (unchanged ownership from v1.3 Stage 7, confirmed in code):
-`drive_adapter` → `/cmd_vel_auto_raw` (`Twist`) and `/cmd_vel_paddock_manual_raw`
-(`ConvertedCommand`) (`drive_adapter_node.py:111-113`). `command_authority` is the sole writer of the
-supervised `/cmd_vel_auto` and `/cmd_vel_paddock`.
-
-Direction feedback still reaches the adapter through `EncoderState.pending_direction`, not a direct
-`/motor/direction` subscription. Autonomy steering is still `yaw_rate / speed` (signed); its
-zero-speed branch brakes and does not carry manual steering, so manual demand supplies steering
-through its own boundary rather than synthetic yaw rate — unchanged from v1.3 §9.
-
-### 4.5 Keyboard bridge — current status (legacy, not re-ratified)
-
-`keyboard_bridge` (`src/runner_teleop/runner_teleop/keyboard_bridge.py`) is **still built, still
-launched** as part of `teleop.launch.py` inside `runner-local-control.service` (persistent tier), at
-HEAD. It is not a dead file:
-
-- It receives UDP packets on `0.0.0.0:49321`, decodes throttle/steering/mode, and publishes
-  `/teleop/keyboard_state` (`KeyboardState`) at 20 Hz.
-- `runner_teleop.teleop_node` subscribes `/teleop/keyboard_state` and, when no DualSense takeover is
-  held, can select `KEYBOARD_MOTION_MODE` and publish real motion on `/cmd_vel_teleop`
-  (`teleop_node.py:569-577`) — i.e. keyboard input can still drive the vehicle today, gated by the
-  same mux/STOP precedence as DualSense (priority 100), but **without going through the Paddock
-  lease/authority model** at all.
-  operator direction is that this bypass is legacy and pending removal, not that it is inert.
-- It retains a **600 s "autonomy latch"** concept (`KeyboardAutonomyLatch`,
-  `DEFAULT_AUTONOMY_LATCH_TIMEOUT = 600.0`), which today only gates the keyboard's own
-  suppress/motion arming state machine (backtick to arm, Escape/DualSense X/L1/R1 to disarm) — it is
-  **not** wired to the AUTONOMY runtime or to Nav2 dispatch; there is no remaining "keyboard arms
-  autonomous driving" path. The v1.0-era "keyboard autonomy is a 600 s Pi-side latch" behavior
-  (D-71) was already superseded for production by v1.3; what remains at HEAD is a same-named timeout
-  constant governing an unrelated, narrower local-suppress state machine.
-- It also owns the `/runner/route_control` global-obstacle-layer clear/toggle commands consumed
-  historically by the route/waypoint system; this is real, exercised functionality (§13) still routed
-  through keyboard input, with no Paddock-native equivalent yet.
-
-**v1.4 disposition:** document this as-is. It is not re-ratified as part of the Paddock-first
-architecture, must not be extended, and is a concrete candidate for removal once its
-obstacle-layer-toggle and any remaining engineering utility are ported to Paddock or Foxglove-driven
-service calls (§17, §19).
+| Paddock | Primary runtime, mapping, manual, mission, RUN/STOP, settings, tuning, obstacle, recording and health interface |
+| DualSense | Independent local Bluetooth manual fallback and takeover; highest normal-source mux priority (100) |
+| Foxglove | Diagnostic visualization, TF/topic inspection, deeper engineering plots |
+| SSH / ROS parameters / `services/install.sh` | Engineering/deploy configuration, not the operator abstraction |
+| Laptop keyboard (`keyboard_bridge`) | Legacy local-manual-only input path; its original autonomy-arming purpose is dead code (§17) |
 
 ## 5. Runtime modes and lifecycle
 
-`ModeState` (`src/runner_interfaces/msg/ModeState.msg`) fields at HEAD: `mode` (`MODE_IDLE` /
-`MODE_MAPPING` / `MODE_AUTONOMY`), `status` (`STATUS_STABLE` / `STATUS_TRANSITIONING` /
-`STATUS_FAULT`), `accepted_request_id`, `active_autonomy_map`, `detail`, `runtime_epoch`,
-`mapping_session_id`, `ready`, `readiness_reason`. `runtime_epoch` increments on every successful
-application start and on every NEW MAP; consumers reject status/results carrying a stale epoch.
+`ModeState` (`runner_mode_supervisor.py`, `mode_runtime.py`) publishes
+`mode`, `status` (`STATUS_STABLE / STATUS_TRANSITIONING / STATUS_FAULT`),
+`accepted_request_id`, `active_autonomy_map`, `detail`, a monotonic
+`runtime_epoch` (increments on every successful MAPPING/AUTONOMY start and
+on NEW MAP), a per-session `mapping_session_id` (non-empty only in
+MAPPING), and continuously refreshed `ready` / `readiness_reason` — a 0.5 s
+timer re-evaluates and republishes even a steady IDLE runtime so the topic
+never ages without bound (`mode_supervisor_node.py:290-302`).
 
-`runner-mode-supervisor.service` is the sole start/stop owner of the two fixed mode units. It always
-publishes `TRANSITIONING` first, stops both units, waits for empty cgroups and a graph with no mode
-resources, starts and structurally checks the requested mode, and fails closed to `IDLE/FAULT` on any
-partial/conflicting/unmanaged graph — it never guesses a mode from an ambient process tree, and never
-adopts an externally-launched `map.launch.py`/`autonomy.launch.py` invocation.
+Readiness is capability-specific and never a bare "process present" check
+(`mode_runtime.py:354-390`):
 
-Readiness is capability-specific and continuously refreshed on a 0.5 s timer (not only checked at
-transition): structural readiness (unit active, every required node present, no cross-mode node,
-exact publisher-owner match per critical topic) plus a MAPPING-specific check (`map→odom` and
-`odom→base_link` TF usable, `/scan_slam` fresh, a `/map` update seen *after* the current session
-began) or an AUTONOMY-specific check (TF usable, `/scan` fresh, `/map` present from `map_server`).
-`readiness_reason` carries the first actionable inhibit reason. A stable-but-not-`ready` runtime is
-treated as ineligible for motion (§6).
+- **Structural**: the mode unit is `active`/`running`; every required node
+  is present (common tier + persistent-local tier, plus
+  `AUTONOMY_ONLY_NODES` in AUTONOMY and their absence in MAPPING); every
+  critical topic's publisher-owner set matches exactly.
+- **MAPPING capability**: `map→odom` and `odom→base_link` TF usable,
+  `/scan_slam` fresh within 1.5 s, a `/map` update seen *after* the current
+  session began (retained old-session raster never satisfies this),
+  `/map` fresh within 15 s (slam_toolbox's 5 s `map_update_interval` with
+  generous margin).
+- **AUTONOMY capability**: TF usable, `/scan` fresh within 1.5 s, `/map`
+  present from `map_server` (a static map need not keep republishing).
+
+A transition (`ModeRuntime.transition`, `mode_runtime.py:567-702`) always
+stops both fixed units fully (waiting for empty cgroups and mode-scoped ROS
+resources to disappear), validates a requested AUTONOMY map's four-artifact
+bundle before starting, starts the target unit, and waits for full readiness
+before publishing `STABLE`; any failure tears the half-started graph down
+and publishes `IDLE/FAULT` with a concrete blocker string, never a
+false-STABLE state. A repeated request for the already-stable runtime with
+the same map selection is idempotent and does not restart anything
+(`mode_runtime.py:607-619`).
+
+**NEW MAP** (`ModeRequest.OP_NEW_MAP`, only valid with `requested_mode =
+MAPPING`) is a distinct, lighter operation: it requires an already-active
+stable MAPPING session, and instead of the generic stop/start path it first
+arms a quiescence barrier (`begin_quiescence` → `_wait_for_quiescence`,
+`mode_runtime.py:463-482`) that only clears once the command authority has
+*revoked* browser/manual motion for the current epoch **and** a
+*subsequent* `EncoderState.stationary=true` sample has arrived
+(`mode_supervisor_node.py:171-209`) — a sample already-fresh before
+revocation cannot satisfy it. **This does not require, assert, or clear
+global STOP**; STOP is untouched by NEW MAP and stays exactly as it was
+(§6). Only after quiescence does it replace the mapping SLAM process and
+allocate a new `runtime_epoch`/`mapping_session_id`; saved bundles are never
+touched.
 
 ## 6. Motion authority, STOP, lease, RUN and takeover
 
-`CommandAuthorityState` fields (`src/runner_interfaces/msg/CommandAuthorityState.msg`): `authority`
-(`NONE`/`DUALSENSE`/`PADDOCK_MANUAL`/`PADDOCK_AUTONOMY`), `runtime_epoch`, `client_id`, `lease_id`,
-`dualsense_active`, `run_held`, `autonomy_permitted`, `autonomy_goal_selected`, `goal_frame`/
-`goal_map`/`goal_x`/`goal_y`/`goal_yaw`, `autonomy_action_active`, `brake_intent`, `lease_fresh` +
-`lease_age_sec`, `raw_autonomy_fresh` + `raw_autonomy_age_sec`, `manual_input_fresh` +
-`manual_input_age_sec`, `manual_applied_speed_mps`, `manual_applied_steering`,
-`last_control_sequence`, `reason`, and mirrored STOP fields (`stop_state_fresh`, `stop_healthy`,
-`stop_applied`, `stop_clear`, `stop_boot_id`, `stop_generation`, `stop_reason`).
+**Authority derivation** (`state_machine.py:112-124`) is a pure function of
+`mode`, `lease_active`, `dualsense_active`, `manual_active`, and
+`autonomy_permitted` (mode AUTONOMY + lease + `run_held` +
+`not run_blocked_until_release` + `not dualsense_active` + a selected
+goal) — it cannot be set independently, so the authority snapshot can never
+report a contradiction.
 
-Supervised autonomy output on `/cmd_vel_auto` requires **all** of (unchanged from v1.3 Stage 7,
-confirmed live in `command_authority_node.py`):
+**Lease timing is split into two bounds**
+(`command_supervisor.py:30-42,138-174`):
 
-- runtime actually `AUTONOMY`, `STATUS_STABLE` **and** `ModeState.ready`;
-- current runtime epoch / active map identity match (a map/epoch change clears goal and RUN);
-- fresh Paddock lease (deployed `lease_timeout_sec: 0.5`, a first-integration Wi-Fi value flagged for
-  tightening before higher-speed operation, not yet revisited);
-- STOP fresh **and** clear;
-- no DualSense takeover and no unresolved `run_blocked_until_release`;
-- current RUN held (hold-to-run, not click-to-arm);
-- fresh raw converted input (`raw_autonomy_timeout_sec: 0.15` s at the adapter's 20 Hz cadence);
-- a real, current, `STATE_ACTIVE` Nav2 mission (§10) — `DISPATCHING`, `CANCELING`, terminal, or stale
-  navigation state forbid output.
+- `lease_timeout_sec` — the **RUN / autonomous-motion deadman**: with RUN
+  held, no fresh ordered control event for this long revokes autonomous
+  motion (a brake). Code default 0.150 s; **deployed value is 0.5 s**
+  (`services/runner-command-authority.service`:
+  `-p lease_timeout_sec:=0.5`) — this is the "0.5 s motion deadman"
+  referenced in this document's provenance notes and remains a **first-
+  integration, provisional Wi-Fi value**, not a ratified final safety bound.
+- `control_liveness_sec` — a forgiving backstop (default and deployed:
+  3.0 s) on bare lease *ownership*: ordinary Wi-Fi jitter no longer drops
+  the operator's lease (and the UI's mutating controls) mid-session, while
+  the tight motion deadman above still gates actual motion every tick. A
+  lease that lapses only the liveness bound but whose same browser keeps
+  heartbeating is silently reinstated in place (`LEASE_REINSTATED`,
+  `command_supervisor.py:434-457`); RUN does not resume without a fresh
+  press.
 
-RUN press dispatches through the current epoch/generation; RUN release revokes motion immediately and
-requests an asynchronous Nav2 cancel, retaining the logical mission as a deliberate-continuation
-candidate (Q2, unchanged) — a fresh RUN press is required to redispatch. Releasing DualSense never
-auto-resumes autonomy or manual: `run_blocked_until_release` requires a fresh release→press after
-takeover clears. Reconnect never resurrects RUN, a goal, or a STOP clear; the authority restarts with
-none of them held.
+**Autonomous-motion permit** (`_apply` in `command_authority_node.py:719-780`,
+`CommandSupervisor._snapshot`): output on `/cmd_vel_auto` requires **all**
+of: runtime actually `AUTONOMY` **and** `STATUS_STABLE` **and**
+`ModeState.ready` (a stable-but-not-ready runtime fails closed); current
+runtime epoch/map bound to the mission; fresh lease (≤0.5 s deployed); STOP
+fresh **and** clear; DualSense not active and no unresolved takeover block;
+`run_held` current; raw autonomy input fresh (≤0.15 s at the drive adapter's
+20 Hz cadence); and a real, current, `NavigationState.STATE_ACTIVE` Nav2
+action, itself fresh (≤1.0 s) — `DISPATCHING`/`CANCELING`/terminal/stale
+forbid output. On revoke, a single bounded 0.30 s brake transition is
+emitted then the publisher goes silent (`_AutonomyOutputGate`,
+`command_authority_node.py:119-156`); this covers one full mux autonomy
+timeout (0.30 s) so the deliberate zero is arbitrated before the input ages
+out.
+
+**Manual-motion permit**: STOP clear, `authority == AUTHORITY_PADDOCK_MANUAL`,
+and manual input fresh (0.25 s) — same bounded-brake-then-silent gate on
+`/cmd_vel_paddock`.
+
+**Precedence**, enforced by `twist_mux` priorities (`twist_mux.yaml`):
+STOP (255 zero-topic, 200 lock) > DualSense teleop (100) > Paddock manual
+(75) > Paddock autonomy (50). Timeouts: autonomy/manual inputs 0.30 s,
+teleop 0.15 s, STOP lock 0.15 s, STOP zero-topic 0.10 s.
+
+**Global STOP** (`runner_stop_enforcer.py`) is a boot-qualified,
+idempotent, durably persisted (fsync'd JSON + directory fsync) state machine
+independent of every other Paddock process:
+
+- Assertion is immediate (lock + zero published) and durability follows
+  asynchronously on a worker thread; every new stop request invalidates an
+  older pending clear.
+- Clear requires: fresh encoder state (≤0.20 s) reporting stationary, fresh
+  local-control state (≤0.20 s) reporting released+neutral, and durable
+  persistence with no fault. `clear_reason()` surfaces the first blocking
+  condition (`ENCODER_STALE` / `NOT_STATIONARY` / `LOCAL_STATUS_STALE` /
+  `LOCAL_NOT_NEUTRAL` / persistence pending).
+- After a clear is accepted, a 0.40 s drain (`DRAIN_TIME`) keeps the lock
+  asserted while old stop-velocity samples age out; if neutrality is lost
+  during drain the clear reverts to STOP automatically.
+- On restart with a durable, valid `stopped=false` record, the executor
+  still re-drains for 0.40 s before reporting clear — a known-clear
+  restart never skips the barrier.
+- Unknown/corrupt persisted state boots as `STOP_STATE_UNKNOWN`, fails
+  closed (stopped=True, unhealthy).
+- `StopState.applied` is only true when stopped **and** locked **and**
+  durable **and** a genuinely zero final `/cmd_vel` sample has been observed
+  within 0.10 s — an "applied" claim is backed by the actual mux output,
+  not just internal state.
+
+`EVENT_STOP` and `EVENT_CLEAR_STOP` are ordinary lease-owned control events
+in current code — like every other `PaddockControlEvent` except
+`LEASE_ACQUIRED`, they are only accepted from the connection currently
+holding the lease, with the same ownership and monotonic-sequence checks
+(`command_supervisor.py:417-500`); there is no separate "STOP from any
+authenticated operator regardless of lease" path implemented today. The
+command authority forwards an accepted `EVENT_STOP`/`EVENT_CLEAR_STOP` as a
+boot-qualified `StopRequest`, but the enforcer alone decides whether a clear
+is actually safe to apply (§6 above).
+
+**Local (DualSense) takeover**: any process/takeover-epoch edge or an
+`active=true` sample from `/teleop/control_state` immediately revokes all
+remote grants (`command_authority_node.py:609-627`); loss of local-control
+status itself (not just an active takeover) also forces `dualsense_active`
+closed after 0.10 s of silence (`_on_supervision_timer`,
+`command_authority_node.py:638-651`), so a missing local-control publisher
+cannot leave stale remote permission live.
 
 ## 7. Command/data-flow and exact topic/interface ownership
 
-| Topic/interface | Type | Sole writer → consumer(s) | Lifetime | Notes |
-|---|---|---|---|---|
-| `/paddock/control_event` | `PaddockControlEvent` | Paddock gateway → command authority | Persistent | Lease, RUN, STOP/CLEAR STOP, goal-selected, heartbeat |
-| `/paddock/control_lease` | `PaddockControlLease` | Command authority → executors/gateway | Persistent | Lease id/owner/expiry/generation |
-| `/paddock/command_authority_state` | `CommandAuthorityState` | Command authority → gateway/adapter/navigation | Persistent | §6 |
-| `/paddock/mode_request` | `ModeRequest` | Command authority (runtime selection) + map executor (NEW MAP) → mode supervisor | Persistent | `request_id = time.time_ns()`, globally monotonic across both writers |
-| `/paddock/mode_state` | `ModeState` | Mode supervisor → authority/executors/gateway | Persistent | Re-published every 0.5 s tick even with no change (fixed post-deploy; §17) |
-| `/paddock/map_request` → `/paddock/map_state` | `MapRequest` / `MapState` | Gateway → map executor; map executor → authority/gateway/mode supervisor | Persistent | NEW/SAVE/SELECT/DELETE (§8) |
-| `/paddock/navigation_request` → `/paddock/navigation_state` | `NavigationRequest` / `NavigationState` | Command authority → navigation runtime; navigation runtime → authority/gateway | Application | §10 |
-| `/paddock/recording_request` → `/paddock/recording_state` | `RecordingRequest` / `RecordingState` | Gateway → recording executor; recording executor → gateway | Persistent | §14 |
-| `/paddock/stop_state`, `/paddock/stop_lock`, `/cmd_vel_stop` | `StopState` / `Bool` / `Twist` | STOP enforcer → authority/local/gateway/mux | Persistent | §4.2 |
-| `/paddock/internal/stop_request` | `StopRequest` | Command authority → STOP enforcer | Persistent | Assert/clear with generation |
-| `/cmd_vel_nav` | `Twist` (SI m/s, rad/s) | `controller_server` → drive_adapter | Application | Unchanged |
-| `/cmd_vel_auto_raw` | `Twist` | drive_adapter → command authority | Persistent process, active in AUTONOMY only | Raw converted autonomy command |
-| `/cmd_vel_paddock_manual_raw` | `ConvertedCommand` | drive_adapter → command authority | Persistent | Raw converted manual command |
-| `/cmd_vel_auto` | `Twist` | Command authority → twist_mux | Persistent, silent when ineligible | Priority 50, timeout 0.30 s |
-| `/cmd_vel_paddock` | `Twist` | Command authority → twist_mux | Persistent, silent when ineligible | Priority 75, timeout 0.30 s |
-| `/cmd_vel_teleop` | `Twist` | runner_teleop → twist_mux | Persistent | Priority 100, timeout 0.15 s; fed by DualSense **and** keyboard (§4.5) |
-| `/cmd_vel` | `Twist` | twist_mux → motor | Persistent | Sole final command |
-| `/teleop/control_state` | `LocalControlState` | runner_teleop → authority/adapter/STOP enforcer/gateway | Persistent | §4.3 |
-| `/teleop/keyboard_state` | `KeyboardState` | keyboard_bridge → runner_teleop | Persistent | Legacy (§4.5) |
-| `/wheel/encoder_state` | `EncoderState` | Encoder → motor/adapter/STOP enforcer | Persistent | Not an EKF input (§2) |
-| `/drive_adapter/state`, `/drive_adapter/state_typed` | — | drive_adapter → gateway/diagnostics | Persistent | Includes live-tuned parameter identity |
-| Nav2 `NavigateToPose`, `NavigateThroughPoses` | Actions | `runner_navigation_runtime` client ↔ `bt_navigator` | Application | Sole client owner |
-| `/initialpose` | `PoseWithCovarianceStamped` | Paddock gateway (controlled) → slam_toolbox | Persistent writer, eligible runtime only | §9 |
-| `/global_costmap/*` obstacle-layer services | Nav2 dynamic-parameter/service calls | keyboard_bridge (legacy) → Nav2 | Application | §13 |
+```mermaid
+flowchart LR
+  Browser[Paddock browser] -->|WebSocket /ws| Web[runner_paddock web / gateway]
+  Web -->|control_event, mode_request, map_request,\nrecording_request, config_request| Authority[command_authority]
+  Web -->|mode_request OP_NEW_MAP forward| MapExec[map_executor]
+  Web -->|Nav2 param get/set, ClearEntireCostmap| Nav2Params[obstacle-layer + costmap-clear services]
+  Web -->|initialpose| SLAM[slam_toolbox]
+  Authority -->|mode_request| Supervisor[mode_supervisor]
+  Supervisor --> AppUnits[MAPPING or AUTONOMY unit]
+  Authority -->|navigation_request select/dispatch/cancel| NavRuntime[navigation_runtime]
+  NavRuntime -->|NavigateToPose / NavigateThroughPoses| BT[bt_navigator]
+  BT -->|cmd_vel_nav| Adapter[drive_adapter]
+  Authority -->|manual_demand| Adapter
+  Adapter -->|cmd_vel_auto_raw| Authority
+  Adapter -->|cmd_vel_paddock_manual_raw| Authority
+  Authority -->|cmd_vel_auto p50| Mux[twist_mux]
+  Authority -->|cmd_vel_paddock p75| Mux
+  Joy[joy_node] --> Teleop[runner_teleop]
+  Teleop -->|cmd_vel_teleop p100| Mux
+  Teleop -->|control_state| Authority
+  Authority -->|stop_request| Stop[runner_stop_enforcer]
+  Stop -->|cmd_vel_stop p255 / stop_lock lock200| Mux
+  Mux -->|cmd_vel| Motor[motor_node]
+  MapExec -->|map_request OP_NEW_MAP| Supervisor
+  RecExec[recording_executor] -->|ros2 bag record| Bags[(bags/*.mcap)]
+```
 
-Legacy interfaces from v1.3's transitional graph (`/move_base_simple/goal`, `/runner/waypoint`,
-`/runner/route_control` as a production goal path, `/teleop/active_mode`, the private
-`/paddock/private/cmd_vel_auto*` scaffold) are gone: `foxglove_goal_bridge` was removed in Stage 5.
-`/runner/route_control` survives only as the keyboard-bridge-driven obstacle-layer toggle channel
-(§4.5, §13), not as a goal/waypoint ingress.
+| Topic/interface | Type | Sole writer → consumer(s) | Notes |
+|---|---|---|---|
+| `/paddock/control_event` | `PaddockControlEvent` | web gateway → authority | RUN/STOP/CLEAR/manual/goal/lease/heartbeat, ordered sequence per lease |
+| `/paddock/control_lease` | `PaddockControlLease` | authority → executors/gateway | monotonic `generation` |
+| `/paddock/command_authority_state` | `CommandAuthorityState` | authority → mode supervisor, gateway, map executor | full interlock/goal/STOP snapshot |
+| `/paddock/mode_request` | `ModeRequest` | web gateway or map executor → mode supervisor | `OP_SELECT_RUNTIME` / `OP_NEW_MAP` |
+| `/paddock/mode_state` | `ModeState` | mode supervisor → authority, map executor, gateway, navigation runtime | epoch/session/readiness authoritative |
+| `/paddock/map_request` → `/paddock/map_state` | `MapRequest`/`MapState` | web gateway → map executor | `OP_NEW_MAP`/`OP_SAVE_MAP`/`OP_SELECT_MAP`/`OP_DELETE_MAP` |
+| `/paddock/navigation_request` → `/paddock/navigation_state` | `NavigationRequest`/`NavigationState` | authority → navigation runtime | `OP_SELECT`/`OP_DISPATCH`/`OP_CANCEL`; 7-state lifecycle |
+| `/paddock/recording_request` → `/paddock/recording_state` | `RecordingRequest`/`RecordingState` | web gateway → recording executor | `OP_START`/`OP_STOP`/`OP_DELETE` |
+| `/paddock/config_request` → `/paddock/config_state` | `ConfigRequest`/`ConfigState` | web gateway → authority | one field, `manual_max_speed_mps`, revision-checked |
+| `/paddock/stop_state`, `/paddock/internal/stop_request` | `StopState`/`StopRequest` | stop enforcer ↔ authority | boot-qualified idempotent requests |
+| `/paddock/manual_demand` | `ManualDemand` | authority → drive_adapter | signed m/s + normalized steering, sequenced |
+| `/cmd_vel_nav` | `Twist` | `controller_server` → drive_adapter | Nav2's SI output, unchanged |
+| `/cmd_vel_auto_raw` | `Twist` | drive_adapter → authority | raw converted autonomy command |
+| `/cmd_vel_paddock_manual_raw` | `ConvertedCommand` | drive_adapter → authority | raw converted manual command + provenance |
+| `/cmd_vel_auto` (p50), `/cmd_vel_paddock` (p75) | `Twist` | authority → twist_mux | supervised, silent when not permitted |
+| `/cmd_vel_teleop` (p100) | `Twist` | runner_teleop → twist_mux | local DualSense/keyboard-fallback command |
+| `/cmd_vel_stop` (p255), `/paddock/stop_lock` (lock 200) | `Twist`/`Bool` | stop_enforcer → twist_mux | zero + fail-closed lock heartbeat |
+| `/cmd_vel` | `Twist` | twist_mux → motor_node | final command, sole writer |
+| `/teleop/control_state` | `LocalControlState` | runner_teleop → authority, stop_enforcer, gateway | process/takeover epoch, neutral/released |
+| `/wheel/encoder_state` | `EncoderState` | encoder → motor, adapter, EKF, stop_enforcer, mode supervisor | stationary/direction evidence |
+| `/drive_adapter/state`, `/drive_adapter/state_typed` | `String`/`AdapterState` | drive_adapter → gateway/diagnostics | full PI/feedforward/integrator diagnostics |
+| `/initialpose` | `PoseWithCovarianceStamped` | Paddock web (controlled) → slam_toolbox | STOP+stationary+matching-map gated |
+
+Every raw/supervised command schema carries finite values and identity
+fields sufficient to reject stale or cross-epoch delivery (sequence,
+`lease_generation`, `runtime_epoch`, and for navigation, `mission_id` /
+`mission_revision` / `action_generation`). Command QoS is volatile depth-10
+or depth-1 TRANSIENT_LOCAL for status; nothing here is a general pub/sub
+free-for-all — each topic above has exactly one writer at any time.
 
 ## 8. Mapping sessions, map bundles, NEW/SAVE/SELECT/DELETE
 
-`runner_map_executor` (`runner-map-executor.service`) owns `/paddock/map_request` →
-`/paddock/map_state`, never a process-lifecycle owner itself.
+A **mapping session** (`MappingSession`, `map_session.py:525-550`) is
+identified by `mapping_session_id` and tracks phase
+`NONE→STARTING→READY→SAVING→SAVED` (or `FAILED`), whether it is `unsaved`,
+and current-session `/map` evidence freshness (8 s timeout,
+`MappingSession.ready`). A fresh session begins on every MAPPING start and
+every NEW MAP; a session id change discards *all* prior state keyed to the
+old id (`MapSessionModel.observe_runtime`, `map_session.py:589-606`).
 
-- **Entering MAPPING** creates a fresh unsaved session; a repeated MAPPING request for an
-  already-stable runtime is idempotent.
-- **NEW MAP** (HEAD behavior, `044b4fb`, ratified as permanent policy): within an already-stable
-  MAPPING session, NEW MAP is handled entirely through **authority revocation + fresh
-  post-revocation stationary-encoder evidence** — it does **not** require, assert, or clear global
-  STOP. `CommandAuthorityState.runtime_epoch` lets the mode supervisor bind the specific revocation
-  acknowledgement to the transition that requested it (`command_authority_node.py:797`+1). The
-  supervisor's `_quiescence_ready()` gate (`mode_supervisor_node.py:198-207`) requires, in order: (1)
-  authority-confirmed revocation, then (2) an `EncoderState.stationary=true` sample timestamped
-  *after* that revocation. A pre-revocation stationary sample cannot satisfy the gate (unit-tested
-  directly), and the gate cannot pass while `PADDOCK_MANUAL` authority is held. On timeout the prior
-  session is left running unchanged with truthfully recomputed readiness — the old SLAM/session owner
-  is never torn down speculatively. `MapState.reset_state` (`RESET_IDLE`/`RUNNING`/`SUCCEEDED`/
-  `FAILED`) and `reset_detail` surface this to the operator. An already-asserted global STOP is
-  preserved unchanged through the operation. Saved bundles are never touched by NEW MAP.
-- **SAVE MAP** (`OP_SAVE_MAP`) is unchanged from v1.3 Stage 4: requires a current valid MAPPING
-  session and matching `session_id`; transactional — serialize into `maps/.staging/`, capture a
-  same-session `/map` occupancy raster, write PGM/YAML, validate the four-artifact bundle
-  (non-empty `.posegraph`/`.data`, YAML parses, referenced raster exists with a plausible header,
-  session association), write `<name>.manifest.json` (session id, creation time, revision, SHA-256 of
-  the four artifacts), then atomically move into `maps/` (manifest last). Retries for the same
-  `request_id` return the cached outcome; a half-written bundle stays in `.staging/` and never enters
-  the catalog.
-- **Catalog and SELECT**: `MapState.catalog` (`MapCatalogEntry[]`) lists every discovered bundle with
-  `complete`, `revision`, `session_id`, raster metadata, and an incompleteness reason where
-  applicable; completeness re-validates cheaply on each publish (existence + non-empty + YAML parse +
-  raster header + manifest hash match). `SELECT` requires a verified complete bundle, is rejected
-  during a runtime transition, and never hot-swaps the map under a live AUTONOMY runtime.
-  `selected_map_requested` / `selected_map_applied` / `selected_map_reason` surface the
-  request/apply/readback distinction.
-- **DELETE** (`OP_DELETE_MAP`, current, not present in v1.3): lease-scoped, executor-validated,
-  synchronous (`MapState.delete_state`/`delete_request_id`/`delete_name`/`delete_detail`; no in-flight
-  state because deletion does not span a transition). Rejects deleting the currently-selected map or
-  the map an active AUTONOMY runtime is using (`map_session_node.py:409`+).
+**NEW MAP**: see §5 — quiescence via authority revocation + fresh
+post-revocation stationary encoder evidence, no STOP interaction.
 
-`slam_toolbox` 2.8.5's own `Reset.srv` remains available but unused for session boundaries; a fresh
-process restart is still the clean-session boundary, per v1.3's reasoning — unchanged at HEAD.
+**SAVE MAP** (`OP_SAVE_MAP`) requires: a current active session matching the
+request's `session_id`, the session not `STARTING`/`NONE`, mapping
+readiness, and **STOP asserted or the enforcer's lock engaged**
+(`map_session_node.py:436-464`, `_stop_inhibited`). It is transactional
+(`MapSaveTransaction`, `map_session.py:434-522`):
+
+1. Stage into `maps/.staging/`, refusing to clobber an existing live bundle.
+2. Call `slam_toolbox`'s `SerializePoseGraph` into the staging path; verify
+   non-empty `.posegraph`/`.data`.
+3. Capture the first `/map` `OccupancyGrid` received *after* the save began
+   (or a fresh one within 15 s), render a trinary PGM and matching YAML from
+   it (nav2 `map_saver` conventions: `occupied_thresh 0.65`,
+   `free_thresh 0.196`).
+4. Validate the complete four-artifact bundle: non-empty `.posegraph`/
+   `.data`, YAML parses with a positive `resolution` and 3-element `origin`,
+   the referenced raster exists with a plausible binary-P5 header (positive
+   dimensions, `0 < maxval ≤ 255`).
+5. Write `<name>.manifest.json` (version, name, session id, creation time,
+   a 12-hex-char revision hash, and per-artifact SHA-256 digests).
+6. Atomically move the four core artifacts, then the manifest, into
+   `maps/` — a reader that observes the manifest has already observed every
+   artifact it names. A half-written bundle never leaves `.staging/`.
+
+Retries for the same `request_id` return the cached outcome
+(idempotent). The currently committed bundle at HEAD is `maps/studio.{data,
+pgm,posegraph,yaml}` — a **legacy bundle saved before the manifest scheme
+existed**: it has no `studio.manifest.json`, so its catalog `revision` field
+reads empty; this is expected, not a fault.
+
+**Catalog** (`MapState.catalog`, `MapCatalogEntry[]`): every discovered
+bundle under `maps/` (not `.staging/`), re-validated cheaply on each publish
+(existence, non-empty, YAML parse, raster header, manifest hash match if a
+manifest exists). `complete` gates selectability; incomplete bundles carry a
+`reason`.
+
+**SELECT MAP** (`OP_SELECT_MAP`) requires a verified complete bundle, is
+rejected mid-transition, and never hot-swaps the map under a live AUTONOMY
+runtime (`map_session_node.py:382-407`). Selection persists to
+`~/.local/state/runner/selected_map` and survives restart
+(`_load_selection`/`_store_selection`).
+
+**DELETE MAP** (`OP_DELETE_MAP`, current — not in v1.3) rejects the
+currently selected map and the map used by a live AUTONOMY runtime
+(`validate_delete_candidate`, `map_session.py:268-279`). Deletion
+(`delete_bundle`, `map_session.py:231-265`) stages every artifact into a
+private tombstone directory via atomic renames first; if any rename fails,
+already-moved files are rolled back before the rejection is returned, so a
+partial failure can never leave a half-deleted bundle visible in the
+catalog. `MapState.delete_state`/`delete_detail` report the last outcome;
+deletion is synchronous, so there is no in-flight state.
 
 ## 9. Initial Pose workflow
 
-Current (`services/README.md`, `ros_state_node.py`): the Paddock gateway is the controlled production
-writer to slam_toolbox's `/initialpose` subscriber. It accepts only a finite map-frame pose while
-stable AUTONOMY is using the same complete selected map, healthy STOP is applied, and fresh encoder
-state reports stationary. It publishes `PoseWithCovarianceStamped` using slam_toolbox's RViz
-`SetInitialPose` planar defaults (x/y variance 0.25 m², yaw variance 0.06853891909122467 rad²), and
-reports the intent "applied" only after a subsequent map-frame slam_toolbox `/pose` sample confirms
-it (`ros_state_node.py:771`, "confirm a seed only from subsequent slam_toolbox pose truth"). This is a
-fully current, deployed capability — not a v1.3 proposal — gated identically to SAVE MAP's
-stopped/stationary precondition.
+Current, browser-controlled (`_do_set_initial_pose` in `gateway.py:572-604`,
+executed in `ros_state_node.py:1400+`). Preconditions
+(`_initial_pose_rejection`): runtime state fresh, mode `AUTONOMY` and
+`STATUS_STABLE` and `ready`, and the selected map both **complete** and
+**equal to the active autonomy map**. Safety preconditions
+(`_initial_pose_safety_rejection`): STOP state fresh and
+`stopped ∧ locked ∧ healthy ∧ applied`.
+
+Sequence: the gateway action first issues an `EVENT_STOP` control event
+*and* queues the pose intent together in one accepted result
+(`gateway.py:594-604`); the node then transitions
+`stopping → waiting_stop → awaiting_pose → localizing → clear`, publishing
+`geometry_msgs/PoseWithCovarianceStamped` on `/initialpose` only once STOP
+is confirmed applied and stationary, using slam_toolbox's own RViz
+`SetInitialPose` planar covariance defaults (x/y variance 0.25 m²,
+yaw variance 0.06853891909122467 rad², matching slam_toolbox 2.8.5's
+scan-matching-seed semantics). It is confirmed only from a subsequent
+map-frame `/pose` sample from slam_toolbox itself — never from the
+publish call succeeding. `CLEAR STOP` is explicitly blocked while an
+initial-pose transaction is in flight (`ros_state_node.py:1351-1357`).
+Timeouts: 5 s to reach STOP, 5 s to receive pose confirmation, 2 s to
+complete the subsequent clear phase.
 
 ## 10. Localization, estimation and TF ownership
 
-Unchanged tier ownership from §2. Explicitly current:
-
-- `ekf_node` fuses **RF2O linear-x + yaw velocity** and **BNO085 yaw velocity** at 15 Hz
-  (`ekf.yaml`); `two_d_mode: true`; publishes `odom → base_link`.
-- The LD19 raw `/scan` is preserved and branched: `scan_rebinner` → `/scan_slam` (fixed 503-bin
-  cardinality, `docs/decision_D-37_fixed_slam_scan_cardinality.md`, v1.2 D-37, still governing —
-  Karto hard-rejects a mismatched range count) feeding `slam_toolbox`; `rf2o_scan_canonicalizer` →
-  `/scan_rf2o` feeding RF2O. Both slam_toolbox roles (mapping, localization) consume `/scan_slam`.
-- `map → odom` is exclusively slam_toolbox's; `map_server` is the sole `/map` publisher in AUTONOMY.
+Unchanged in structure from v1.2/v1.3 (D-37 "fixed-cardinality SLAM scan
+stream", still current): the LD19 raw `/scan` branches into
+`rf2o_scan_canonicalizer → /scan_rf2o → RF2O` (feeding EKF) and
+`scan_rebinner → /scan_slam` (feeding slam_toolbox, fixed 503-bin
+geometry). `ekf_node` fuses IMU + encoder + RF2O into `odom → base_link`.
+`slam_toolbox` owns `map → odom` — the mapping instance in MAPPING, the
+localization instance (remapped `/slam_map` diagnostic) in AUTONOMY. Static
+extrinsics are unchanged existing publishers. See §2's ownership table for
+the authoritative per-edge/per-topic rule and §9 for the current Initial
+Pose write path into this localizer.
 
 ## 11. Nav2, mission lifecycle and reverse autonomy
 
-`runner_navigation_runtime` (`ros2 run runner_bringup navigation_runtime`, started inside
-`nav2.launch.py`, application-tier) is the **only** component holding Nav2 mission action clients:
-one `NavigateToPose` client, one `NavigateThroughPoses` client. `foxglove_goal_bridge` and its direct
-goal/keyboard/waypoint ingress are removed (Stage 5); `mode_runtime.AUTONOMY_ONLY_NODES` now expects
-`/runner_navigation_runtime`.
+**Mission lifecycle** (`NavigationState.STATE_*`,
+`runner_bringup/navigation_runtime.py`) is the canonical **7-state**
+machine: `IDLE / DISPATCHING / ACTIVE / CANCELING / SUCCEEDED / FAILED /
+CANCELED`. `runner_navigation_runtime` is the sole owner of both
+`NavigateToPose` and `NavigateThroughPoses` action clients (one execution
+component, not two owners); it never reports `ACTIVE` before Nav2 has
+actually accepted a goal handle (`on_goal_response`,
+`navigation_runtime.py:285-305`).
 
-**Canonical 7-state lifecycle** (`NavigationState.msg`, current and exhaustive — this is the actual
-enum, not a proposal):
+Generation discipline: `boot_id` (process identity, invalidates prior state
+across restart), `runtime_epoch`/`map_id` (bound at `select`, invalidated on
+change), `mission_revision` (monotonic per logical mission, rejects stale
+rebind), and `action_generation` (monotonic per dispatch attempt — every
+async Nav2 callback is checked against it and the live goal handle before
+being applied; a stale one is dropped, `is_current`,
+`navigation_runtime.py:357-359`). On boot, the first dispatch issues a
+best-effort `CancelGoal` against both action servers before sending, so an
+orphaned prior-process goal is never adopted
+(`CancelResidualGoals`, `navigation_runtime.py:264-266`).
 
-```
-STATE_IDLE=0        # runtime alive; no in-flight action
-STATE_DISPATCHING=1 # goal sent to Nav2; not yet accepted (no motion)
-STATE_ACTIVE=2       # Nav2 accepted and is executing the current goal
-STATE_CANCELING=3    # cancel requested; awaiting terminal action result
-STATE_SUCCEEDED=4    # real Nav2 success result
-STATE_FAILED=5       # rejection / abort / timeout / error
-STATE_CANCELED=6     # confirmed Nav2 cancellation
-```
+**Cancellation/quiescence invariant** (carried forward from v1.3, not
+strengthened beyond what source/tests establish): `cancel()` keeps the
+logical mission bound as a deliberate-continuation candidate while
+canceling any in-flight action; cancel requests retry every 0.5 s up to 5
+attempts, and exhaustion is reported (motion stays revoked, replacement
+stays blocked) rather than silently abandoned
+(`navigation_runtime.py:676-700`). A dispatch that never reached the Nav2
+server before a cancel is resolved locally as `STATUS_CANCELED`
+(`_resolve_undelivered_cancel`, `navigation_runtime.py:544-558`) so a late,
+unexpected server acceptance of an already-superseded generation cannot
+reopen motion. Result/feedback/cancel callbacks are all generation-gated
+the same way.
 
-`STATE_ACTIVE` is reported only after Nav2 has actually accepted a goal handle, never on dispatch
-intent. Separate identities — process `boot_id`, `runtime_epoch`, `mission_revision`,
-`action_generation` — are each checked on every asynchronous Nav2 callback; a stale one is dropped and
-can never overwrite current mission state or reopen a grant. On restart, the new `boot_id` makes any
-previously reported state stale, and the first dispatch after boot issues a best-effort `CancelGoal`
-to both action servers before sending, so an orphaned server goal is never adopted.
-
-`command_authority` publishes `/paddock/navigation_request` (`OP_SELECT` on new goal intent,
-`OP_DISPATCH` on the dispatch-intent edge, `OP_CANCEL` on RUN release/STOP/DualSense
-takeover/lease loss/mode-or-epoch change/goal clearing). RUN-release keeps the logical mission as a
-deliberate-continuation candidate (Q2, unchanged); epoch/map change and leaving AUTONOMY invalidate it
-outright. This preserves v1.3's cancellation/quiescence invariant as originally specified — this
-document does not claim it is stronger than the source and tests above establish, and the delayed-
-old-`Twist`-across-cancellation quiescence acceptance test described in v1.3 §10 was exercised only in
-isolated unit tests at Stage 5/7, not against a live `bt_navigator` (§17).
-
-Reverse autonomy (Reeds-Shepp/RPP reverse path and downstream reversal ownership) is retained
-unchanged from v1.2 D-85; `nav2_regulated_pure_pursuit_controller` is a Runner-modified vendored
-package (`src/nav2_regulated_pure_pursuit_controller`, `README.runner.md`).
+**Reverse autonomy is current and real**, not merely historically ratified:
+`SmacPlannerHybrid` plans with `motion_model_for_search: REEDS_SHEPP`
+(`nav2_params.yaml:23`, `reverse_penalty 8.0`), and the
+`RegulatedPurePursuitController` runs with `allow_reversing: true` and
+`use_rotate_to_heading: false` (`nav2_params.yaml:66-67`) — the controller
+can and does command negative `linear.x` on `/cmd_vel_nav` when the plan
+calls for it. The behavior-tree files are named
+`navigate_to_pose_forward_only.xml` / `..._through_poses_forward_only.xml`;
+"forward only" names the *recovery-behavior* posture (no explicit
+backup/spin recovery actions in the tree — `smooth_path: false` is set
+because Jazzy's path smoother over-tightens curvature for this Ackermann
+platform), not a restriction on the controller's own reverse capability.
+Downstream, the drive adapter's `EncoderState.pending_direction` feedback
+path (populated from the motor's own direction line, not a direct
+`/motor/direction` subscription) is unchanged from v1.3.
 
 ## 12. Longitudinal control and Timid/Confident/Custom speed policy
 
-**This is the single largest substantive change from v1.3.** `65f2993` ("Add live Paddock autonomy
-tuning") introduces `runner_paddock/autonomy_tuning.py` as the authoritative schema for a live,
-Paddock-driven speed/controller preset system, replacing v1.3 §14's static bounds table for the
-autonomy-tunable subset.
+`drive_adapter` (`runner_drive_adapter`) remains the one shared,
+persistent, closed-loop conversion for both Nav2's SI `/cmd_vel_nav` and
+authority-bounded manual demand (`/paddock/manual_demand`), publishing raw
+`/cmd_vel_auto_raw` and `/cmd_vel_paddock_manual_raw` respectively for the
+authority to supervise. "Frozen controller" language from v1.2/v1.3 is
+**obsolete**: the committed calibration values below remain the *default*
+origin, but a defined subset is now validated, atomically applied, and
+live-effective without a process restart
+(`add_on_set_parameters_callback`, `drive_adapter_node.py:103,206-233`).
 
-**Presets are real operator UI concepts, not internal-only constants** (`autonomy_tuning.py:91-118`,
-surfaced in `static/app.js`/`index.html`):
+**Live-tunable parameters** (`LIVE_TUNABLE_PARAMETERS`,
+`drive_adapter.py:27-34`): `maximum_commanded_speed`,
+`feedforward_effort_per_speed`, `feedforward_effort_intercept`,
+`output_max`, `proportional_gain`, `integral_gain`. Any other adapter
+parameter (wheelbase, `max_steering_angle`, `minimum_moving_speed`,
+`integrator_bound`, `output_min`, encoder/wheelspin/timeout thresholds) is
+rejected by the parameter callback as not live-tunable and requires a
+process restart — these remain engineering-only, launch-time
+configuration.
 
-| Field | Owner (ROS node.param) | Timid | Confident |
-|---|---|---|---|
-| `desired_linear_vel` | `/controller_server` `FollowPath.desired_linear_vel` | 0.45 | **1.00** |
-| `maximum_commanded_speed` | `/drive_adapter` `maximum_commanded_speed` | 0.60 | **1.00** |
-| `regulated_linear_scaling_min_speed` | `/controller_server` | 0.30 | 0.40 |
-| `cost_scaling_dist` | `/controller_server` | 0.45 | 0.60 |
-| `cost_scaling_gain` | `/controller_server` | 1.0 | 1.0 |
-| `regulated_linear_scaling_min_radius` | `/controller_server` | 0.75 | 0.75 |
-| `min_lookahead_dist` / `max_lookahead_dist` | `/controller_server` | 0.30 / 0.80 | 0.30 / 0.80 |
-| `lookahead_time` | `/controller_server` | 1.0 | 1.0 |
-| `max_allowed_time_to_collision_up_to_carrot` | `/controller_server` | 0.15 | 0.60 |
-| `proportional_gain` / `integral_gain` | `/drive_adapter` | 0.05 / 0.01 | 0.05 / 0.01 |
-| `feedforward_effort_per_speed` / `_intercept` | `/drive_adapter` | 0.1188 / 0.0174 | 0.1188 / 0.0174 |
-| `output_max` | `/drive_adapter` | 0.14 | 0.14 |
+**Timid / Confident are the two normal operator presets**
+(`autonomy_tuning.py:91-116`), applied atomically across both owners
+(`controller_server` and `drive_adapter`) via `SetParametersAtomically`,
+then confirmed by an independent `GetParameters` read-back before being
+reported `applied` (`ros_state_node.py:1240-1341`):
 
-**Confident's 1.00 m/s desired and maximum commanded speed explicitly supersedes v1.3's 0.60 m/s
-autonomy maximum by ratified operator decision.** Timid preserves the exact v1.3/v1.2 "frozen"
-values as its own preset, not as a separate immutable ceiling — Timid is simply the conservative
-choice within the same live-tunable mechanism.
+| Field | Timid | Confident |
+|---|---:|---:|
+| `desired_linear_vel` (m/s) | 0.45 | **1.00** |
+| `maximum_commanded_speed` (m/s) | 0.60 | **1.00** |
+| `regulated_linear_scaling_min_speed` (m/s) | 0.30 | 0.40 |
+| `cost_scaling_dist` (m) | 0.45 | 0.60 |
+| `cost_scaling_gain` | 1.0 | 1.0 |
+| `regulated_linear_scaling_min_radius` (m) | 0.75 | 0.75 |
+| `min_lookahead_dist` / `max_lookahead_dist` (m) | 0.30 / 0.80 | 0.30 / 0.80 |
+| `lookahead_time` (s) | 1.0 | 1.0 |
+| `max_allowed_time_to_collision_up_to_carrot` (s) | 0.15 | 0.60 |
+| `proportional_gain` / `integral_gain` | 0.05 / 0.01 | 0.05 / 0.01 |
+| `feedforward_effort_per_speed` / `_intercept` | 0.1188 / 0.0174 | 0.1188 / 0.0174 |
+| `output_max` | 0.14 | 0.14 |
 
-**Custom is the truthful non-preset state**, not a third design option: `matching_preset()`
-(`autonomy_tuning.py:182-189`) classifies a live-readback snapshot as `timid`/`confident` only on an
-**exact** field-for-field match against the full parameter set; any other combination — including one
-field nudged off a preset — reports `custom`. This is intentionally the honest default rather than a
-fuzzy "closest preset" heuristic.
+**Confident's 1.00 m/s intentionally supersedes v1.3's 0.60 m/s autonomy
+ceiling** by explicit operator decision — it is not a bug or an
+unintended regression of the frozen-controller policy. The characterized
+feedforward at 1.00 m/s (0.1188×1.00+0.0174 ≈ 0.136) stays under the
+unchanged `output_max` actuator-effort ceiling of 0.14; Confident raises the
+*target speed and how permissively RPP regulates near obstacles*
+(larger `cost_scaling_dist`, much larger collision-time horizon), it does
+not raise the normalized-effort safety ceiling itself.
 
-**Validation and application** (`validate_values`, `:130-179`): every write is a complete atomic
-snapshot across all twelve fields (rejecting partial writes outright), cross-validated
-(`regulated_linear_scaling_min_speed ≤ desired_linear_vel ≤ maximum_commanded_speed`,
-`min_lookahead_dist ≤ max_lookahead_dist`, feedforward non-negative across the commanded range,
-`output_max ≤ 0.14` and `output_max ≥` the feedforward value at `maximum_commanded_speed` —
-i.e. the 0.14 authority ceiling from v1.3 is retained as a hard upper bound even under live tuning,
-not loosened). Applied atomically per owner (`values_for_owner`) as one `SetParameters` call to
-`/controller_server` and one to `/drive_adapter`; the six drive-adapter fields are exactly
-`LIVE_TUNABLE_PARAMETERS` (§4.4) — geometry, integrator bound, `output_min`, wheelspin/timeout
-constants and every other adapter parameter remain immutable at runtime.
+**Custom** is not a third preset a user selects — it is `matching_preset()`
+(`autonomy_tuning.py:182-189`)'s truthful classification of the live
+read-back whenever the ten controller fields plus five adapter fields do
+not exactly match either named preset. The operator reaches a genuinely
+custom state only through direct field editing, which the UI places under
+collapsed **"Advanced speed policy"** and **"Engineering / controller"**
+disclosures in `CONFIGURE → AUTONOMY` (`static/index.html:158-186`) — direct
+RPP and longitudinal-controller field tuning is Advanced/Engineering
+functionality, not the primary operator surface (§16). `validate_values`
+(`autonomy_tuning.py:130-179`) enforces cross-field bounds on any custom
+write regardless of entry point: positivity, `cost_scaling_gain ≤ 1.0`,
+`regulated_linear_scaling_min_speed ≤ desired_linear_vel ≤
+maximum_commanded_speed`, `min_lookahead_dist ≤ max_lookahead_dist`,
+non-negative feedforward across the command range, and **`output_max` may
+never exceed 0.14 and must reach the maximum feedforward implied by the
+requested `maximum_commanded_speed`** — the actuator-effort ceiling cannot
+be raised through this surface at all.
 
-**Manual (Paddock browser teleop) speed is a separate axis, unaffected by autonomy presets.**
-`command_supervisor.py`: `manual_max_speed_mps` remains 0 (disabled) or `[0.25, 0.40]`, default 0.40
-(`DEFAULT_MANUAL_MAX_SPEED_MPS = MAX_MANUAL_MAX_SPEED_MPS = 0.40`) — identical bounds to v1.3 §14,
-unaffected by Confident's 1.00 m/s. DualSense local effort shaping is likewise a separate,
-deliberately non-unified semantic path (v1.2 D-83, unchanged).
-
-Direct RPP and longitudinal-controller tuning (i.e. this whole mechanism) is intentionally
-**Advanced/Engineering functionality** layered onto the normal Timid/Confident preset picker, not a
-freely-editable general parameter surface (§16).
+Manual browser-speed bounds are unchanged from v1.3: ceiling 0 (disabled) or
+`[0.25, 0.40]` m/s, default 0.40, moving floor 0.25 m/s
+(`command_supervisor.py:37-39`), configurable at runtime via
+`manual_max_speed_mps` (`ConfigRequest`/`ConfigState`, revision-checked,
+lease-authorized). This single field governs manual driving in both MAPPING
+and AUTONOMY; v1.3 §14's separately proposed `mapping_speed_ceiling_mps` was
+never implemented as a distinct field — there is exactly one supported
+`ConfigRequest.field` name at HEAD, and any other field name is rejected
+(`gateway.py:_do_set_config`).
 
 ## 13. Obstacle-aware costmaps
 
-Current and deployed, not proposed (`docs/global_costmap_obstacles.md`,
-`docs/local_costmap_obstacles.md`, `d852fb3`, `dd6143e`, `8b81813`):
+Both Nav2 costmaps run a live-toggleable `nav2_costmap_2d::ObstacleLayer`
+plus an `InflationLayer`:
 
-- **Global costmap**: `obstacle_layer` loaded and enabled by default; live `/scan` observations
-  participate in path validity checks and global replanning. `combination_method: 0` (Overwrite) —
-  live observations replace static-map costs inside the layer's update bounds, which also means a
-  raytrace can clear a transient mark but can equally clear a genuinely-occupied but
-  below-scan-plane static feature (the known low-obstacle hazard, §2). Enable/disable is a dynamic
-  parameter (`obstacle_layer.enabled`), verified to apply without relaunch on Jazzy
-  `nav2_costmap_2d` 1.3.12.
-- **Local costmap**: consumes `/scan` directly; marking 0.05–1.0 m, clearing raytrace 0.0–1.2 m;
-  infinite returns are valid clearing observations; not persisted; no expected-update-rate timeout
-  enforced. Obstacle height range 0.0–2.0 m at both layer and source level (the source-level maximum
-  must stay explicit — Nav2's own default of 0.0 m would otherwise reject every point given the
-  0.1135 m mount height).
-- **Operator control today**: the only live toggle/clear path is `keyboard_bridge`'s
-  `ROUTE_CLEAR_GLOBAL_OBSTACLES` / `ROUTE_TOGGLE_GLOBAL_OBSTACLES` UDP commands, which call the
-  `/global_costmap/global_costmap` `clear_entirely_global_costmap` service and
-  get/set-parameters services directly (`keyboard_bridge.py:456-680`). There is no Paddock-native
-  UI for this yet — it is real, exercised functionality currently gated behind the legacy keyboard
-  path (§4.5), a concrete gap for Paddock parity (§17).
+- **Local** (`local_costmap`, odom frame, rolling 2×2 m window at 0.025 m
+  resolution, `update_frequency 10 Hz`): obstacle layer marks/clears from
+  `/scan` (`obstacle_min_range 0.05 m`, `obstacle_max_range 1.0 m`,
+  `raytrace_max_range 1.2 m`, heights `0.0–2.0 m`, `inf_is_valid: true`);
+  inflation radius 0.45 m, cost-scaling factor 10.0.
+- **Global** (`global_costmap`, map frame, static, `update_frequency 5 Hz`,
+  0.05 m resolution): `static_layer` (subscribes `/map`, transient-local,
+  live updates) plus the same kind of obstacle layer for dynamic
+  replanning.
+
+Both plugins' `obstacle_layer.enabled` boolean is a real, live ROS
+parameter — Paddock's `set_obstacle_processing` action drives an atomic
+set→verify (`GetParameters`/`SetParameters` against
+`/global_costmap/global_costmap` and `/local_costmap/local_costmap`,
+`ros_state_node.py:915-1092`) and reports `applied`/`rejected`/`drifted` from
+the actual read-back, never from the set call's return alone. `Clear
+transient obstacles` calls Nav2's own
+`clear_entirely_global_costmap`/`clear_entirely_local_costmap` services; it
+does not touch the saved static map.
 
 ## 14. Recording/observability
 
-Current and deployed (`runner-recording-executor.service`, `src/runner_paddock/runner_paddock/recording.py`):
-sole Pi-side owner of the `ros2 bag record` process, independent of WebSocket connection lifetime (closing
-or reloading Paddock does not stop an active bag). `RecordingRequest` (`OP_START`/`OP_STOP`/`OP_DELETE`,
-lease-scoped, `name`, `profile`) → `RecordingState` (`STATE_IDLE`/`STARTING`/`RECORDING`/`STOPPING`/`FAILED`,
-`elapsed_sec`, `size_bytes`, `output_path`, `recorder_pid`, `process_healthy`, catalog of `RecordingEntry[]`).
-Two profiles: `runner_debug` (curated topic set) and `everything` (all visible topics, `PROFILES['everything']
-= None`). Names are safe basenames; existing paths are never overwritten; active bags cannot be deleted.
-Bags land under `/home/matti/runner_ws/bags`. `d060fb8` extended the debug profile to also record RF2O
-odometry for offline analysis (§17).
+`runner_recording_executor` (`recording_executor_node.py`,
+`recording.py`) is the single Pi-side owner of the `ros2 bag record --storage
+mcap` process, independent of browser connections — closing or reloading
+Paddock does not stop an active bag (ownership is reconciled from a runtime
+record file across process restart, `_reconcile_runtime_record`,
+`recording.py:455-479`). Two profiles: `runner_debug` (a curated ~40-topic
+allowlist covering the full command chain, TF, sensors, mode/authority/STOP
+state, and diagnostics — `RUNNER_DEBUG_TOPICS`, `recording.py:31-78`) and
+`everything` (`--all-topics`). Names are safe basenames
+(`SAFE_NAME`, up to 96 chars); an existing output directory is never
+overwritten; the currently active bag cannot be deleted. Stop requests a
+clean `SIGINT` finalization, escalating to `SIGTERM` at 10 s and `SIGKILL`
+at 15 s if rosbag2 does not exit. The catalog (finalized bags under
+`bags/`) is cheaply fingerprinted (mtime/size of `metadata.yaml` and the
+Paddock manifest sidecar) so it does not reparse every bag on each publish,
+and deliberately excludes the growing active bag from that fingerprint so
+recording does not itself invalidate the catalog on every write. Paddock
+exposes a same-origin `/recordings/{name}/download` endpoint for a
+finalized, single-MCAP-file bag only, rejecting anything not in the
+authoritative catalog or still active.
 
 ## 15. Networking/deployment
 
-Current, deployed (`network/README.md`, `aa63bbe`): the default field connection is NetworkManager
-profile `runner-field-ap` — WPA2-only 2.4 GHz AP "Runner-Paddock" on channel 6, Runner fixed at
-`10.42.0.1/24` via NetworkManager `shared` IPv4 (local DHCP/DNS). Paddock is reachable at
-`http://10.42.0.1:8000/` or, where mDNS resolves, `http://makro-runner.local:8000/`. A captive-portal
-service on port 80 answers OS connectivity probes with a landing page whose **OPEN PADDOCK** link
-opens port 8000 in a normal browser window; nothing proxies or redirects Paddock's API or same-origin
-`/ws` traffic. `network/install.sh` layers a NetworkManager renderer onto the existing
-netplan/systemd-networkd host without deleting existing client profiles or Tailscale config;
-`--check` reports drift, `--activate` switches immediately. Manual mode-switching via `nmcli` is
-documented and reversible; AP autoconnect priority restores field mode after reboot regardless.
-Tailscale Serve remains a tailnet-only (never Funnel) path for non-field use, proxying the same local
-port, independent of and unaffected by `runner-paddock-web.service` restarts.
+**Field Wi-Fi AP** (current, `network/README.md`, `network/install.sh`):
+NetworkManager profile `runner-field-ap`, a WPA2-only 2.4 GHz AP named
+**Runner-Paddock** (channel 6) at the fixed address `10.42.0.1/24` with
+NetworkManager's `shared` IPv4 method providing DHCP/DNS. Paddock is
+reachable at `http://10.42.0.1:8000/`, or `http://makro-runner.local:8000/`
+where mDNS is supported. A separate captive-portal service on port 80 uses
+DHCP option 114 and local DNS answers to surface OS connectivity-check
+pages with an **OPEN PADDOCK** link into a normal browser window at port
+8000; it does not proxy or redirect Paddock's API or `/ws` traffic. Field AP
+mode replaces Wi-Fi client mode outright (no verified concurrent AP+STA
+capability); Tailscale is normally offline in field mode unless an
+independent uplink (e.g. Ethernet) exists.
+
+**Tailnet path** (unchanged from v1.3): `tailscale serve --bg --https=443
+http://127.0.0.1:8000` proxies the same local port at
+`https://makro-runner.taila47bfc.ts.net/`, tailnet-only, no Funnel.
+
+**Coherent deploy**: `services/install.sh` is the single source of truth for
+the systemd layout — `--check` reports drift without changing anything,
+no-arg symlinks every tracked unit (replacing stale hand-copied files),
+installs the PWM setup script and the narrowly scoped
+`49-runner-mode-units.rules` polkit rule, and enables the persistent tier
+(never the two `runner-mode-*` units); `--restart` cycles the operator tier
+in dependency order:
+`stop-enforcer → command-authority → local-control → drive-adapter →
+mode-supervisor → map-executor → recording-executor → paddock-web`, and
+deliberately never touches `runner-motor`/`runner-encoder`. **This
+document's currency applies to the repository at HEAD, not necessarily to
+what the Pi is currently running** — a recent validation observed
+`runner-map-executor` on the Pi serving an older `MapState` schema,
+confirming that deploy coherence must be re-verified
+(`install.sh --check`, then a coherent `--restart` or reboot) after any
+change and is never assumed from a green build alone.
 
 ## 16. Supported operator vs Advanced/Engineering configuration
 
-**Supported operator surface (Paddock UI):**
+**Normal operator surface** (`CONTROL` view and the non-collapsed parts of
+`CONFIGURE`): runtime selection (IDLE/MAPPING/AUTONOMY), manual joystick
+driving, NEW MAP / SAVE MAP / SELECT MAP / DELETE MAP (delete is
+confirmation-gated), Timid/Confident speed presets, global/local obstacle
+processing on/off, transient-obstacle costmap clear, initial pose, numeric
+goal fallback, MCAP recording start/stop/delete, browser manual-speed
+ceiling, and all STOP/CLEAR STOP controls.
 
-- Runtime selection (IDLE/MAPPING/AUTONOMY), manual driving (bounded speed/steering), RUN/STOP/CLEAR
-  STOP, mapping NEW/SAVE/SELECT/DELETE map, Initial Pose (stopped/stationary, matching selected map),
-  goal/mission selection and RUN-to-drive, recording start/stop/delete with named profile, and the
-  Timid/Confident speed-preset picker with a truthful Custom readout.
-- `manual_max_speed_mps`: 0 or `[0.25, 0.40]`, default 0.40 — session-scoped operational override,
-  unchanged from v1.3.
+**Advanced/Engineering surface**, reached only through collapsed
+disclosures in `CONFIGURE → AUTONOMY` (`static/index.html:158-186`):
+per-field RPP tuning ("Advanced speed policy": nominal/ceiling/regulated
+speeds, cost-scaling distance/gain, curvature radius, lookahead bounds,
+collision horizon) and per-field longitudinal-controller tuning
+("Engineering / controller": Kp, Ki, feedforward slope/intercept, output
+limit). Both write through the same validated, atomic,
+read-back-confirmed path as the presets (§12) — the distinction from
+"normal" is deliberately about *surface placement and directness*, not
+about bypassing validation. SSH/`ros2 param`/direct systemd management
+remain purely engineering-only and outside Paddock's authorization model
+entirely: geometry, encoder thresholds, motor watchdog, wheelbase/steering
+limits, and the drive adapter's non-live-tunable parameters can only be
+changed by editing launch/service configuration and restarting the owning
+process.
 
-**Advanced/Engineering surface (still Paddock-served, but explicitly gated as such):**
+## 17. Known limitations and open engineering work
 
-- The full live autonomy-tuning field set (§12): all twelve `desired_linear_vel` /
-  `regulated_linear_scaling_*` / `cost_scaling_*` / lookahead / `proportional_gain` / `integral_gain`
-  / feedforward / `output_max` fields, individually. Timid/Confident remain the supported presets;
-  direct field editing is intentionally the engineering path, bounded by `validate_values()`'s
-  cross-field checks and the hard `output_max ≤ 0.14` ceiling.
-- Global obstacle-layer enable/disable and clear, currently reachable only via the legacy keyboard
-  path (§13), not yet a first-class Paddock control.
-- SSH/config files/direct ROS parameter access for anything outside the above remains
-  engineering-only, as in v1.3.
-
-## 17. Known limitations/open engineering work
-
-- **Motion deadman timing is provisional, not final safety policy.** The motor watchdog is a fixed,
-  unchanged `CMD_TIMEOUT_S = 0.2` s (§2). The Paddock-side chain around it — 0.5 s
-  `lease_timeout_sec`, 0.15 s `raw_autonomy_timeout_sec`, 0.30 s mux autonomy/manual timeouts, 0.15 s
-  mux teleop timeout, 0.10/0.15 s STOP timeouts — is deployed and functioning, but the end-to-end
-  stale-command budget across all these serial stages has still not been measured on hardware, exactly
-  as v1.3 §11 required and left open. `lease_timeout_sec: 0.5` s is explicitly called out in-source
-  as "a first-integration Wi-Fi value to be measured and tightened before traction"
-  (`docs/paddock_v1.3_implementation.md`, Stage 7). **Do not treat 0.5 s, or any of the numbers above,
-  as a ratified final safety bound** — they are the current deployed configuration, pending a
-  measured end-to-end validation.
-- **Keyboard bridge is legacy and unremoved** (§4.5): still capable of local motion and of the only
-  live obstacle-layer toggle path; a decommission plan needs to (a) port obstacle-layer control to
-  Paddock/Foxglove, (b) confirm no other engineering workflow depends on the UDP keyboard sender
-  (`tools/keyboard_sender.py`), then (c) remove `keyboard_bridge` from `teleop.launch.py` and retire
-  `KeyboardState`.
-- **Hardware/integration validation gaps carried forward from v1.3**, not yet closed as of HEAD per
-  `docs/paddock_v1.3_implementation.md`: a real end-to-end held-RUN autonomous drive, a live
-  `bt_navigator` cancel exercising the delayed-old-`Twist`-across-cancellation quiescence acceptance,
-  DualSense takeover mid-mission, and global STOP during motion are all still Matti's pending
-  integration tests, not yet exercised against a live, coherently-deployed stack.
-- **Deploy coherence is not self-verifying.** `services/install.sh --check` must be run and
-  reconciled after any change; a recent validation pass found `runner-map-executor` on the deployed Pi
-  serving an older message schema than HEAD. Treat "HEAD says X" and "the Pi is doing X" as separate
-  claims until a coherent redeploy is confirmed.
-- **RF2O longitudinal profiling is analysis tooling, not a retuning program.** `tools/analyze_longitudinal_profile.py`
-  (`6c4dfb2`, `87f5f8a`) is an offline bag analyzer over `/cmd_vel`, `/wheel/odom`, `/odom_rf2o` that
-  segments fixed-throttle command steps and measures settling/steady-state RF2O speed per commanded
-  step (`COMMAND_TOLERANCE`, `MIN_STEADY_TAIL_S`, `MAX_STEADY_SLOPE_MPS2` etc.). It informed the
-  Confident-preset command range but is not itself a live control-loop and implies no ongoing
-  auto-retuning commitment.
-- **CPU performance** has surfaced as an observed current engineering limitation during recent
-  development sessions (readiness-loop scheduling headroom, structural-check cadence) but is recorded
-  here only as an open operational note, not as architectural doctrine dictating any component's
-  design.
+- **End-to-end stale-command timing remains unbudgeted.** The deployed 0.5 s
+  `lease_timeout_sec` motion deadman, the 0.15 s raw-autonomy timeout, the
+  0.30 s mux autonomy/manual timeouts, the 0.15 s teleop timeout, and the
+  200 ms/50-ms-checked motor watchdog are real, current, measured-in-source
+  values, but no document yet states a measured maximum stale-nonzero-
+  `/cmd_vel` duration across all of them in series. Treat the 0.5 s deadman
+  as **provisional**, not a ratified final safety bound.
+- **`keyboard_bridge` is legacy, pending removal, not re-ratified.**
+  `keyboard_bridge.py` is still constructed by `teleop.launch.py` inside the
+  persistent local-control tier and still implements a 600 s
+  (`DEFAULT_AUTONOMY_LATCH_TIMEOUT`) UDP-armed autonomy latch and publishes
+  `/runner/route_control` — but nothing in the current graph consumes
+  `/runner/route_control` since `foxglove_goal_bridge` was retired in Stage
+  5, so the latch's original autonomy-arming purpose is dead code. Its
+  `/teleop/keyboard_state` output *is* still live-consumed by
+  `runner_teleop` as a genuine local keyboard-driving fallback
+  (brake/motion/suppress modes feeding `/cmd_vel_teleop` at mux priority
+  100) — that local-driving path works today and is not itself obsolete.
+  The obsolete part is specifically the latch/route-control bypass; it
+  should be removed rather than treated as a supported production
+  interface.
+- **Deploy coherence is never assumed** (§15): a Pi that has not run
+  `services/install.sh --check` / `--restart` (or rebooted) after a repo
+  change may be running stale message schemas or logic.
+- **No current-code evidence of a CPU/scheduler headroom limitation.**
+  `SystemTelemetry` (`runner_telemetry`) publishes real `/proc/stat`-derived
+  CPU utilization and `/proc/loadavg` figures, surfaced read-only in
+  Paddock's `SYSTEM` tab, but neither source, commit messages, nor
+  `analysis/pid0_report.md` document an observed CPU-load engineering
+  limitation as of HEAD. This telemetry exists for future characterization;
+  it is not evidence of a current constraint, and none is asserted here.
+- **RF2O longitudinal profiling is engineering tooling.** The RF2O longitudinal
+  profile analyzer (`tools/analyze_longitudinal_profile.py`) cross-references
+  `/cmd_vel`, `/wheel/odom`, and `/odom_rf2o` to characterize step-response
+  behavior; it is diagnostic tooling for future characterization work, not
+  a ratified retuning program and not itself a change to any committed
+  calibration value.
+- **Hardware/integration items inherited from v1.3 Stage 7/8 remain
+  open**: a real held-RUN autonomous drive, DualSense takeover mid-mission,
+  and global STOP during motion are Matti's integration validation, not
+  claimed here as completed. Physical stopping-distance validation remains
+  Matti's responsibility.
+- The SIGKILL/PWM-peripheral hazard and heartbeat-gated-FET question (§2)
+  remain open and are not addressed by anything in v1.4.
 
 ## 18. Future exploration and semantic traversability
 
-Unchanged from v1.3 §15, still entirely future work, not started at HEAD: supervised frontier
-exploration as a future `MAPPING + AUTONOMOUS` capability consuming geometric map/state through the
-same single navigation runtime and the same RUN/STOP/takeover gates; a later Nav2-on-mapping-raster
-application composition that must not reuse `nav2.launch.py` wholesale; and a separate future
-semantic terrain/traversability layer (class, confidence, timestamp, source, map/session identity)
-that must not repurpose geometric SLAM occupancy and must not itself authorize motion. No negative-
-obstacle sensor exists or is a prerequisite for the first supervised exploration version, per the
-existing ratified direction.
+Unchanged in scope from v1.3 §15: supervised frontier exploration
+(MAPPING + AUTONOMOUS) and camera-derived semantic traversability layers
+remain future work, not implemented at HEAD. No exploration velocity topic
+or special motor path exists. A later mapping-time Nav2 composition would
+need to reuse the live mapping raster and mapping `map → odom` without
+reintroducing a second localizer/map_server; this is unchanged design
+guidance, not new implementation.
 
 ## 19. Decision/spec reconciliation against v1.3
 
-| v1.3 clause | v1.4 disposition |
+| v1.3 subject | v1.4 disposition |
 |---|---|
-| §1 "transitional graph," adapter/authority both writing `/cmd_vel_auto`, web read-only | Superseded: the full production path (§1, §7) is live; web is bidirectional and is the primary operator interface |
-| §3 "first supported browser release must complete..." milestone | Achieved and substantially exceeded: mapping, missions, recording, live tuning, Initial Pose, map delete are all live |
-| §5 "Ratified packaging (§18-Q1)... exact priority proposal: autonomy 50, manual 75, DualSense 100, lock 200, stop-zero 255" | Confirmed deployed exactly as proposed (§4.2) |
-| §9 "manual maximum ... autonomy maximum remains 0.60 m/s" (Q3) | **Explicitly superseded**: Confident preset's 1.00 m/s desired/maximum ratified and shipped (§12); manual ceiling (0.40 m/s) unchanged |
-| §9 "the frozen controller is retained," PI/feedforward/output-cap immutable | Superseded in mechanism, preserved in value: the same numeric constants are now the Timid preset and the committed default under a live-tuning mechanism (§4.4, §12), not an immutable build-time constant |
-| §10 real navigation mission lifecycle table (9 states incl. `NO_MISSION`/`SELECTED_VALIDATED`/`NAV2_ACCEPTED`/`SUPERSEDED`) | Superseded by the actual shipped 7-state `NavigationState` enum (§11); the richer v1.3 table described intent, not the interface that was built |
-| §13.1 NEW MAP "Require STOP and measured stationarity" | **Explicitly superseded** by `044b4fb`: NEW MAP uses authority revocation + post-revocation stationary evidence, not global STOP (§8) |
-| §13.2 SAVE MAP "Require STOP/stationarity" | Unchanged/confirmed current |
-| §14 supported-configuration table (static bounds, no live tuning, no DELETE) | Superseded by §12 (live tuning) and §8 (DELETE); manual/mapping-ceiling numbers unchanged |
-| §16 "the frozen controller is retained" (table row) | Superseded per above |
-| §2/§16 keyboard "Retired production authority" framing | Corrected: not actually retired in source at HEAD; documented here as legacy pending removal (§4.5), not re-ratified as retired |
-| §17 gated migration plan (stages 0–9) | Stages 0–8 landed; see §20 for the historical record. Stage 9 (supervised exploration) remains future (§18) |
-| §11 end-to-end stale-command budget | Still open (§17), as v1.3 left it |
+| §1 "Paddock becomes the normal operator interface" | **Delivered.** Paddock is the primary operator interface today, materially exceeding the v1.3 milestone (adds tuning, obstacle control, recording, map deletion, field AP) |
+| §5 "keyboard and Foxglove still own operational bypasses" | Foxglove bypass retired (Stage 5). `keyboard_bridge`'s autonomy-latch bypass is dead code, not re-ratified (§17); its local-driving path is retained and current |
+| §9 "Remote manual ceiling 0.40 m/s… autonomy retains current maximum 0.60 m/s" | Manual ceiling unchanged at 0.40 m/s. Autonomy ceiling is now **policy-selected**: Timid retains 0.60 m/s; Confident is ratified at **1.00 m/s**, explicitly superseding the flat v1.3 figure (§12) |
+| §9, §14 "The frozen controller is retained" | Superseded: a defined parameter subset is validated, atomically applied, and live-effective (§12). Committed defaults are preserved as the Timid-equivalent baseline, not as an immutable runtime constraint |
+| §5 "Global STOP... required invariant" | Retained verbatim as implemented in `runner_stop_enforcer` (§6); NEW MAP is now explicitly confirmed **not** to assert/require/clear STOP (§5, §8) — a v1.3-era open question this document resolves with source evidence |
+| §10 mission lifecycle table (9-state, `NO_MISSION…SUPERSEDED`) | Superseded by the canonical **implemented 7-state** `NavigationState` machine (§11); the cancellation/quiescence invariant is preserved, not strengthened beyond what tests establish |
+| §13.1–13.2 NEW/SAVE MAP | Delivered as specified, plus **SELECT** and **DELETE** (not in v1.3 scope) with symmetric safety validation (§8) |
+| §14 supported settings table | Delivered and expanded: `manual_max_speed_mps` config, full Timid/Confident/Custom tuning surface, obstacle-layer toggles, and recording controls now exist as real, tested, revision-checked/read-back-confirmed operator settings |
+| §11 browser lease/RUN freshness, "150 ms" figures | Superseded by the measured, split, and deployed values in §6 (0.5 s motion deadman deployed but provisional, 3.0 s liveness backstop, 0.15 s raw-autonomy timeout) — the underlying "not yet end-to-end budgeted" caveat is carried forward unchanged (§17) |
+| §15 future exploration/traversability | Unchanged; still future work (§18) |
+| §16 historical D-number table (v1.2/v1.0 subjects) | All dispositions from that table remain in force; nothing in v1.4 reopens or renumbers them. New v1.4-only current-state facts (live tuning, DELETE MAP, recording, field AP) have no historical D-number and are not assigned one here |
+| §17 gated migration plan, stages 0–8 | Complete; see §20 for a compressed summary. Stage 9 (supervised exploration) remains not started |
+| §18 ratified Q1/Q2/Q3 | Q1 (persistent STOP) and Q2 (RUN release/cancel/continuation) stand as implemented (§6, §11). Q3's numeric bounds are carried forward for manual/Timid and **explicitly superseded for Confident autonomy** per Matti's ratified 1.00 m/s decision (§12) |
 
-## 20. Historical appendix — completed v1.3 migration stages
+## 20. Historical appendix: completed v1.3 migration stages
 
-For traceability only; current behavior is defined by §1–§19 above, not by this appendix.
+Condensed from `docs/paddock_v1.3_implementation.md` and `services/README.md`
+for continuity; treat §1–§19 above as authoritative over this appendix
+wherever they differ.
 
-| Stage | Subject | Outcome |
-|---|---|---|
-| 0 | Ratify contract | `docs/decision_v1.3_paddock_first.md`, 7 Sep 2026 |
-| 1 | Isolate unfinished authority scaffold | Private non-mux topics; smoke-checked |
-| 2 | Build authority/local/STOP contracts privately | Prototype gate not passed on first attempt (`docs/paddock_v1.3_stage2_gate_report.md`); resolved before Stage 3 |
-| 3 | Persistent local-control cutover | `382e509`; one joy/teleop/mux/STOP-enforcer set outside application launches |
-| 4 | Truthful runtime and map execution | `3b4f5fc`; runtime epoch, mapping session id, continuous readiness, NEW MAP/SAVE MAP/catalog |
-| 5 | Real navigation runtime | `8f0cd42`; `foxglove_goal_bridge` retired, `runner_navigation_runtime` sole Nav2 client owner |
-| 7 (Part A) | Autonomy authority/velocity cutover | `9bdf7a2`; full `/cmd_vel_auto_raw → authority → /cmd_vel_auto → mux` path wired |
-| 8 (Part B) | Minimal Paddock operator UI | `1265ae0`; bidirectional `/ws`, lease/RUN/STOP/mapping/mission browser control |
-| — (Part C) | Coherent systemd deploy tooling | `6aa60af`; `services/install.sh` single source of truth |
-| — | Post-deploy fixes | `3a0fb8d`, `98106aa`; stale-asset caching and `mode_state` liveness fixed |
-| — | Subsequent hardening (post-v1.3-ratification, pre-v1.4) | Obstacle-aware costmaps, browser drive/recording/tuning polish, RF2O profiling tooling, mapping-reset quiescence (`044b4fb`) — see `git log 6a7c9611..044b4fb` |
-
-Stage 6 (remote manual conversion) and Stage 9 (supervised exploration) from v1.3's plan: Stage 6's
-manual conversion is live (§4.4, §6); Stage 9 remains future work (§18), not renumbered or reused
-here.
+- **Stage 0–1**: contract ratified; unfinished authority scaffolding isolated
+  to private non-mux topics before any production cutover.
+- **Stage 2**: STOP/local-control contract prototyped and gate-tested
+  privately (3.293 ms request-to-zero observed; a rapid-restart edge case
+  and endpoint-count discrepancy were found and are why STOP's durability
+  and boot-qualification logic is as defensive as §6 describes).
+- **Stage 3**: persistent local-control tier (`runner-local-control.service`)
+  cut over — joy/teleop/mux/keyboard-bridge move out of application launches
+  permanently.
+- **Stage 4**: truthful runtime/readiness (`runtime_epoch`,
+  `mapping_session_id`, capability-specific readiness) and the map-session
+  executor (NEW/SAVE MAP, catalog, manifest) delivered.
+- **Stage 5**: `runner_navigation_runtime` delivered as the sole Nav2 mission
+  owner, retiring `foxglove_goal_bridge` and its direct goal/keyboard
+  ingress atomically.
+- **Stage 7**: the full supervised autonomy velocity path
+  (`drive_adapter → command_authority → twist_mux`) wired end to end with
+  hold-to-run semantics.
+- **Stage 8 / Part C**: minimal browser operator UI delivered and later
+  redesigned into the current tabbed console (§4); coherent
+  `services/install.sh` deploy tooling added after discovering hand-copied
+  (non-symlinked) unit files and a missing `runner-map-executor` install on
+  the Pi — the origin of §15's standing "never assume deploy coherence"
+  caution.
+- **Post-Stage-8, pre-v1.4**: obstacle-layer controls, live autonomy speed
+  tuning (Timid/Confident/Custom), MCAP recording, initial-pose workflow,
+  safe map deletion, the field Wi-Fi AP, and RF2O longitudinal profiling
+  tooling were all added — this is the delta this document formalizes as
+  current architecture rather than migration-in-progress.
