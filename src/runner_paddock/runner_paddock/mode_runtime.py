@@ -270,6 +270,8 @@ class ModeRuntime:
         poll_period: float = 0.1,
         ownership_ready: Callable[[Mode], bool] | None = None,
         capability_ready: Callable[[Mode], Tuple[bool, str]] | None = None,
+        begin_quiescence: Callable[[], None] | None = None,
+        quiescence_ready: Callable[[], Tuple[bool, str]] | None = None,
         session_id_factory: Callable[[], str] | None = None,
     ) -> None:
         self.systemd = systemd
@@ -283,6 +285,8 @@ class ModeRuntime:
         # Capability-specific evidence supplied by the ROS node; ROS-free tests
         # default it to "ready" so structural orchestration stays isolated.
         self.capability_ready = capability_ready or (lambda _mode: (True, ''))
+        self.begin_quiescence = begin_quiescence or (lambda: None)
+        self.quiescence_ready = quiescence_ready or (lambda: (True, ''))
         self.session_id_factory = (
             session_id_factory or (lambda: uuid.uuid4().hex[:12])
         )
@@ -456,6 +460,27 @@ class ModeRuntime:
             f'timed out waiting for {mode.name} readiness{suffix}'
         )
 
+    def _wait_for_quiescence(self) -> None:
+        """Wait for authority revocation and later stationary evidence."""
+        deadline = time.monotonic() + self.transition_timeout
+        last_reason = ''
+        while time.monotonic() < deadline:
+            ok, reason = self.quiescence_ready()
+            if ok:
+                return
+            if reason != last_reason:
+                self._transition_progress(
+                    'Resetting MAPPING — ' + (
+                        reason or 'waiting for motion to become safe'
+                    )
+                )
+                last_reason = reason
+            time.sleep(self.poll_period)
+        suffix = f': {last_reason}' if last_reason else ''
+        raise RuntimeError(
+            f'timed out waiting for confirmed stationary state{suffix}'
+        )
+
     def _fail(self, detail: str) -> RuntimeState:
         cleanup = ''
         try:
@@ -569,6 +594,16 @@ class ModeRuntime:
             )
             return self.state
         new_map = operation == OP_NEW_MAP and requested == Mode.MAPPING
+        if new_map and not (
+            self.state.lifecycle == Lifecycle.STABLE
+            and self.state.mode == Mode.MAPPING
+            and bool(self.state.mapping_session_id)
+        ):
+            self._set(
+                accepted_request_id=request_id,
+                detail='NEW MAP rejected: requires an active stable MAPPING session',
+            )
+            return self.state
         same_selection = (
             requested != Mode.AUTONOMY
             or autonomy_map == self.state.active_autonomy_map
@@ -586,6 +621,9 @@ class ModeRuntime:
             'starting fresh mapping session'
             if new_map else f'transitioning to {requested.name}'
         )
+        previous = self.state
+        if new_map:
+            self.begin_quiescence()
         self._set(
             lifecycle=Lifecycle.TRANSITIONING,
             accepted_request_id=request_id,
@@ -594,6 +632,21 @@ class ModeRuntime:
             readiness_reason=detail,
             mapping_session_id='',
         )
+        if new_map:
+            try:
+                self._wait_for_quiescence()
+            except RuntimeError as error:
+                ok, reason = self._fully_ready(Mode.MAPPING)
+                self._set(
+                    mode=previous.mode,
+                    lifecycle=Lifecycle.STABLE,
+                    detail=f'NEW MAP rejected: {error}',
+                    runtime_epoch=previous.runtime_epoch,
+                    mapping_session_id=previous.mapping_session_id,
+                    ready=ok,
+                    readiness_reason=reason,
+                )
+                return self.state
         try:
             self._stop_all(self._transition_progress)
             if requested == Mode.IDLE:

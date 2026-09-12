@@ -159,6 +159,11 @@ healthy STOP is applied, and fresh encoder state says stationary. It publishes
 `geometry_msgs/PoseWithCovarianceStamped` with the slam_toolbox RViz planar
 defaults (x/y variance 0.25 m², yaw variance 0.06853891909122467 rad²), then
 reports applied only after a subsequent map-frame slam_toolbox `/pose` sample.
+
+NEW MAP is a routine active-MAPPING reset, not a STOP operation. The mode
+transition revokes browser/manual authority, waits for an epoch-bound authority
+acknowledgement and a later stationary encoder sample, then replaces the
+mapping cgroup. An already asserted global STOP is preserved unchanged.
 The browser remains a requester and slam_toolbox remains the only `map→odom`
 owner; this path does not publish TF or modify a saved map bundle.
 

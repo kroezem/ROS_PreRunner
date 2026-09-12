@@ -582,6 +582,9 @@ class RosStateNode(Node):
                 'delete_request_id': int(message.delete_request_id),
                 'delete_name': message.delete_name,
                 'delete_detail': message.delete_detail,
+                'reset_state': int(message.reset_state),
+                'reset_request_id': int(message.reset_request_id),
+                'reset_detail': message.reset_detail,
                 'catalog': catalog,
             })
         except (TypeError, ValueError) as error:
@@ -620,6 +623,7 @@ class RosStateNode(Node):
                 _finite(message.goal_x, message.goal_y, message.goal_yaw)
             self._cache.update('command_authority', {
                 'stamp': _stamp(message.stamp),
+                'runtime_epoch': int(message.runtime_epoch),
                 'authority': int(message.authority),
                 'client_id': message.client_id,
                 'lease_id': message.lease_id,

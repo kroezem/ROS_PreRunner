@@ -15,6 +15,11 @@ uint8 DELETE_IDLE=0
 uint8 DELETE_SUCCEEDED=1
 uint8 DELETE_FAILED=2
 
+uint8 RESET_IDLE=0
+uint8 RESET_RUNNING=1
+uint8 RESET_SUCCEEDED=2
+uint8 RESET_FAILED=3
+
 builtin_interfaces/Time stamp
 
 # Current mapping session identity, mirrored from ModeState. Empty when the
@@ -52,3 +57,9 @@ uint8 delete_state
 uint64 delete_request_id
 string delete_name
 string delete_detail
+
+# Last NEW MAP operation. RUNNING spans motion revocation, confirmed stationary
+# wait, mapping-stack replacement, and fresh-session readiness.
+uint8 reset_state
+uint64 reset_request_id
+string reset_detail

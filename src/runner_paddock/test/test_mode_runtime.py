@@ -79,7 +79,13 @@ def complete_map(directory: Path, name='studio'):
     (directory / f'{name}.yaml').write_text(f'image: {name}.pgm\n')
 
 
-def runtime(tmp_path, graph=None, capability_ready=None):
+def runtime(
+    tmp_path,
+    graph=None,
+    capability_ready=None,
+    begin_quiescence=None,
+    quiescence_ready=None,
+):
     """Build a fast runtime and collect every published lifecycle state."""
     graph = (
         Counter({name: 1 for name in PERSISTENT_LOCAL_NODES})
@@ -102,6 +108,8 @@ def runtime(tmp_path, graph=None, capability_ready=None):
         transition_timeout=0.05,
         poll_period=0.001,
         capability_ready=capability_ready,
+        begin_quiescence=begin_quiescence,
+        quiescence_ready=quiescence_ready,
         session_id_factory=next_session_id,
     )
     return value, systemd, graph, published
@@ -188,6 +196,54 @@ def test_new_map_restart_verifies_old_owner_gone_first(tmp_path):
     assert new_map_ops[0][0] == 'stop'
     assert ('start', MAPPING_UNIT) in new_map_ops
     assert new_map_ops.index(('start', MAPPING_UNIT)) > 0
+
+
+def test_new_map_quiesces_before_mapping_teardown(tmp_path):
+    observations = []
+    holder = {}
+
+    def begin():
+        observations.append('begin')
+
+    def quiescent():
+        value = holder['runtime']
+        observations.append((value.state.lifecycle, value.systemd.units[MAPPING_UNIT].active))
+        return True, ''
+
+    value, systemd, _graph, _published = runtime(
+        tmp_path,
+        begin_quiescence=begin,
+        quiescence_ready=quiescent,
+    )
+    holder['runtime'] = value
+    value.transition(Mode.MAPPING, 1)
+    boundary = len(systemd.operations)
+
+    result = value.transition(Mode.MAPPING, 2, operation=OP_NEW_MAP)
+
+    assert result.lifecycle == Lifecycle.STABLE
+    assert observations == ['begin', (Lifecycle.TRANSITIONING, True)]
+    assert systemd.operations[boundary:][0][0] == 'stop'
+
+
+def test_new_map_stationary_timeout_preserves_active_mapping(tmp_path):
+    value, systemd, _graph, _published = runtime(
+        tmp_path,
+        quiescence_ready=lambda: (False, 'encoder still reports motion'),
+    )
+    before = value.transition(Mode.MAPPING, 1)
+    operations = list(systemd.operations)
+
+    result = value.transition(Mode.MAPPING, 2, operation=OP_NEW_MAP)
+
+    assert result.mode == Mode.MAPPING
+    assert result.lifecycle == Lifecycle.STABLE
+    assert result.runtime_epoch == before.runtime_epoch
+    assert result.mapping_session_id == before.mapping_session_id
+    assert result.ready
+    assert result.detail.startswith('NEW MAP rejected:')
+    assert 'encoder still reports motion' in result.detail
+    assert systemd.operations == operations
 
 
 def test_capability_evidence_gates_readiness_and_surfaces_reason(tmp_path):

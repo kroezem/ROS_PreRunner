@@ -5,6 +5,9 @@ uint8 AUTHORITY_PADDOCK_MANUAL=2
 uint8 AUTHORITY_PADDOCK_AUTONOMY=3
 
 builtin_interfaces/Time stamp
+# Runtime epoch last consumed by command authority. This binds revocation
+# acknowledgement to the exact transition requesting it.
+uint64 runtime_epoch
 uint8 authority
 string client_id
 string lease_id

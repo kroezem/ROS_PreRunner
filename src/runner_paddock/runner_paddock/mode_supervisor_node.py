@@ -25,7 +25,13 @@ from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from runner_interfaces.msg import ModeRequest, ModeState, PaddockControlLease
+from runner_interfaces.msg import (
+    CommandAuthorityState,
+    EncoderState,
+    ModeRequest,
+    ModeState,
+    PaddockControlLease,
+)
 from runner_paddock.mode_runtime import (
     Lifecycle,
     ModeRuntime,
@@ -43,6 +49,8 @@ LEASE_STATE_TOPIC = '/paddock/control_lease'
 SCAN_SLAM_TOPIC = '/scan_slam'
 SCAN_TOPIC = '/scan'
 MAP_TOPIC = '/map'
+AUTHORITY_STATE_TOPIC = '/paddock/command_authority_state'
+ENCODER_STATE_TOPIC = '/wheel/encoder_state'
 
 # Freshness bounds tied to observed producer rates, not the control loop.
 SCAN_SLAM_MAX_AGE_SEC = 1.5
@@ -69,12 +77,19 @@ class ModeSupervisorNode(Node):
         self._scan_at: float | None = None
         self._map_at: float | None = None
         self._session_started_at: float | None = None
+        self._quiescence_started_at: float | None = None
+        self._quiescence_runtime_epoch = 0
+        self._authority_revoked_at: float | None = None
+        self._encoder_at: float | None = None
+        self._encoder_stationary = False
         self._runtime = ModeRuntime(
             SystemdManager(),
             self._graph_nodes,
             self._publish,
             ownership_ready=self._ownership_ready,
             capability_ready=self._capability_ready,
+            begin_quiescence=self._begin_quiescence,
+            quiescence_ready=self._quiescence_ready,
         )
         # Evidence callbacks run in their own thread so a blocking transition
         # wait cannot starve the readiness inputs it is waiting on.
@@ -94,6 +109,20 @@ class ModeSupervisorNode(Node):
         map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
         self.create_subscription(
             OccupancyGrid, MAP_TOPIC, self._on_map, map_qos,
+            callback_group=evidence_group,
+        )
+        self.create_subscription(
+            CommandAuthorityState,
+            AUTHORITY_STATE_TOPIC,
+            self._on_authority_state,
+            10,
+            callback_group=evidence_group,
+        )
+        self.create_subscription(
+            EncoderState,
+            ENCODER_STATE_TOPIC,
+            self._on_encoder_state,
+            10,
             callback_group=evidence_group,
         )
         self._tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
@@ -138,6 +167,46 @@ class ModeSupervisorNode(Node):
 
     def _on_map(self, _message: OccupancyGrid) -> None:
         self._map_at = time.monotonic()
+
+    def _begin_quiescence(self) -> None:
+        """Arm a barrier that can only pass on post-revocation evidence."""
+        self._quiescence_started_at = time.monotonic()
+        self._quiescence_runtime_epoch = self._runtime.state.runtime_epoch
+        self._authority_revoked_at = None
+        # Readiness for the replacement must be earned by its own scan/map,
+        # never by still-fresh evidence from the session being discarded.
+        self._session_started_at = self._quiescence_started_at
+        self._scan_slam_at = None
+        self._map_at = None
+
+    def _on_authority_state(self, message: CommandAuthorityState) -> None:
+        now = time.monotonic()
+        if (
+            self._quiescence_started_at is not None
+            and now >= self._quiescence_started_at
+            and int(message.runtime_epoch) == self._quiescence_runtime_epoch
+            and message.brake_intent
+            and message.authority
+            != CommandAuthorityState.AUTHORITY_PADDOCK_MANUAL
+        ):
+            self._authority_revoked_at = now
+
+    def _on_encoder_state(self, message: EncoderState) -> None:
+        self._encoder_at = time.monotonic()
+        self._encoder_stationary = bool(message.stationary)
+
+    def _quiescence_ready(self) -> tuple[bool, str]:
+        """Require authority revoke, then a newer stationary encoder sample."""
+        if self._authority_revoked_at is None:
+            return False, 'revoking browser/manual motion'
+        if (
+            self._encoder_at is None
+            or self._encoder_at <= self._authority_revoked_at
+        ):
+            return False, 'waiting for post-revocation encoder evidence'
+        if not self._encoder_stationary:
+            return False, 'braking; encoder still reports motion'
+        return True, ''
 
     def _publisher_owners(self, topic: str) -> set[str]:
         owners = set()

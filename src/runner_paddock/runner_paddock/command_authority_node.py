@@ -797,6 +797,7 @@ class CommandAuthorityNode(Node):
                 else False
             ),
         )
+        authority.runtime_epoch = self._runtime_epoch
 
         lease = PaddockControlLease()
         lease.stamp = stamp

@@ -94,7 +94,12 @@ class MapSessionNode(Node):
         self._mode_ready = False
         self._active_autonomy_map = ''
         self._last_request_id = 0
-        self._new_map_request_seq = int(time.time())
+        self._new_map_request_seq = 0
+        self._mode_accepted_request_id = 0
+        self._reset_state = MapState.RESET_IDLE
+        self._reset_request_id = 0
+        self._reset_detail = ''
+        self._pending_reset: tuple[int, int, str] | None = None
         self._stop_state: StopState | None = None
         self._stop_state_at: float | None = None
         self._last_map: OccupancyGrid | None = None
@@ -185,6 +190,7 @@ class MapSessionNode(Node):
         self._mode = int(message.mode)
         self._mode_status = int(message.status)
         self._mode_ready = bool(message.ready)
+        self._mode_accepted_request_id = int(message.accepted_request_id)
         self._active_autonomy_map = message.active_autonomy_map
         mapping_active = (
             int(message.mode) == ModeState.MODE_MAPPING
@@ -197,6 +203,37 @@ class MapSessionNode(Node):
                 runtime_epoch=int(message.runtime_epoch),
                 now=now,
             )
+            pending = self._pending_reset
+            if pending is not None:
+                mode_request_id, previous_epoch, previous_session = pending
+                if int(message.accepted_request_id) >= mode_request_id:
+                    if int(message.status) == ModeState.STATUS_TRANSITIONING:
+                        self._reset_detail = (
+                            message.detail or 'Resetting mapping session'
+                        )
+                    elif int(message.status) == ModeState.STATUS_FAULT:
+                        self._reset_state = MapState.RESET_FAILED
+                        self._reset_detail = (
+                            message.detail or 'Mapping reset failed'
+                        )
+                        self._pending_reset = None
+                    elif (
+                        int(message.mode) == ModeState.MODE_MAPPING
+                        and int(message.runtime_epoch) > previous_epoch
+                        and message.mapping_session_id
+                        and message.mapping_session_id != previous_session
+                        and bool(message.ready)
+                    ):
+                        self._reset_state = MapState.RESET_SUCCEEDED
+                        self._reset_detail = (
+                            'Fresh mapping session ready: '
+                            f'{message.mapping_session_id}'
+                        )
+                        self._pending_reset = None
+                    elif message.detail.startswith('NEW MAP rejected:'):
+                        self._reset_state = MapState.RESET_FAILED
+                        self._reset_detail = message.detail
+                        self._pending_reset = None
         self._publish_state()
 
     def _on_map(self, message: OccupancyGrid) -> None:
@@ -240,11 +277,13 @@ class MapSessionNode(Node):
         if not self._authorized(message):
             reason = 'request does not hold the active control lease'
             self._record_select_rejection(message, reason)
+            self._record_new_map_rejection(message, reason)
             self.get_logger().warning(f'rejected map request: {reason}')
             return
         if message.request_id <= self._last_request_id:
             reason = f'stale/replayed map request {message.request_id}'
             self._record_select_rejection(message, reason)
+            self._record_new_map_rejection(message, reason)
             self.get_logger().warning(
                 f'rejected {reason}'
             )
@@ -279,14 +318,59 @@ class MapSessionNode(Node):
             )
         self._publish_state()
 
-    def _handle_new_map(self, message: MapRequest) -> None:
-        if not self._stop_inhibited():
-            self.get_logger().warning('NEW MAP requires STOP asserted/inhibited')
+    def _record_new_map_rejection(
+        self, message: MapRequest, reason: str
+    ) -> None:
+        if int(message.operation) != MapRequest.OP_NEW_MAP:
             return
-        self._new_map_request_seq += 1
+        self._record_reset_rejection(
+            int(message.request_id), f'NEW MAP rejected: {reason}'
+        )
+        self._publish_state()
+
+    def _record_reset_rejection(self, request_id: int, reason: str) -> None:
+        with self._lock:
+            self._reset_state = MapState.RESET_FAILED
+            self._reset_request_id = int(request_id)
+            self._reset_detail = reason
+            self._pending_reset = None
+        self.get_logger().warning(reason)
+
+    def _next_mode_request_id(self) -> int:
+        """Return an ID newer than web and executor mode requests."""
+        self._new_map_request_seq = max(
+            self._new_map_request_seq + 1,
+            self._mode_accepted_request_id + 1,
+            time.time_ns(),
+        )
+        return self._new_map_request_seq
+
+    def _handle_new_map(self, message: MapRequest) -> None:
+        with self._lock:
+            eligible = (
+                self._mode == ModeState.MODE_MAPPING
+                and self._mode_status == ModeState.STATUS_STABLE
+                and self._model.session.active
+            )
+        if not eligible:
+            self._record_reset_rejection(
+                int(message.request_id),
+                'NEW MAP rejected: requires an active stable MAPPING session',
+            )
+            return
+        mode_request_id = self._next_mode_request_id()
+        with self._lock:
+            self._reset_state = MapState.RESET_RUNNING
+            self._reset_request_id = int(message.request_id)
+            self._reset_detail = 'Revoking motion and waiting for encoder stationary'
+            self._pending_reset = (
+                mode_request_id,
+                self._model.session.runtime_epoch,
+                self._model.session.session_id,
+            )
         request = ModeRequest()
         request.stamp = self.get_clock().now().to_msg()
-        request.request_id = self._new_map_request_seq
+        request.request_id = mode_request_id
         request.lease_id = message.lease_id
         request.requested_mode = ModeRequest.MODE_MAPPING
         request.operation = ModeRequest.OP_NEW_MAP
@@ -512,6 +596,9 @@ class MapSessionNode(Node):
             message.delete_request_id = model.delete_request_id
             message.delete_name = model.delete_name
             message.delete_detail = model.delete_detail
+            message.reset_state = self._reset_state
+            message.reset_request_id = self._reset_request_id
+            message.reset_detail = self._reset_detail
             message.catalog = [
                 self._catalog_entry(entry) for entry in model.catalog()
             ]

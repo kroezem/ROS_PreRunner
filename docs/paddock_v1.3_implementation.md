@@ -86,9 +86,13 @@ never a process-lifecycle owner) owns `/paddock/map_request` ->
 - Entering MAPPING creates a fresh unsaved session. A repeated MAPPING request
   for the already-stable runtime is idempotent and does not reset the map.
 - NEW MAP (`MapRequest.OP_NEW_MAP`, or `ModeRequest.operation = OP_NEW_MAP`) is
-  a distinct operation: the executor forwards it to the supervisor, which stops
-  the mapping application, verifies the old owners are gone, starts it again and
-  allocates a new session epoch. Saved bundles are never deleted. The executor
+  a distinct operation within an active MAPPING session: the executor forwards
+  it to the supervisor, whose TRANSITIONING state revokes browser/manual motion
+  through command authority. It waits for that epoch-bound revocation and a
+  subsequent `EncoderState.stationary=true` sample before stopping the mapping
+  application, verifies the old owners are gone, starts it again and allocates a
+  new session epoch. It neither requires nor changes global STOP. Saved bundles
+  are never deleted. The executor
   discards all state keyed to the old session id and does not report the new
   session ready until current-session `/map` evidence exists.
 - SAVE MAP (`MapRequest.OP_SAVE_MAP`) requires a current valid MAPPING session,
