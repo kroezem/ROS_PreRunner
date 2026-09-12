@@ -350,7 +350,7 @@ cannot leave stale remote permission live.
 flowchart LR
   Browser[Paddock browser] -->|WebSocket /ws| Web[runner_paddock web / gateway]
   Web -->|control_event, mode_request, map_request,\nrecording_request, config_request| Authority[command_authority]
-  Web -->|mode_request OP_NEW_MAP forward| MapExec[map_executor]
+  Web -->|map_request OP_NEW_MAP/SAVE/SELECT/DELETE| MapExec[map_executor]
   Web -->|Nav2 param get/set, ClearEntireCostmap| Nav2Params[obstacle-layer + costmap-clear services]
   Web -->|initialpose| SLAM[slam_toolbox]
   Authority -->|mode_request| Supervisor[mode_supervisor]
@@ -369,7 +369,7 @@ flowchart LR
   Authority -->|stop_request| Stop[runner_stop_enforcer]
   Stop -->|cmd_vel_stop p255 / stop_lock lock200| Mux
   Mux -->|cmd_vel| Motor[motor_node]
-  MapExec -->|map_request OP_NEW_MAP| Supervisor
+  MapExec -->|mode_request OP_NEW_MAP forward| Supervisor
   RecExec[recording_executor] -->|ros2 bag record| Bags[(bags/*.mcap)]
 ```
 
@@ -481,18 +481,31 @@ executed in `ros_state_node.py:1400+`). Preconditions
 
 Sequence: the gateway action first issues an `EVENT_STOP` control event
 *and* queues the pose intent together in one accepted result
-(`gateway.py:594-604`); the node then transitions
-`stopping → waiting_stop → awaiting_pose → localizing → clear`, publishing
-`geometry_msgs/PoseWithCovarianceStamped` on `/initialpose` only once STOP
-is confirmed applied and stationary, using slam_toolbox's own RViz
+(`gateway.py:594-604`); the node then moves through internal phases
+`waiting_stop → awaiting_pose → clearing` (displayed to the operator as
+`stopping → localizing → clearing → applied`, `ros_state_node.py:1425-1467`),
+publishing `geometry_msgs/PoseWithCovarianceStamped` on `/initialpose` only
+once STOP is confirmed applied and stationary, using slam_toolbox's own RViz
 `SetInitialPose` planar covariance defaults (x/y variance 0.25 m²,
 yaw variance 0.06853891909122467 rad², matching slam_toolbox 2.8.5's
 scan-matching-seed semantics). It is confirmed only from a subsequent
 map-frame `/pose` sample from slam_toolbox itself — never from the
-publish call succeeding. `CLEAR STOP` is explicitly blocked while an
-initial-pose transaction is in flight (`ros_state_node.py:1351-1357`).
-Timeouts: 5 s to reach STOP, 5 s to receive pose confirmation, 2 s to
-complete the subsequent clear phase.
+publish call succeeding.
+
+**Costmap-clear phase.** Once localization is confirmed, the workflow enters
+its costmap-clear phase (`_start_initial_pose_clear`, `ros_state_node.py:
+1581-1630`): it calls Nav2's `ClearEntireCostmap` service against **both**
+the global and local costmap and only reports the transaction `applied`
+once both clears succeed (`_finish_initial_pose_clear`,
+`ros_state_node.py:1632-1679`) — the recorded detail string is explicit:
+*"pose confirmed; global and local costmaps cleared; STOP remains
+asserted."* **Global STOP is never cleared by this workflow**: it is
+asserted at the start (`EVENT_STOP`) and stays asserted through pose
+publication, localization confirmation, and the costmap-clear phase; a
+separate, deliberate `CLEAR STOP` is required afterward, and `CLEAR STOP`
+is explicitly blocked while an initial-pose transaction is in flight
+(`ros_state_node.py:1351-1357`). Timeouts: 5 s to reach STOP, 5 s to
+receive pose confirmation, 2 s to complete the costmap-clear phase.
 
 ## 10. Localization, estimation and TF ownership
 
@@ -605,10 +618,27 @@ reported `applied` (`ros_state_node.py:1240-1341`):
 ceiling** by explicit operator decision — it is not a bug or an
 unintended regression of the frozen-controller policy. The characterized
 feedforward at 1.00 m/s (0.1188×1.00+0.0174 ≈ 0.136) stays under the
-unchanged `output_max` actuator-effort ceiling of 0.14; Confident raises the
-*target speed and how permissively RPP regulates near obstacles*
-(larger `cost_scaling_dist`, much larger collision-time horizon), it does
-not raise the normalized-effort safety ceiling itself.
+unchanged `output_max` actuator-effort ceiling of 0.14; Confident does not
+raise the normalized-effort safety ceiling itself.
+
+Confident's larger `cost_scaling_dist` (0.60 m vs Timid's 0.45 m) and larger
+`max_allowed_time_to_collision_up_to_carrot` (0.60 s vs 0.15 s) are **more
+conservative near obstacles, not more permissive** — both widen RPP's
+safety margin to compensate for the higher target speed:
+`costConstraint()` (`regulation_functions.hpp:133-157`) only reduces speed
+when `min_distance_to_obstacle < cost_scaling_dist`, and scales the
+reduction by `min_distance_to_obstacle / cost_scaling_dist`; a *larger*
+`cost_scaling_dist` starts that slowdown farther from an obstacle and
+divides by a larger number, so it reduces speed *more*, not less, at any
+given standoff distance. Likewise, `isCollisionImminent`'s forward
+simulation (`collision_checker.cpp:72-107`) only projects the vehicle's arc
+and checks it against the costmap for up to
+`max_allowed_time_to_collision_up_to_carrot` seconds; a *larger* value
+projects farther into the future (more of the arc, out to the carrot
+distance) before accepting a command, catching a potential collision
+earlier rather than later. Confident is faster **and** more cautious about
+when it starts slowing for an obstacle — it does not trade away obstacle
+margin for speed.
 
 **Custom** is not a third preset a user selects — it is `matching_preset()`
 (`autonomy_tuning.py:182-189`)'s truthful classification of the live
@@ -688,18 +718,46 @@ authoritative catalog or still active.
 
 ## 15. Networking/deployment
 
-**Field Wi-Fi AP** (current, `network/README.md`, `network/install.sh`):
-NetworkManager profile `runner-field-ap`, a WPA2-only 2.4 GHz AP named
+**Field Wi-Fi AP and captive portal — implemented capability.**
+`network/install.sh` (run once, as root, on a given Pi) creates a
+NetworkManager profile `runner-field-ap`: a WPA2-only 2.4 GHz AP named
 **Runner-Paddock** (channel 6) at the fixed address `10.42.0.1/24` with
-NetworkManager's `shared` IPv4 method providing DHCP/DNS. Paddock is
-reachable at `http://10.42.0.1:8000/`, or `http://makro-runner.local:8000/`
-where mDNS is supported. A separate captive-portal service on port 80 uses
-DHCP option 114 and local DNS answers to surface OS connectivity-check
-pages with an **OPEN PADDOCK** link into a normal browser window at port
-8000; it does not proxy or redirect Paddock's API or `/ws` traffic. Field AP
-mode replaces Wi-Fi client mode outright (no verified concurrent AP+STA
-capability); Tailscale is normally offline in field mode unless an
-independent uplink (e.g. Ethernet) exists.
+NetworkManager's `shared` IPv4 method providing DHCP/DNS, reachable at
+`http://10.42.0.1:8000/` or `http://makro-runner.local:8000/` where mDNS is
+supported. The same script installs and (on non-`--check` runs) enables a
+separate captive-portal service on port 80 that uses DHCP option 114 and
+local DNS answers to surface OS connectivity-check pages with an **OPEN
+PADDOCK** link into a normal browser window at port 8000; it does not proxy
+or redirect Paddock's API or `/ws` traffic. Both are real, installable,
+current source (`network/99-runner-network-manager.yaml`,
+`network/runner-captive-dnsmasq.conf`, `network/captive_portal.py`,
+`network/runner-captive-portal.service`) — but whether the captive portal
+is actually running on any given deployed Pi is a deploy-coherence question
+like any other service in §15, not a fact this document asserts; do not
+call it "active" without checking `systemctl status
+runner-captive-portal.service` on that Pi.
+
+**Current intended operating policy vs. the installer's committed default.**
+`network/install.sh` gives `runner-field-ap` `autoconnect-priority 100`
+(`install.sh:91`) against NetworkManager's implicit priority 0 for
+untouched client profiles, and the script's own output says "the AP will
+be preferred at next boot" (`install.sh:130`) — as committed, the AP is the
+higher-priority, default-selected profile whenever both it and a client
+Wi-Fi profile are present. The **currently intended field policy is the
+reverse of that default**: a known/preferred Wi-Fi network first, with
+`runner-field-ap` as the fallback only when no preferred network is in
+range. Nothing in the repo automates that preference order today — no
+script raises a client profile's priority above the AP's 100, and
+NetworkManager has no built-in "try Wi-Fi, fall back to AP" behavior for a
+single radio (AP mode does not "fail" the way client association does). The
+intended policy is therefore enacted operationally, not by the shipped
+default: via manual profile priority/switching
+(`nmcli connection up '<client profile>'` / `nmcli connection up
+runner-field-ap`, `network/README.md`'s "Switching modes"), not by trusting
+`install.sh`'s as-committed AP-always priority. Field AP mode replaces
+Wi-Fi client mode outright on this single radio (no verified concurrent
+AP+STA capability); Tailscale is normally offline while the AP is active
+unless an independent uplink (e.g. Ethernet) exists.
 
 **Tailnet path** (unchanged from v1.3): `tailscale serve --bg --https=443
 http://127.0.0.1:8000` proxies the same local port at
@@ -774,24 +832,63 @@ process.
 - **Deploy coherence is never assumed** (§15): a Pi that has not run
   `services/install.sh --check` / `--restart` (or rebooted) after a repo
   change may be running stale message schemas or logic.
-- **No current-code evidence of a CPU/scheduler headroom limitation.**
-  `SystemTelemetry` (`runner_telemetry`) publishes real `/proc/stat`-derived
-  CPU utilization and `/proc/loadavg` figures, surfaced read-only in
-  Paddock's `SYSTEM` tab, but neither source, commit messages, nor
-  `analysis/pid0_report.md` document an observed CPU-load engineering
-  limitation as of HEAD. This telemetry exists for future characterization;
-  it is not evidence of a current constraint, and none is asserted here.
+- **CPU headroom is a measured, open engineering concern, evidenced by the
+  `confident` recording (`bags/confident/confident_0.mcap`, a 222 s live
+  Confident-preset held-RUN autonomy session with `runner_debug` recording
+  active).** Reading `/system/telemetry` directly from that bag:
+  `total_cpu_utilization_percent` across all 221 samples was mean 95.5%,
+  median 98.7%, with sustained excursions to 100.0% on all four cores by
+  the later part of the session (per-core snapshot at start
+  `[90.8, 86.6, 90.9, 87.6]`% vs. at end `[100.0, 100.0, 99.0, 100.0]`%);
+  `load_average_1min` rose from a first-third mean of 10.65 to a last-third
+  mean of 13.65 (max 15.50) — well above the 4-core count, i.e. a growing
+  run-queue backlog, not merely a busy CPU. In the same window,
+  `/cmd_vel_auto`, `/cmd_vel_nav` and `/cmd_vel` (all three, synchronized to
+  within ~0.3 s of each other) show repeated multi-second gaps in the
+  recorded command stream — up to **14.05 s** — while
+  `/paddock/command_authority_state`, `/drive_adapter/state_typed`,
+  `/system/telemetry`, `/tf` and `/scan` show no gap over 3 s in the same
+  bag: this is genuine **command-stream starvation** localized to Nav2's
+  own velocity output under CPU saturation, not a bag-writer artifact
+  (the writer kept up on every other topic throughout). It correlates with
+  a lifecycle of repeated `NavigateToPose` aborts in
+  `/paddock/navigation_state` — dozens of dispatch→execute→`FAILED(ABORTED)`
+  cycles over the 222 s session, almost all `error_code 102` (`TF_ERROR`)
+  or `106` (`NO_VALID_CONTROL`, `FollowPath.action` error codes) — a
+  concrete, evidenced **goal-approach reliability** problem under load, not
+  a hypothetical one.
+  Separately, `runnable_processes` did **not** trend upward over the same
+  session (first-third mean 15.0 vs. last-third mean 13.5, both well below
+  their own transient startup spikes) and no thermal throttling or
+  undervoltage flag was ever set (`current_throttled`/`sticky_throttled`/
+  `current_undervoltage` all false throughout, temperature 59.0–63.3°C) —
+  so this is **not evidence of a process/resource leak**; it is a
+  **persistent, material compute cost from running the full Paddock +
+  Nav2 + SLAM-localization + active MCAP-recording stack concurrently on
+  the Pi 5**, present and load-bearing from early in the session, not one
+  that grows without bound. The optimization conclusion — whether recording
+  should be lighter by default, whether TF/costmap work should be
+  deprioritized relative to the control loop, or whether headroom simply
+  needs a hardware/architecture change — is **explicitly left open** by
+  this document; only the measurement above is asserted as current fact.
 - **RF2O longitudinal profiling is engineering tooling.** The RF2O longitudinal
   profile analyzer (`tools/analyze_longitudinal_profile.py`) cross-references
   `/cmd_vel`, `/wheel/odom`, and `/odom_rf2o` to characterize step-response
   behavior; it is diagnostic tooling for future characterization work, not
   a ratified retuning program and not itself a change to any committed
   calibration value.
-- **Hardware/integration items inherited from v1.3 Stage 7/8 remain
-  open**: a real held-RUN autonomous drive, DualSense takeover mid-mission,
-  and global STOP during motion are Matti's integration validation, not
-  claimed here as completed. Physical stopping-distance validation remains
-  Matti's responsibility.
+- **Hardware/integration items inherited from v1.3 Stage 7/8 remain open**:
+  a real held-RUN autonomous drive **has** now been exercised and recorded
+  (`bags/confident/confident_0.mcap`, see above), so that specific item is
+  no longer open — but global STOP asserted during active autonomous motion
+  and a DualSense takeover mid-mission were **not** exercised in that
+  recording (`stop_state.stopped` was false and `command_authority_state.
+  dualsense_active` was false for the entire 222 s session) and remain
+  open. The end-to-end stale-command timing budget (§17, motion-deadman
+  bullet) also remains open — the `confident` recording's up-to-14 s
+  command-stream gaps are new evidence for *why* that budget matters, not a
+  replacement for measuring it. Physical stopping-distance validation
+  remains Matti's responsibility.
 - The SIGKILL/PWM-peripheral hazard and heartbeat-gated-FET question (§2)
   remain open and are not addressed by anything in v1.4.
 
@@ -844,6 +941,12 @@ wherever they differ.
 - **Stage 5**: `runner_navigation_runtime` delivered as the sole Nav2 mission
   owner, retiring `foxglove_goal_bridge` and its direct goal/keyboard
   ingress atomically.
+- **Stage 6** (Remote manual conversion, per v1.3 §17): the shared
+  drive-adapter normal-demand contract and manual-only authority/mux input
+  — no dedicated Stage 6 section exists in
+  `docs/paddock_v1.3_implementation.md`; it was folded into and delivered
+  together with Stage 7 Part A's autonomy authority/velocity cutover
+  (`9bdf7a2`) rather than landing as a separately documented stage.
 - **Stage 7**: the full supervised autonomy velocity path
   (`drive_adapter → command_authority → twist_mux`) wired end to end with
   hold-to-run semantics.
