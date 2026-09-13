@@ -415,7 +415,21 @@ function render() {
     "%",
     1,
   ));
+  text("control-cpu-load", telemetryValue(
+    sources.system_telemetry,
+    systemTelemetry.cpu_valid,
+    systemTelemetry.total_cpu_utilization_percent,
+    "%",
+    1,
+  ));
   text("system-battery-voltage", telemetryValue(
+    sources.battery,
+    battery.voltage_valid,
+    battery.voltage,
+    " V",
+    2,
+  ));
+  text("control-battery-voltage", telemetryValue(
     sources.battery,
     battery.voltage_valid,
     battery.voltage,
@@ -458,7 +472,9 @@ function render() {
   text("a-goal", auth.autonomy_goal_selected
     ? `selected · x ${fmt(auth.goal_x)} · y ${fmt(auth.goal_y)} · final yaw ${fmt(auth.goal_yaw)} rad`
     : "none selected");
-  text("a-detail", nav.detail || nav.error_meaning || "—");
+  text("a-detail", nav.state === 5
+    ? (nav.error_meaning || nav.detail || "Navigation failed")
+    : (nav.detail || nav.error_meaning || "—"));
   text("a-active", auth.autonomy_action_active ? "Nav2 executing" : "not executing");
   const heading = pose ? mapGeometry.yawOf(pose.orientation) : null;
   $("pose-hint").textContent = pose

@@ -158,6 +158,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'obstacle_layer.enabled' in response.text
         assert 'id="system-cpu-load"' in response.text
         assert 'id="system-battery-voltage"' in response.text
+        assert 'id="control-cpu-load"' in control_html
+        assert 'id="control-battery-voltage"' in control_html
         assert 'id="manual-max-speed-input"' in response.text
         assert 'id="m-reset"' in response.text
         assert 'id="mapping-speed-target"' in response.text

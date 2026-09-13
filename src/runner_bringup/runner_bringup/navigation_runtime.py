@@ -30,7 +30,12 @@ import uuid
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
+from nav2_msgs.action import (
+    ComputePathToPose,
+    FollowPath,
+    NavigateThroughPoses,
+    NavigateToPose,
+)
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -53,10 +58,39 @@ CANCEL_RETRY_INTERVAL_SEC = 0.5
 MAX_CANCEL_ATTEMPTS = 5
 RESULT_RETRY_INTERVAL_SEC = 0.5
 
-NAV2_ERROR_NAMES = {
-    0: 'NONE',
-    1: 'UNKNOWN',
-}
+
+def _nav2_error_names() -> dict[int, str]:
+    """Build the surfaced controller/planner errors from generated messages."""
+    names = {0: 'NONE', 1: 'UNKNOWN'}
+    for result_type, constants in (
+        (FollowPath.Result, (
+            'UNKNOWN', 'INVALID_CONTROLLER', 'TF_ERROR', 'INVALID_PATH',
+            'PATIENCE_EXCEEDED', 'FAILED_TO_MAKE_PROGRESS',
+            'NO_VALID_CONTROL', 'CONTROLLER_TIMED_OUT',
+        )),
+        (ComputePathToPose.Result, (
+            'UNKNOWN', 'INVALID_PLANNER', 'TF_ERROR', 'START_OUTSIDE_MAP',
+            'GOAL_OUTSIDE_MAP', 'START_OCCUPIED', 'GOAL_OCCUPIED', 'TIMEOUT',
+            'NO_VALID_PATH',
+        )),
+    ):
+        names.update({getattr(result_type, name): name for name in constants})
+    return names
+
+
+NAV2_ERROR_NAMES = _nav2_error_names()
+
+
+def nav2_error_detail(error_code: int, error_msg: str) -> str:
+    """Render a stable symbolic code without discarding Nav2's own detail."""
+    code = int(error_code)
+    name = NAV2_ERROR_NAMES.get(code, 'UNKNOWN')
+    summary = f'{name} ({code})'
+    detail = error_msg.strip()
+    if detail and detail not in (name, summary):
+        return f'{summary}: {detail}'
+    return summary
+
 
 STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: 'UNKNOWN',
@@ -328,9 +362,7 @@ class MissionRuntime:
         self.goal_uuid = ''
         self.nav2_status = int(status)
         self.error_code = int(error_code)
-        self.error_meaning = error_meaning or NAV2_ERROR_NAMES.get(
-            int(error_code), ''
-        )
+        self.error_meaning = nav2_error_detail(error_code, error_meaning)
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.state = MissionState.SUCCEEDED
         elif status == GoalStatus.STATUS_CANCELED:

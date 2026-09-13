@@ -9,6 +9,7 @@ from runner_bringup.navigation_runtime import (
     MissionPose,
     MissionRuntime,
     MissionState,
+    nav2_error_detail,
     SendGoal,
 )
 
@@ -96,6 +97,32 @@ def test_rejected_goal_is_failed_not_active():
     runtime.on_goal_response(1, accepted=False, goal_uuid='')
     assert runtime.state == MissionState.FAILED
     assert not runtime.inflight
+
+
+@pytest.mark.parametrize(('code', 'name'), (
+    (102, 'TF_ERROR'),
+    (106, 'NO_VALID_CONTROL'),
+    (201, 'INVALID_PLANNER'),
+    (208, 'NO_VALID_PATH'),
+))
+def test_nav2_terminal_errors_include_symbolic_and_numeric_code(code, name):
+    assert nav2_error_detail(code, '') == f'{name} ({code})'
+
+
+def test_nav2_terminal_error_preserves_action_detail_after_code():
+    runtime = _autonomy_runtime()
+    _select(runtime)
+    runtime.dispatch(now=0.0)
+    runtime.on_goal_response(1, accepted=True, goal_uuid='g1')
+
+    runtime.on_result(
+        1, GoalStatus.STATUS_ABORTED, 106, 'Unable to find a valid command'
+    )
+
+    assert runtime.state == MissionState.FAILED
+    assert runtime.error_meaning == (
+        'NO_VALID_CONTROL (106): Unable to find a valid command'
+    )
 
 
 def test_stale_result_from_older_generation_cannot_overwrite_current_state():

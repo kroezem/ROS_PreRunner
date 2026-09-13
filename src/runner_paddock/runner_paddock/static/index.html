@@ -50,6 +50,10 @@
       </div>
       <p id="control-detail" class="visually-hidden">Waiting for authoritative state…</p>
       <p id="control-inhibit" class="control-message">Controls unavailable until the backend connects.</p>
+      <dl class="control-telemetry" aria-label="Live system telemetry">
+        <div><dt>CPU</dt><dd id="control-cpu-load">unavailable</dd></div>
+        <div><dt>Battery</dt><dd id="control-battery-voltage">unavailable</dd></div>
+      </dl>
       <button id="btn-takeover" class="control-takeover" type="button" hidden>TAKE CONTROL</button>
 
       <section id="control-mapping" class="runtime-control mapping-control" hidden>
