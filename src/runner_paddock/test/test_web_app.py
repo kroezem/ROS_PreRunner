@@ -23,6 +23,11 @@ from runner_paddock.web_app import create_app
 from runner_paddock.web_app import STATIC_DIRECTORY
 
 
+def test_recording_profile_selector_exposes_navigation_debug():
+    index = (STATIC_DIRECTORY / 'index.html').read_text(encoding='utf-8')
+    assert '<option value="navigation_debug">NAVIGATION DEBUG</option>' in index
+
+
 class FakeRuntime:
     """Record application lifecycle without starting ROS in HTTP tests."""
 

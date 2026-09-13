@@ -20,6 +20,7 @@ import json
 import pytest
 
 import runner_paddock.recording as recording
+from runner_paddock.recording import NAVIGATION_DEBUG_TOPICS
 from runner_paddock.recording import RecordingExecutor
 from runner_paddock.recording import resolve_finalized_mcap
 from runner_paddock.recording import RUNNER_DEBUG_TOPICS
@@ -60,6 +61,40 @@ def test_curated_profile_covers_command_authority_and_diagnosis_topics():
         '/system/telemetry',
     }
     assert required <= set(RUNNER_DEBUG_TOPICS)
+
+
+def test_navigation_debug_profile_is_exact_routine_evidence_set():
+    assert NAVIGATION_DEBUG_TOPICS == (
+        '/scan', '/local_costmap/costmap', '/plan', '/odometry/filtered',
+        '/imu/data', '/imu/read_errors', '/tf', '/tf_static', '/map',
+        '/cmd_vel_nav', '/cmd_vel_auto_raw', '/cmd_vel_auto', '/cmd_vel',
+        '/drive_adapter/state_typed', '/speed_envelope/status',
+        '/paddock/navigation_state', '/paddock/navigation_request',
+        '/paddock/command_authority_state', '/paddock/control_lease',
+        '/paddock/control_event', '/paddock/stop_state',
+        '/paddock/mode_state', '/paddock/map_state', '/paddock/config_state',
+        '/system/telemetry', '/battery', '/diagnostics', '/rosout',
+    )
+
+
+def test_navigation_debug_start_passes_only_allowlisted_topics(tmp_path):
+    commands = []
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        return FakeProcess()
+
+    executor = RecordingExecutor(
+        tmp_path / 'bags',
+        runtime_path=tmp_path / 'runtime.json',
+        popen=popen,
+    )
+    executor.start(7, 'navigation_run', 'navigation_debug')
+
+    command = commands[0]
+    topics_index = command.index('--topics')
+    assert tuple(command[topics_index + 1:]) == NAVIGATION_DEBUG_TOPICS
+    assert '--all-topics' not in command
 
 
 def test_start_is_single_owner_mcap_and_refuses_overwrite(tmp_path):

@@ -76,8 +76,39 @@ RUNNER_DEBUG_TOPICS = (
     '/speed_envelope/status',
     '/diagnostics',
 )
+NAVIGATION_DEBUG_TOPICS = (
+    '/scan',
+    '/local_costmap/costmap',
+    '/plan',
+    '/odometry/filtered',
+    '/imu/data',
+    '/imu/read_errors',
+    '/tf',
+    '/tf_static',
+    '/map',
+    '/cmd_vel_nav',
+    '/cmd_vel_auto_raw',
+    '/cmd_vel_auto',
+    '/cmd_vel',
+    '/drive_adapter/state_typed',
+    '/speed_envelope/status',
+    '/paddock/navigation_state',
+    '/paddock/navigation_request',
+    '/paddock/command_authority_state',
+    '/paddock/control_lease',
+    '/paddock/control_event',
+    '/paddock/stop_state',
+    '/paddock/mode_state',
+    '/paddock/map_state',
+    '/paddock/config_state',
+    '/system/telemetry',
+    '/battery',
+    '/diagnostics',
+    '/rosout',
+)
 PROFILES = {
     'runner_debug': RUNNER_DEBUG_TOPICS,
+    'navigation_debug': NAVIGATION_DEBUG_TOPICS,
     'everything': None,
 }
 SAFE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$')
@@ -239,7 +270,9 @@ class RecordingExecutor:
             raise ValueError('a recording is already active')
         profile_key = profile.strip().lower() or 'runner_debug'
         if profile_key not in PROFILES:
-            raise ValueError('profile must be runner_debug or everything')
+            raise ValueError(
+                'profile must be runner_debug, navigation_debug, or everything'
+            )
         basename = safe_recording_name(name)
         output = self.root / basename
         if output.exists():
