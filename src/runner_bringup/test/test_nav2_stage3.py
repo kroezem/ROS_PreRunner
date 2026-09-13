@@ -12,6 +12,10 @@ PACKAGE = Path(__file__).parents[1]
 LAUNCH_PATH = PACKAGE / 'launch' / 'nav2.launch.py'
 LOCALIZE_LAUNCH_PATH = PACKAGE / 'launch' / 'localize.launch.py'
 PARAMS_PATH = PACKAGE / 'config' / 'nav2_params.yaml'
+LOCALIZER_PARAMS_PATH = (
+    PACKAGE / 'config' / 'localizer_params_online_async.yaml'
+)
+MAPPER_PARAMS_PATH = PACKAGE / 'config' / 'mapper_params_online_async.yaml'
 SPEED_ENVELOPE_PATH = (
     PACKAGE.parent / 'runner_drive_adapter' / 'config' / 'speed_envelope.yaml'
 )
@@ -148,7 +152,7 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     assert local['height'] == 2
     assert local['resolution'] == 0.025
     assert local['update_frequency'] == 10.0
-    assert local['publish_frequency'] == 5.0
+    assert local['publish_frequency'] == 3.0
     assert local['footprint'] == (
         '[[0.230, 0.0825], [0.230, -0.0825], '
         '[-0.060, -0.0825], [-0.060, 0.0825]]'
@@ -188,7 +192,7 @@ def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
         'obstacle_layer',
         'inflation_layer',
     ]
-    assert global_params['update_frequency'] == 5.0
+    assert global_params['update_frequency'] == 3.0
     assert global_params['footprint'] == (
         '[[0.230, 0.0825], [0.230, -0.0825], '
         '[-0.060, -0.0825], [-0.060, 0.0825]]'
@@ -215,6 +219,33 @@ def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
     }
     assert inflation['inflation_radius'] == 0.30
     assert inflation['cost_scaling_factor'] == 10.0
+
+
+def test_low_risk_nav2_wakeup_rates_are_reduced_without_timeout_changes():
+    """Only the audited Nav2 wake rates change; bond timeout stays fixed."""
+    params = _params()
+    managed_nodes = (
+        'map_server',
+        'planner_server',
+        'controller_server',
+        'bt_navigator',
+    )
+
+    for node in managed_nodes:
+        assert params[node]['ros__parameters']['bond_heartbeat_period'] == 1.0
+    assert params['bt_navigator']['ros__parameters']['bt_loop_duration'] == 20
+    assert "'bond_timeout': 4.0" in LAUNCH_PATH.read_text()
+
+
+def test_slam_transform_publish_rate_is_ten_hz_with_existing_timeout():
+    """Mapping and localization publish map to odom at the scan-match rate."""
+    for path in (LOCALIZER_PARAMS_PATH, MAPPER_PARAMS_PATH):
+        slam = yaml.safe_load(path.read_text())['slam_toolbox'][
+            'ros__parameters'
+        ]
+
+        assert slam['transform_publish_period'] == 0.10
+        assert slam['transform_timeout'] == 0.2
 
 
 def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
