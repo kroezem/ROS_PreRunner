@@ -148,11 +148,13 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     obstacle = local['obstacle_layer']
 
     assert local['rolling_window'] is True
-    assert local['width'] == 2
-    assert local['height'] == 2
+    assert local['width'] == 4
+    assert local['height'] == 4
     assert local['resolution'] == 0.025
     assert local['update_frequency'] == 10.0
-    assert local['publish_frequency'] == 3.0
+    # The higher threshold makes every update publish; it cannot publish more
+    # often than the update loop (see the measured rationale in the yaml).
+    assert local['publish_frequency'] == 2 * local['update_frequency']
     assert local['footprint'] == (
         '[[0.230, 0.0825], [0.230, -0.0825], '
         '[-0.060, -0.0825], [-0.060, 0.0825]]'
@@ -163,12 +165,13 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     assert obstacle['scan']['data_type'] == 'LaserScan'
     assert obstacle['scan']['marking'] is True
     assert obstacle['scan']['clearing'] is True
+    assert obstacle['combination_method'] == 1
     assert obstacle['scan']['min_obstacle_height'] == 0.0
     assert obstacle['scan']['max_obstacle_height'] == 2.0
     assert obstacle['scan']['obstacle_min_range'] == 0.05
-    assert obstacle['scan']['obstacle_max_range'] == 1.0
+    assert obstacle['scan']['obstacle_max_range'] == 5.0
     assert obstacle['scan']['raytrace_min_range'] == 0.0
-    assert obstacle['scan']['raytrace_max_range'] == 1.2
+    assert obstacle['scan']['raytrace_max_range'] == 6.0
     assert obstacle['scan']['expected_update_rate'] == 0.0
     assert obstacle['scan']['observation_persistence'] == 0.0
     assert obstacle['scan']['inf_is_valid'] is True
@@ -179,8 +182,9 @@ def test_local_costmap_uses_raw_scan_and_ratified_geometry():
     )
 
 
-def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
-    """Dynamic global obstacles feed planning and can clear transient marks."""
+def test_costmaps_share_live_evidence_semantics_and_static_authority():
+    """Live evidence clears in both maps without erasing static occupancy."""
+    local = _params()['local_costmap']['local_costmap']['ros__parameters']
     global_params = _params()['global_costmap']['global_costmap'][
         'ros__parameters'
     ]
@@ -200,7 +204,7 @@ def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
     assert global_params['footprint_padding'] == 0.0
     assert obstacle['plugin'] == 'nav2_costmap_2d::ObstacleLayer'
     assert obstacle['enabled'] is True
-    assert obstacle['combination_method'] == 0
+    assert obstacle['combination_method'] == 1
     assert obstacle['observation_sources'] == 'scan'
     assert obstacle['scan'] == {
         'topic': '/scan',
@@ -219,6 +223,41 @@ def test_global_costmap_uses_live_scan_and_overwrites_transient_marks():
     }
     assert inflation['inflation_radius'] == 0.30
     assert inflation['cost_scaling_factor'] == 10.0
+
+    semantic_fields = (
+        'topic', 'data_type', 'clearing', 'marking',
+        'min_obstacle_height', 'max_obstacle_height',
+        'obstacle_min_range', 'obstacle_max_range',
+        'raytrace_min_range', 'raytrace_max_range',
+        'expected_update_rate', 'observation_persistence', 'inf_is_valid',
+    )
+    for field in semantic_fields:
+        assert local['obstacle_layer']['scan'][field] == obstacle['scan'][field]
+
+
+def test_costmap_geometry_satisfies_stage_a1_derived_invariants():
+    """Both inflations cover the footprint and I11 covers Insane stopping."""
+    params = _params()
+    local = params['local_costmap']['local_costmap']['ros__parameters']
+    global_params = params['global_costmap']['global_costmap'][
+        'ros__parameters'
+    ]
+    circumscribed_radius = (0.230 ** 2 + 0.0825 ** 2) ** 0.5
+    for costmap in (local, global_params):
+        assert costmap['inflation_layer']['inflation_radius'] >= (
+            circumscribed_radius
+        )
+
+    ceiling = 1.50
+    braking_deceleration = 1.6 * ceiling + 0.27
+    command_latency = 0.20
+    stopping_distance = (
+        ceiling ** 2 / (2.0 * braking_deceleration)
+        + ceiling * command_latency
+    )
+    required_radius = stopping_distance + 0.80 + circumscribed_radius
+    assert local['width'] / 2.0 >= required_radius
+    assert local['height'] / 2.0 >= required_radius
 
 
 def test_low_risk_nav2_wakeup_rates_are_reduced_without_timeout_changes():

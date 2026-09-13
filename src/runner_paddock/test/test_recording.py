@@ -66,9 +66,11 @@ def test_curated_profile_covers_command_authority_and_diagnosis_topics():
 
 def test_navigation_debug_profile_is_exact_routine_evidence_set():
     assert NAVIGATION_DEBUG_TOPICS == (
-        '/scan', '/local_costmap/costmap', '/plan', '/odometry/filtered',
+        '/scan', '/local_costmap/costmap', '/global_costmap/costmap',
+        '/plan', '/lookahead_collision_arc', '/odometry/filtered',
         '/imu/data', '/imu/read_errors', '/tf', '/tf_static', '/map',
         '/cmd_vel_nav', '/cmd_vel_auto_raw', '/cmd_vel_auto', '/cmd_vel',
+        '/motor/direction', '/wheel/encoder_state',
         '/drive_adapter/state_typed', '/speed_envelope/status',
         '/paddock/navigation_state', '/paddock/navigation_request',
         '/paddock/command_authority_state', '/paddock/control_lease',

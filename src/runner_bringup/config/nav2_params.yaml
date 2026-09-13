@@ -78,10 +78,21 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       update_frequency: 10.0
-      publish_frequency: 3.0
+      # Stage A1 records every 10 Hz execution-map update. With Nav2's
+      # publish-cycle threshold set to the same 10 Hz as the update timer,
+      # timer phase/rounding produced only 6.25 Hz live. A 20 Hz threshold
+      # still publishes at most once per 10 Hz update and measured 10.0 Hz.
+      publish_frequency: 20.0
       transform_tolerance: 0.3
-      width: 2
-      height: 2
+      # D-89/I11 execution-window lower bound, rounded up to a 0.025 m cell:
+      #   a(1.5) = 1.6*1.5 + 0.27 = 2.67 m/s^2
+      #   stopping = v^2/(2*a) + v*0.20 = 0.7214 m
+      #   radial coverage = stopping + max lookahead + footprint margin
+      #                   = 0.7214 + 0.80 + 0.2444 = 1.7658 m
+      # A robot-centred rolling square therefore needs >= 3.5316 m/side.
+      # Nav2 declares these parameters as integer metres, so round upward.
+      width: 4
+      height: 4
       resolution: 0.025
       rolling_window: true
       track_unknown_space: false
@@ -94,6 +105,9 @@ local_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
+        # Explicit Max composition. The rolling master is reset each cycle,
+        # so live marks still clear when scan rays clear this live layer.
+        combination_method: 1
         observation_sources: scan
         scan:
           topic: /scan
@@ -103,9 +117,9 @@ local_costmap:
           min_obstacle_height: 0.0
           max_obstacle_height: 2.0
           obstacle_min_range: 0.05
-          obstacle_max_range: 1.0
+          obstacle_max_range: 5.0
           raytrace_min_range: 0.0
-          raytrace_max_range: 1.2
+          raytrace_max_range: 6.0
           expected_update_rate: 0.0
           observation_persistence: 0.0
           inf_is_valid: true
@@ -141,7 +155,9 @@ global_costmap:
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true
-        combination_method: 0
+        # Max gives the static layer clearing authority over its own cells:
+        # live rays can clear live marks, but cannot erase static occupancy.
+        combination_method: 1
         observation_sources: scan
         scan:
           topic: /scan

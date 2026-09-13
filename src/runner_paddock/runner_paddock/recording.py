@@ -79,7 +79,9 @@ RUNNER_DEBUG_TOPICS = (
 NAVIGATION_DEBUG_TOPICS = (
     '/scan',
     '/local_costmap/costmap',
+    '/global_costmap/costmap',
     '/plan',
+    '/lookahead_collision_arc',
     '/odometry/filtered',
     '/imu/data',
     '/imu/read_errors',
@@ -90,6 +92,8 @@ NAVIGATION_DEBUG_TOPICS = (
     '/cmd_vel_auto_raw',
     '/cmd_vel_auto',
     '/cmd_vel',
+    '/motor/direction',
+    '/wheel/encoder_state',
     '/drive_adapter/state_typed',
     '/speed_envelope/status',
     '/paddock/navigation_state',

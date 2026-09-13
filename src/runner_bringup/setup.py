@@ -43,6 +43,8 @@ setup(
             'scan_rebinner = runner_bringup.scan_rebinner:main',
             'navigation_runtime = '
             'runner_bringup.navigation_runtime:main',
+            'analyze_navigation_bag = '
+            'runner_bringup.navigation_bag_analyzer:main',
             'speed_envelope_observer = '
             'runner_bringup.speed_envelope_observer:main',
         ],
