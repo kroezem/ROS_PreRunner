@@ -3,6 +3,7 @@
   <BehaviorTree ID="MainTree">
     <Sequence name="StartWithFreshPath">
       <UnsetBlackboard key="path"/>
+      <SetBlackboard value="initial_plan" output_key="replan_reason"/>
       <RecoveryNode
         number_of_retries="1"
         name="ReplanAfterControllerPatience">
@@ -11,18 +12,54 @@
             <RecoveryNode
               number_of_retries="1"
               name="ClearGlobalCostmapOnPlanningFailure">
-              <Fallback name="ReplanWhenPathInvalid">
-                <ReactiveSequence name="CheckIfNewPathNeeded">
-                  <Inverter>
-                    <GlobalUpdatedGoal/>
-                  </Inverter>
-                  <IsPathValid path="{path}"/>
+              <Fallback name="ReplanWhenCommitmentAllows">
+                <ReactiveSequence name="RetainCommittedPath">
+                  <PathExists path="{path}"/>
+                  <Fallback name="GoalUnchangedOrMarkUpdate">
+                    <Inverter>
+                      <GlobalUpdatedGoal/>
+                    </Inverter>
+                    <Sequence>
+                      <SetBlackboard value="goal_update" output_key="replan_reason"/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
+                  <PersistentPathValid
+                    path="{path}"
+                    corridor_length="1.25"
+                    required_observations="3"
+                    max_progress_search_distance="2.0"
+                    robot_frame="base_link"
+                    transform_tolerance="0.3"
+                    replan_reason="{replan_reason}"/>
                 </ReactiveSequence>
-                <ComputePathToPose
-                  goal="{goal}"
-                  path="{path}"
-                  planner_id="GridBased"
-                  error_code_id="{compute_path_error_code}"/>
+                <Sequence name="GenerateValidateAndCommitCandidate">
+                  <ComputePathToPose
+                    goal="{goal}"
+                    path="{candidate_path}"
+                    planner_id="GridBased"
+                    error_code_id="{compute_path_error_code}"/>
+                  <Fallback name="ValidateCandidateAgainstCurrentGlobalCostmap">
+                    <Sequence>
+                      <CandidatePathValid
+                        path="{candidate_path}"
+                        global_frame="map"
+                        robot_frame="base_link"
+                        transform_tolerance="0.3"
+                        rejection_reason="{candidate_rejection_reason}"/>
+                      <SetBlackboard value="{candidate_path}" output_key="path"/>
+                      <ReportPathCommitment
+                        event="path_committed"
+                        reason="{replan_reason}"/>
+                    </Sequence>
+                    <Sequence>
+                      <ReportPathCommitment
+                        event="candidate_rejected"
+                        reason="{candidate_rejection_reason}"/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
+                </Sequence>
               </Fallback>
               <ClearEntireCostmap
                 name="ClearGlobalCostmap"
@@ -38,6 +75,7 @@
         <Sequence name="ForceOneReplanAfterLocalControlFailure">
           <WouldAControllerRecoveryHelp
             error_code="{follow_path_error_code}"/>
+          <SetBlackboard value="recovery_replan" output_key="replan_reason"/>
           <UnsetBlackboard key="path"/>
         </Sequence>
       </RecoveryNode>

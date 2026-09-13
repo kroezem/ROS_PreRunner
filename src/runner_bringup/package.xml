@@ -29,6 +29,7 @@
   <depend>robot_localization</depend>
   <depend>rosbag2_py</depend>
   <depend>runner_interfaces</depend>
+  <exec_depend>runner_nav2_behavior_tree</exec_depend>
   <depend>runner_imu</depend>
   <depend>runner_drive_adapter</depend>
   <depend>runner_teleop</depend>

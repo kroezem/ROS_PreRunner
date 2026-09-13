@@ -81,6 +81,7 @@ NAVIGATION_DEBUG_TOPICS = (
     '/local_costmap/costmap',
     '/global_costmap/costmap',
     '/plan',
+    '/navigation/path_commitment_state',
     '/lookahead_collision_arc',
     '/odometry/filtered',
     '/imu/data',

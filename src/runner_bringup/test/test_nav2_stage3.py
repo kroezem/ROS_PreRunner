@@ -299,27 +299,36 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     recovery = rate.find('./RecoveryNode')
     controller_recovery = startup.find('./RecoveryNode')
     force_replan = controller_recovery.find('./Sequence')
-    planner = fallback.find('./ComputePathToPose')
+    candidate = fallback.find(
+        "./Sequence[@name='GenerateValidateAndCommitCandidate']"
+    )
+    planner = candidate.find('./ComputePathToPose')
     clear = recovery.find('./ClearEntireCostmap')
     follow = pipeline.find('./FollowPath')
 
     assert tags.count('ComputePathToPose') == 1
-    assert tags.count('IsPathValid') == 1
+    assert tags.count('IsPathValid') == 0
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('Fallback') == 1
+    assert tags.count('Fallback') == 3
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
     assert tags.count('RecoveryNode') == 2
     assert tags.count('ClearEntireCostmap') == 1
     assert tags.count('UnsetBlackboard') == 2
+    assert tags.count('PersistentPathValid') == 1
+    assert tags.count('CandidatePathValid') == 1
+    assert tags.count('PathExists') == 1
+    assert tags.count('ReportPathCommitment') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
-        'UnsetBlackboard',
-        'RecoveryNode',
+        'UnsetBlackboard', 'SetBlackboard', 'RecoveryNode',
     ]
     assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
+    assert startup.find('./SetBlackboard').attrib == {
+        'value': 'initial_plan', 'output_key': 'replan_reason',
+    }
     assert controller_recovery.attrib == {
         'number_of_retries': '1',
         'name': 'ReplanAfterControllerPatience',
@@ -329,11 +338,13 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
         'Sequence',
     ]
     assert [child.tag for child in force_replan] == [
-        'WouldAControllerRecoveryHelp',
-        'UnsetBlackboard',
+        'WouldAControllerRecoveryHelp', 'SetBlackboard', 'UnsetBlackboard',
     ]
     assert force_replan.find('./WouldAControllerRecoveryHelp').attrib == {
         'error_code': '{follow_path_error_code}',
+    }
+    assert force_replan.find('./SetBlackboard').attrib == {
+        'value': 'recovery_replan', 'output_key': 'replan_reason',
     }
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
@@ -350,21 +361,32 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
         'ClearEntireCostmap',
     ]
     assert [child.tag for child in fallback] == [
-        'ReactiveSequence',
-        'ComputePathToPose',
+        'ReactiveSequence', 'Sequence',
     ]
-    assert fallback.attrib == {'name': 'ReplanWhenPathInvalid'}
+    assert fallback.attrib == {'name': 'ReplanWhenCommitmentAllows'}
     path_check = fallback.find(
-        "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
+        "./ReactiveSequence[@name='RetainCommittedPath']"
     )
     assert [child.tag for child in path_check] == [
-        'Inverter',
-        'IsPathValid',
+        'PathExists', 'Fallback', 'PersistentPathValid',
     ]
-    assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
+    assert path_check.find('.//GlobalUpdatedGoal') is not None
+    assert path_check.find(
+        ".//SetBlackboard[@value='goal_update']"
+    ).attrib['output_key'] == 'replan_reason'
+    persistence = path_check.find('./PersistentPathValid')
+    assert persistence.attrib == {
+        'path': '{path}',
+        'corridor_length': '1.25',
+        'required_observations': '3',
+        'max_progress_search_distance': '2.0',
+        'robot_frame': 'base_link',
+        'transform_tolerance': '0.3',
+        'replan_reason': '{replan_reason}',
+    }
     assert planner.attrib == {
         'goal': '{goal}',
-        'path': '{path}',
+        'path': '{candidate_path}',
         'planner_id': 'GridBased',
         'error_code_id': '{compute_path_error_code}',
     }
@@ -378,7 +400,12 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
         'name': 'ClearGlobalCostmap',
         'service_name': 'global_costmap/clear_entirely_global_costmap',
     }
-    assert rate.find('.//IsPathValid') is not None
+    assert candidate.find(
+        ".//CandidatePathValid[@path='{candidate_path}']"
+    ) is not None
+    assert candidate.find(
+        ".//SetBlackboard[@value='{candidate_path}'][@output_key='path']"
+    ) is not None
     assert rate.find('.//ComputePathToPose') is not None
     assert rate.find('.//FollowPath') is None
     assert 'Spin' not in tags
@@ -399,29 +426,37 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     recovery = rate.find('./RecoveryNode')
     controller_recovery = startup.find('./RecoveryNode')
     force_replan = controller_recovery.find('./Sequence')
-    replan = fallback.findall('./ReactiveSequence')[1]
+    replan = fallback.find(
+        "./Sequence[@name='GenerateValidateAndCommitCandidate']"
+    )
     planner = replan.find('./ComputePathThroughPoses')
     clear = recovery.find('./ClearEntireCostmap')
     follow = pipeline.find('./FollowPath')
 
     assert tags.count('ComputePathThroughPoses') == 1
-    assert tags.count('IsPathValid') == 1
+    assert tags.count('IsPathValid') == 0
     assert tags.count('RemovePassedGoals') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('Fallback') == 1
+    assert tags.count('Fallback') == 3
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
     assert tags.count('RecoveryNode') == 2
     assert tags.count('ClearEntireCostmap') == 1
     assert tags.count('UnsetBlackboard') == 2
+    assert tags.count('PersistentPathValid') == 1
+    assert tags.count('CandidatePathValid') == 1
+    assert tags.count('PathExists') == 1
+    assert tags.count('ReportPathCommitment') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
-        'UnsetBlackboard',
-        'RecoveryNode',
+        'UnsetBlackboard', 'SetBlackboard', 'RecoveryNode',
     ]
     assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
+    assert startup.find('./SetBlackboard').attrib == {
+        'value': 'initial_plan', 'output_key': 'replan_reason',
+    }
     assert controller_recovery.attrib == {
         'number_of_retries': '1',
         'name': 'ReplanAfterControllerPatience',
@@ -431,11 +466,13 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
         'Sequence',
     ]
     assert [child.tag for child in force_replan] == [
-        'WouldAControllerRecoveryHelp',
-        'UnsetBlackboard',
+        'WouldAControllerRecoveryHelp', 'SetBlackboard', 'UnsetBlackboard',
     ]
     assert force_replan.find('./WouldAControllerRecoveryHelp').attrib == {
         'error_code': '{follow_path_error_code}',
+    }
+    assert force_replan.find('./SetBlackboard').attrib == {
+        'value': 'recovery_replan', 'output_key': 'replan_reason',
     }
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
@@ -452,25 +489,27 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
         'ClearEntireCostmap',
     ]
     assert [child.tag for child in fallback] == [
-        'ReactiveSequence',
-        'ReactiveSequence',
+        'ReactiveSequence', 'Sequence',
     ]
-    assert fallback.attrib == {'name': 'ReplanRouteWhenPathInvalid'}
+    assert fallback.attrib == {'name': 'ReplanRouteWhenCommitmentAllows'}
     path_check = fallback.find(
-        "./ReactiveSequence[@name='CheckIfNewPathNeeded']"
+        "./ReactiveSequence[@name='RetainCommittedPath']"
     )
     assert [child.tag for child in path_check] == [
-        'Inverter',
-        'IsPathValid',
+        'PathExists', 'Fallback', 'PersistentPathValid',
     ]
-    assert path_check.find('./Inverter/GlobalUpdatedGoal') is not None
+    assert path_check.find('.//GlobalUpdatedGoal') is not None
+    assert path_check.find(
+        ".//SetBlackboard[@value='goal_update']"
+    ).attrib['output_key'] == 'replan_reason'
     assert [child.tag for child in replan] == [
         'RemovePassedGoals',
         'ComputePathThroughPoses',
+        'Fallback',
     ]
     assert planner.attrib == {
         'goals': '{goals}',
-        'path': '{path}',
+        'path': '{candidate_path}',
         'planner_id': 'GridBased',
         'error_code_id': '{compute_path_error_code}',
     }
@@ -484,7 +523,12 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
         'name': 'ClearGlobalCostmap',
         'service_name': 'global_costmap/clear_entirely_global_costmap',
     }
-    assert rate.find('.//IsPathValid') is not None
+    assert replan.find(
+        ".//CandidatePathValid[@path='{candidate_path}']"
+    ) is not None
+    assert replan.find(
+        ".//SetBlackboard[@value='{candidate_path}'][@output_key='path']"
+    ) is not None
     assert rate.find('.//ComputePathThroughPoses') is not None
     assert rate.find('.//FollowPath') is None
     assert 'ComputePathToPose' not in tags
@@ -493,6 +537,39 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     assert 'DriveOnHeading' not in tags
     assert 'Rotate' not in tags
     assert 'RotateToHeading' not in tags
+
+
+@pytest.mark.parametrize('tree_path', (BT_PATH, ROUTE_BT_PATH))
+def test_candidate_is_validated_before_it_can_replace_committed_path(
+    tree_path,
+):
+    """A stale candidate fails closed; only a current-valid candidate commits."""
+    root = ET.parse(tree_path).getroot()
+    validation = root.find(
+        ".//Fallback[@name='ValidateCandidateAgainstCurrentGlobalCostmap']"
+    )
+    accept, reject = validation.findall('./Sequence')
+
+    assert [child.tag for child in accept] == [
+        'CandidatePathValid', 'SetBlackboard', 'ReportPathCommitment',
+    ]
+    assert accept.find('./CandidatePathValid').attrib == {
+        'path': '{candidate_path}',
+        'global_frame': 'map',
+        'robot_frame': 'base_link',
+        'transform_tolerance': '0.3',
+        'rejection_reason': '{candidate_rejection_reason}',
+    }
+    assert accept.find('./SetBlackboard').attrib == {
+        'value': '{candidate_path}', 'output_key': 'path',
+    }
+    assert [child.tag for child in reject] == [
+        'ReportPathCommitment', 'AlwaysFailure',
+    ]
+    assert reject.find('./ReportPathCommitment').attrib == {
+        'event': 'candidate_rejected',
+        'reason': '{candidate_rejection_reason}',
+    }
 
 
 def test_both_navigators_are_configured_with_explicit_trees():
@@ -510,6 +587,9 @@ def test_both_navigators_are_configured_with_explicit_trees():
     )
     assert 'default_nav_to_pose_bt_xml' in launch
     assert 'default_nav_through_poses_bt_xml' in launch
+    assert navigator['plugin_lib_names'] == [
+        'runner_nav2_behavior_tree_nodes',
+    ]
 
 
 def test_stage2_topic_ownership_and_no_collision_monitor_remain():

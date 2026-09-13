@@ -189,6 +189,8 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odometry/filtered
     transform_tolerance: 0.3
+    plugin_lib_names:
+      - runner_nav2_behavior_tree_nodes
     navigators:
       - navigate_to_pose
       - navigate_through_poses
