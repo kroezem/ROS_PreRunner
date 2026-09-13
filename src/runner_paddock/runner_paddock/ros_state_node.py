@@ -52,6 +52,7 @@ from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.autonomy_tuning import (
+    ABSOLUTE_BOUNDS as TUNING_ABSOLUTE_BOUNDS,
     ADAPTER_OWNER,
     CONTROLLER_OWNER,
     matching_preset,
@@ -363,6 +364,7 @@ class RosStateNode(ExplicitQoSEventNode):
             'values': {},
             'status': 'unavailable',
             'detail': 'waiting for live ROS parameter read-back',
+            'requested_preset': '',
             'request_id': 0,
         }
         tuning_nodes = {
@@ -1111,6 +1113,7 @@ class RosStateNode(ExplicitQoSEventNode):
         with self._tuning_lock:
             state = dict(self._tuning_state)
             state['values'] = dict(state['values'])
+            state['bounds'] = dict(TUNING_ABSOLUTE_BOUNDS)
         self._cache.update('autonomy_tuning', state)
 
     def _refresh_tuning_state(self) -> None:
@@ -1205,6 +1208,10 @@ class RosStateNode(ExplicitQoSEventNode):
                     'values': {},
                     'status': 'failed' if verification else 'unavailable',
                     'detail': '; '.join(errors),
+                    'requested_preset': (
+                        '' if verification is None
+                        else verification['requested_preset']
+                    ),
                 })
             else:
                 matches_request = (
@@ -1215,9 +1222,14 @@ class RosStateNode(ExplicitQoSEventNode):
                     'set_errors'
                 ]
                 applied = not set_errors and matches_request
+                failed_apply = False
                 if verification is None:
-                    status = 'current'
-                    detail = 'live ROS parameter read-back'
+                    failed_apply = self._tuning_state['status'] == 'failed'
+                    status = 'failed' if failed_apply else 'current'
+                    detail = (
+                        self._tuning_state['detail'] if failed_apply
+                        else 'live ROS parameter read-back'
+                    )
                 elif applied:
                     status = 'applied'
                     detail = 'atomic owner writes confirmed by live read-back'
@@ -1233,7 +1245,29 @@ class RosStateNode(ExplicitQoSEventNode):
                     'values': values,
                     'status': status,
                     'detail': detail,
+                    'requested_preset': (
+                        self._tuning_state.get('requested_preset', '')
+                        if verification is None and failed_apply
+                        else (
+                            '' if verification is None or applied
+                            else verification['requested_preset']
+                        )
+                    ),
                 })
+        self._publish_tuning_state()
+
+    def _record_tuning_preflight_failure(
+        self, requested_preset: str, detail: str
+    ) -> None:
+        """Expose a rejected apply without discarding the last live read-back."""
+        with self._tuning_lock:
+            if self._tuning_operation is not None:
+                return
+            self._tuning_state.update({
+                'status': 'failed',
+                'detail': detail,
+                'requested_preset': requested_preset,
+            })
         self._publish_tuning_state()
 
     def _request_autonomy_tuning(
@@ -1245,17 +1279,25 @@ class RosStateNode(ExplicitQoSEventNode):
                 if intent.preset else intent.values
             )
         except (KeyError, TypeError, ValueError) as error:
+            label = intent.preset or 'custom'
+            self._record_tuning_preflight_failure(
+                label, f'{label} tuning rejected before RPC: {error}'
+            )
             return GatewayResult(False, str(error), (), role)
         unavailable = [
             owner for owner, client in self._tuning_set_clients.items()
             if not client.service_is_ready()
         ]
         if unavailable:
-            return GatewayResult(
-                False,
+            detail = (
                 'atomic parameter service unavailable: '
-                + ', '.join(unavailable),
-                (), role,
+                + ', '.join(unavailable)
+            )
+            self._record_tuning_preflight_failure(
+                intent.preset or 'custom', detail
+            )
+            return GatewayResult(
+                False, detail, (), role,
             )
         with self._tuning_lock:
             if self._tuning_operation is not None:
@@ -1271,6 +1313,7 @@ class RosStateNode(ExplicitQoSEventNode):
                 'request_id': request_id,
                 'pending': owners,
                 'requested': requested,
+                'requested_preset': intent.preset or 'custom',
                 'errors': [],
                 'deadline': time.monotonic() + TUNING_REQUEST_TIMEOUT_SEC,
             }
@@ -1278,6 +1321,7 @@ class RosStateNode(ExplicitQoSEventNode):
                 'status': 'applying',
                 'detail': f'applying {intent.preset or "custom"} atomically',
                 'request_id': request_id,
+                'requested_preset': intent.preset or 'custom',
             })
         self._publish_tuning_state()
         for owner, client in self._tuning_set_clients.items():
@@ -1337,6 +1381,7 @@ class RosStateNode(ExplicitQoSEventNode):
         self._start_tuning_read({
             'requested': requested,
             'set_errors': errors,
+            'requested_preset': operation['requested_preset'],
         })
 
     # -- operator intent ---------------------------------------------------

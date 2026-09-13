@@ -322,10 +322,17 @@ function renderObstacleProcessing(costmap, state) {
 
 function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
   const values = tuning.values || {};
+  const bounds = tuning.bounds || {};
   const liveAdapter = adapterFresh ? adapter : {};
   const available = tuning.available === true;
   const preset = available ? String(tuning.preset || "custom") : "custom";
-  text("autonomy-preset", available ? preset.toUpperCase() : "UNAVAILABLE");
+  const failed = tuning.status === "failed";
+  const requestedPreset = String(tuning.requested_preset || "custom");
+  const presetChip = $("autonomy-preset");
+  text("autonomy-preset", failed
+    ? `APPLY FAILED: ${requestedPreset.toUpperCase()}`
+    : (available ? preset.toUpperCase() : "UNAVAILABLE"));
+  presetChip.dataset.state = failed ? "failed" : String(tuning.status || "unavailable");
   document.querySelectorAll("[data-speed-preset]").forEach((button) => {
     const active = available && button.dataset.speedPreset === preset;
     button.classList.toggle("active", active);
@@ -334,6 +341,10 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
   document.querySelectorAll("[data-tuning-field]").forEach((input) => {
     const value = values[input.dataset.tuningField];
     if (document.activeElement !== input) input.value = Number.isFinite(value) ? String(value) : "";
+  });
+  Object.entries(bounds).forEach(([field, value]) => {
+    const input = document.querySelector(`[data-tuning-field="${field}"]`);
+    if (input && Number.isFinite(value)) input.max = String(value);
   });
   text("autonomy-tuning-result", `${String(tuning.status || "unavailable").toUpperCase()} — ${tuning.detail || "waiting for live ROS parameter read-back"}`);
   text("autonomy-speed-nominal", Number.isFinite(values.desired_linear_vel)

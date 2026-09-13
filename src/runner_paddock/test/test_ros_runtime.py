@@ -33,6 +33,7 @@ from runner_paddock.autonomy_tuning import (
     CONTROLLER_OWNER,
     INSANE,
     PARAMETERS as TUNING_PARAMETERS,
+    PRESETS as TUNING_PRESETS,
     TIMID,
 )
 from runner_paddock.gateway import AutonomyTuningIntent
@@ -731,3 +732,36 @@ def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
         assert len(client.requests[0].parameters) > 1
     for client in node._tuning_get_clients.values():
         assert len(client.requests) == 1
+
+
+def test_preflight_invalid_preset_does_not_modify_either_node(monkeypatch):
+    node = _tuning_node(TIMID)
+    controller_before = dict(
+        node._tuning_set_clients[CONTROLLER_OWNER].state
+    )
+    adapter_before = dict(node._tuning_set_clients[ADAPTER_OWNER].state)
+    monkeypatch.setitem(
+        TUNING_PRESETS,
+        'insane',
+        {**INSANE, 'output_max': 0.31},
+    )
+
+    result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='insane'), 'controller'
+    )
+
+    assert not result.accepted
+    assert node._tuning_set_clients[CONTROLLER_OWNER].requests == []
+    assert node._tuning_set_clients[ADAPTER_OWNER].requests == []
+    assert node._tuning_set_clients[CONTROLLER_OWNER].state == controller_before
+    assert node._tuning_set_clients[ADAPTER_OWNER].state == adapter_before
+    failure = node._cache.state_snapshot()['autonomy_tuning']
+    assert failure['status'] == 'failed'
+    assert failure['requested_preset'] == 'insane'
+    assert 'rejected before RPC' in failure['detail']
+
+    RosStateNode._start_tuning_read(node)
+    refreshed = node._cache.state_snapshot()['autonomy_tuning']
+    assert refreshed['status'] == 'failed'
+    assert refreshed['requested_preset'] == 'insane'
+    assert refreshed['values'] == TIMID

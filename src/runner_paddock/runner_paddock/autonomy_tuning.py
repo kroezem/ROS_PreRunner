@@ -17,11 +17,16 @@
 from dataclasses import dataclass
 import math
 
+from runner_interfaces.msg import AutonomyTuningPolicy
 
 CONTROLLER_OWNER = 'controller'
 ADAPTER_OWNER = 'adapter'
-MAXIMUM_COMMANDED_SPEED = 2.0
-MAXIMUM_OUTPUT = 0.30
+ABSOLUTE_BOUNDS = {
+    'maximum_commanded_speed': (
+        AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED
+    ),
+    'output_max': AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY,
+}
 
 
 @dataclass(frozen=True)
@@ -168,10 +173,12 @@ def validate_values(values: dict) -> dict[str, float]:
         'maximum_commanded_speed'
     ]:
         raise ValueError('nominal speed must not exceed adapter ceiling')
-    if normalized['maximum_commanded_speed'] > MAXIMUM_COMMANDED_SPEED:
+    if normalized['maximum_commanded_speed'] > ABSOLUTE_BOUNDS[
+        'maximum_commanded_speed'
+    ]:
         raise ValueError(
             'maximum_commanded_speed must not exceed '
-            f'{MAXIMUM_COMMANDED_SPEED}'
+            f'{ABSOLUTE_BOUNDS["maximum_commanded_speed"]}'
         )
     if normalized['min_lookahead_dist'] > normalized['max_lookahead_dist']:
         raise ValueError('minimum lookahead must not exceed maximum lookahead')
@@ -186,8 +193,10 @@ def validate_values(values: dict) -> dict[str, float]:
     )
     if min(maximum_feedforward, minimum_feedforward) < 0.0:
         raise ValueError('feedforward must be nonnegative in the command range')
-    if normalized['output_max'] > MAXIMUM_OUTPUT:
-        raise ValueError(f'output_max must not exceed {MAXIMUM_OUTPUT}')
+    if normalized['output_max'] > ABSOLUTE_BOUNDS['output_max']:
+        raise ValueError(
+            f'output_max must not exceed {ABSOLUTE_BOUNDS["output_max"]}'
+        )
     if normalized['output_max'] < maximum_feedforward:
         raise ValueError('output_max must reach maximum feedforward')
     return normalized

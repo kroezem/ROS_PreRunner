@@ -123,6 +123,13 @@ def test_release_stop_and_takeover_are_one_click_actions():
     assert 'takeoverHold' not in app_source
 
 
+def test_tuning_failure_and_shared_bounds_are_rendered_explicitly():
+    app_source = (STATIC_DIRECTORY / 'app.js').read_text(encoding='utf-8')
+
+    assert 'APPLY FAILED: ${requestedPreset.toUpperCase()}' in app_source
+    assert 'const bounds = tuning.bounds || {};' in app_source
+
+
 def test_static_shell_lifecycle_and_two_clients():
     runtime = FakeRuntime()
     app = create_app(cache=_initial_cache(), runtime=runtime)

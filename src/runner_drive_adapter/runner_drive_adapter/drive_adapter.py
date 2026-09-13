@@ -19,8 +19,8 @@ from enum import IntEnum
 import math
 from typing import Optional
 
+from runner_interfaces.msg import AutonomyTuningPolicy
 
-MAXIMUM_OUTPUT_AUTHORITY = 0.14
 MINIMUM_EXPECTED_FEEDFORWARD = 0.04
 MAX_INTEGRATION_DT_SEC = 0.5
 SELECTION_ABS_TOLERANCE = 1e-9
@@ -93,7 +93,7 @@ class AdapterConfig:
     integral_gain: float = 0.0
     integrator_bound: float = 0.005
     output_min: float = 0.0
-    output_max: float = MAXIMUM_OUTPUT_AUTHORITY
+    output_max: float = 0.14
     encoder_metres_per_edge: float = 0.010282
     wheelspin_speed_ratio: float = 1.50
     wheelspin_min_speed_excess: float = 0.10
@@ -141,15 +141,24 @@ class AdapterConfig:
             raise ValueError(
                 'maximum_commanded_speed must reach minimum_moving_speed'
             )
+        if (
+            self.maximum_commanded_speed
+            > AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED
+        ):
+            raise ValueError(
+                'maximum_commanded_speed must not exceed '
+                f'{AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED}'
+            )
         if self.output_min != 0.0:
             raise ValueError('output_min magnitude must be zero')
         if (
-            self.output_max > MAXIMUM_OUTPUT_AUTHORITY
+            self.output_max > AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY
             or self.output_max <= 0.0
         ):
             raise ValueError(
                 'output_max must be within the safety authority range '
-                '(0, 0.14]'
+                '(0, '
+                f'{AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY}]'
             )
         maximum_feedforward = linear_feedforward(
             self.maximum_commanded_speed,

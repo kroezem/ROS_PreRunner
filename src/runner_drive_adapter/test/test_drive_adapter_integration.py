@@ -332,6 +332,16 @@ def test_graph_ownership_staleness_and_diagnostics():
             name: adapter.get_parameter(name).value for name in live_values
         } == before_readback
 
+        result = adapter.set_parameters_atomically([
+            Parameter(
+                'maximum_commanded_speed', Parameter.Type.DOUBLE, 1.50
+            ),
+            Parameter('output_max', Parameter.Type.DOUBLE, 0.22),
+        ])
+        assert result.successful
+        assert adapter.config.maximum_commanded_speed == 1.50
+        assert adapter.config.output_max == 0.22
+
         result = adapter.set_parameters([
             Parameter('integrator_bound', Parameter.Type.DOUBLE, 0.004)
         ])[0]

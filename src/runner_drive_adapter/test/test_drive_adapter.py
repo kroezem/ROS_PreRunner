@@ -28,6 +28,7 @@ from runner_drive_adapter.drive_adapter import (
     linear_feedforward,
 )
 from runner_interfaces.msg import AdapterState
+from runner_interfaces.msg import AutonomyTuningPolicy
 
 
 def _feedforward(speed):
@@ -104,6 +105,29 @@ def test_feedforward_passes_through_at_zero_error():
     )
     assert decision.pi_term == pytest.approx(0.0)
     assert decision.final_throttle == pytest.approx(_feedforward(0.30))
+
+
+def test_ratified_experimental_bounds_are_enforced_locally():
+    insane = AdapterConfig(
+        maximum_commanded_speed=1.50,
+        output_max=0.22,
+    )
+    assert insane.maximum_commanded_speed == 1.50
+    assert insane.output_max == 0.22
+    with pytest.raises(ValueError, match='must not exceed 2.0'):
+        replace(
+            insane,
+            maximum_commanded_speed=(
+                AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED + 0.01
+            ),
+        )
+    with pytest.raises(ValueError, match='safety authority range'):
+        replace(
+            insane,
+            output_max=(
+                AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY + 0.01
+            ),
+        )
 
 
 def test_manual_uses_same_speed_controller_with_direct_steering():
@@ -1023,7 +1047,7 @@ def test_diagnostics_contain_all_tuning_fields():
         {'output_min': -0.01},
         {'output_min': 0.01},
         {'output_max': 0.08},
-        {'output_max': 0.15},
+        {'output_max': 0.31},
         {'encoder_metres_per_edge': 0.0},
         {'wheelspin_speed_ratio': 1.0},
         {'wheelspin_min_speed_excess': -0.1},

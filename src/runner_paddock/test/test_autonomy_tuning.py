@@ -16,7 +16,9 @@
 
 import pytest
 
+from runner_interfaces.msg import AutonomyTuningPolicy
 from runner_paddock.autonomy_tuning import (
+    ABSOLUTE_BOUNDS,
     ADAPTER_OWNER,
     CONFIDENT,
     CONTROLLER_OWNER,
@@ -27,6 +29,15 @@ from runner_paddock.autonomy_tuning import (
     validate_values,
     values_for_owner,
 )
+
+
+def test_absolute_bounds_come_from_shared_policy_contract():
+    assert ABSOLUTE_BOUNDS == {
+        'maximum_commanded_speed': (
+            AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED
+        ),
+        'output_max': AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY,
+    }
 
 
 def test_timid_exactly_reproduces_committed_conservative_policy():
