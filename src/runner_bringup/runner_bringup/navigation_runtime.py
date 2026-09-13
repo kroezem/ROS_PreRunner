@@ -46,6 +46,7 @@ from runner_interfaces.msg import ModeState, NavigationRequest, NavigationState
 
 NAVIGATION_REQUEST_TOPIC = '/paddock/navigation_request'
 NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
+STATE_HEARTBEAT_PERIOD_SEC = 0.5
 MODE_STATE_TOPIC = '/paddock/mode_state'
 NAVIGATE_TO_POSE_ACTION = '/navigate_to_pose'
 NAVIGATE_THROUGH_POSES_ACTION = '/navigate_through_poses'
@@ -488,6 +489,7 @@ class NavigationRuntimeNode(Node):
         self._cancel_attempts = 0
         self._next_cancel_at = 0.0
         self._next_result_at = 0.0
+        self._last_state_key = None
 
         state_qos = QoSProfile(depth=1)
         state_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -505,6 +507,9 @@ class NavigationRuntimeNode(Node):
             ModeState, MODE_STATE_TOPIC, self._on_mode_state, state_qos
         )
         self.create_timer(0.2, self._tick)
+        self.create_timer(
+            STATE_HEARTBEAT_PERIOD_SEC, self._publish_heartbeat
+        )
         self._publish_state()
         self.get_logger().info(
             'navigation runtime is the sole Nav2 mission owner; '
@@ -793,7 +798,10 @@ class NavigationRuntimeNode(Node):
             self._request_result(self._runtime.action_generation)
         self._publish_state()
 
-    def _publish_state(self) -> None:
+    def _publish_heartbeat(self) -> None:
+        self._publish_state(force=True)
+
+    def _publish_state(self, *, force: bool = False) -> None:
         runtime = self._runtime
         message = NavigationState()
         message.stamp = self.get_clock().now().to_msg()
@@ -821,7 +829,26 @@ class NavigationRuntimeNode(Node):
         message.error_code = int(max(0, runtime.error_code))
         message.error_meaning = runtime.error_meaning
         message.detail = runtime.detail
+        key = (
+            message.boot_id,
+            message.state,
+            message.mission_id,
+            message.mission_revision,
+            message.runtime_epoch,
+            message.map_id,
+            message.mission_type,
+            message.mission_valid,
+            message.action_generation,
+            message.goal_uuid,
+            message.nav2_status,
+            message.error_code,
+            message.error_meaning,
+            message.detail,
+        )
+        if key == self._last_state_key and not force:
+            return
         self._state_pub.publish(message)
+        self._last_state_key = key
 
 
 def main(args=None) -> None:

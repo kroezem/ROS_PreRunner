@@ -33,6 +33,7 @@ from runner_paddock.command_authority_node import CommandAuthorityNode
 from runner_paddock.command_authority_node import DEFAULT_SUPERVISION_PERIOD_SEC
 from runner_paddock.command_authority_node import PADDOCK_OUTPUT_TOPIC
 from runner_paddock.command_authority_node import RAW_AUTONOMY_TOPIC
+from runner_paddock.command_authority_node import STATUS_HEARTBEAT_PERIOD_SEC
 from runner_paddock.command_authority_node import SUPERVISED_AUTONOMY_TOPIC
 from runner_paddock.command_supervisor import CommandSupervisor
 from runner_paddock.command_supervisor import ControlEvent
@@ -69,6 +70,7 @@ def test_topic_contract_never_names_live_cmd_vel_as_an_output():
         PADDOCK_OUTPUT_TOPIC,
     }
     assert DEFAULT_SUPERVISION_PERIOD_SEC == 0.010
+    assert STATUS_HEARTBEAT_PERIOD_SEC == 0.2
 
 
 def test_twist_conversion_preserves_every_component():

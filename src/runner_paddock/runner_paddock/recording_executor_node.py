@@ -26,6 +26,9 @@ from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
 from runner_paddock.recording import RecordingExecutor
 
 
+STATE_PUBLICATION_PERIOD_SEC = 1.0
+
+
 class RecordingExecutorNode(Node):
     """Validate lease-scoped operations and publish truthful recorder state."""
 
@@ -58,7 +61,7 @@ class RecordingExecutorNode(Node):
                 durability=DurabilityPolicy.VOLATILE,
             ),
         )
-        self.create_timer(0.5, self._tick)
+        self.create_timer(STATE_PUBLICATION_PERIOD_SEC, self._tick)
         self._publish()
 
     def _on_lease(self, message: PaddockControlLease) -> None:

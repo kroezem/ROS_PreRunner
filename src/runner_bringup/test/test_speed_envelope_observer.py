@@ -6,6 +6,7 @@ from runner_bringup.speed_envelope_observer import (
     build_entry,
     load_origin,
     OriginValue,
+    PUBLICATION_PERIOD_SEC,
     ReconciliationStore,
 )
 from runner_interfaces.msg import SpeedEnvelopeEntry
@@ -16,6 +17,10 @@ WORKSPACE = Path(__file__).parents[2]
 ORIGIN = (
     WORKSPACE / 'runner_drive_adapter' / 'config' / 'speed_envelope.yaml'
 )
+
+
+def test_observer_refreshes_and_publishes_at_half_hz():
+    assert PUBLICATION_PERIOD_SEC == 2.0
 
 
 def test_origin_has_only_expected_consumers_and_flattened_keys():

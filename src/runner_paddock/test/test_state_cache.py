@@ -112,3 +112,19 @@ def test_cpu_and_battery_freshness_expires_instead_of_becoming_zero():
     assert snapshot['battery']['voltage'] == 7.2
     assert not snapshot['health']['sources']['system_telemetry']['fresh']
     assert not snapshot['health']['sources']['battery']['fresh']
+
+
+def test_one_hz_recording_state_has_jitter_margin_before_expiry():
+    now = [1.0]
+    cache = StateCache(clock=lambda: now[0])
+    cache.update('recording_state', {'state': 2, 'elapsed_sec': 4.0})
+
+    now[0] += 2.1
+    assert cache.state_snapshot()['health']['sources'][
+        'recording_state'
+    ]['fresh']
+
+    now[0] += 0.5
+    assert not cache.state_snapshot()['health']['sources'][
+        'recording_state'
+    ]['fresh']

@@ -92,7 +92,7 @@ STOP_STATE_TOPIC = '/paddock/stop_state'
 NAVIGATION_REQUEST_TOPIC = '/paddock/navigation_request'
 NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
 DEFAULT_NAVIGATION_STATE_TIMEOUT_SEC = 1.0
-STATUS_HEARTBEAT_PERIOD_SEC = 0.1
+STATUS_HEARTBEAT_PERIOD_SEC = 0.2
 
 
 def _status_key(authority, lease) -> tuple:

@@ -41,6 +41,7 @@ from runner_paddock.gateway import GatewayResult
 from runner_paddock.gateway import InitialPoseIntent
 from runner_paddock.gateway import ObstacleProcessingIntent
 from runner_paddock.ros_runtime import RosRuntime
+import runner_paddock.ros_state_node as ros_state_node
 from runner_paddock.ros_state_node import _grid, RosStateNode
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
@@ -382,6 +383,7 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
         _on_global_costmap=lambda _message: None,
         _on_local_costmap=lambda _message: None,
         _on_plan=lambda _message: None,
+        _visualization_guard=SimpleNamespace(trigger=lambda: None),
     )
 
     RosStateNode._on_mode(node, ModeState(
@@ -469,6 +471,7 @@ def test_queued_previous_runtime_map_is_rejected_after_resubscribe():
 def test_visualization_demand_aggregates_clients_without_duplicate_readers():
     created = []
     destroyed = []
+    guard_triggers = []
 
     def create_subscription(_message_type, topic, _callback, _qos):
         subscription = SimpleNamespace(topic=topic)
@@ -492,18 +495,23 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
         _on_plan=lambda _message: None,
         create_subscription=create_subscription,
         destroy_subscription=destroyed.append,
+        _visualization_guard=SimpleNamespace(
+            trigger=lambda: guard_triggers.append(True)
+        ),
     )
 
     RosStateNode.set_visualization_demand(
         node, 'first',
         frozenset(('map', 'global_costmap', 'local_costmap', 'plan')),
     )
+    assert len(guard_triggers) == 1
     RosStateNode._reconcile_visualization_subscriptions(node)
     assert {subscription.topic for subscription in created} == {
         '/map', '/global_costmap/costmap', '/local_costmap/costmap', '/plan',
     }
 
     RosStateNode.set_visualization_demand(node, 'second', frozenset(('plan',)))
+    assert len(guard_triggers) == 2
     RosStateNode._reconcile_visualization_subscriptions(node)
     assert len(created) == 4
 
@@ -518,6 +526,24 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
         node._visualization_demands.pop('second')
     RosStateNode._reconcile_visualization_subscriptions(node)
     assert len(destroyed) == 4
+
+
+def test_low_rate_parameter_refresh_keeps_normal_obstacle_state_fresh(
+    monkeypatch,
+):
+    assert ros_state_node.OBSTACLE_REFRESH_SEC == 5.0
+    assert ros_state_node.TUNING_REFRESH_SEC == 5.0
+    node = _obstacle_node(current=True)
+    confirmed_at = 10.0
+    node._obstacle_states['global']['confirmed_at'] = confirmed_at
+    monkeypatch.setattr(
+        ros_state_node.time, 'monotonic', lambda: confirmed_at + 5.1
+    )
+
+    RosStateNode._publish_obstacle_state(node)
+
+    state = node._cache.state_snapshot()['obstacle_processing']['global']
+    assert not state['stale']
 
 
 def test_clear_costmaps_reports_both_nav2_service_responses():

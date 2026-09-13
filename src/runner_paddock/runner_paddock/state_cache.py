@@ -50,7 +50,7 @@ class StateCache:
         'plan': 2.0,
         'global_costmap': 2.0,
         'local_costmap': 1.0,
-        'recording_state': 2.0,
+        'recording_state': 2.5,
         'system_telemetry': 2.5,
         'battery': 2.5,
     }

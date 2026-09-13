@@ -59,6 +59,8 @@ def test_volatile_control_lease_reaches_recording_executor(
     authority = None
     try:
         executor = _ObservedRecordingExecutorNode()
+        assert recording_executor_node.STATE_PUBLICATION_PERIOD_SEC == 1.0
+        assert next(executor.timers).timer_period_ns == 1_000_000_000
         authority = Node('recording_executor_qos_test_authority')
         lease_publisher = authority.create_publisher(
             PaddockControlLease, '/paddock/control_lease', 10

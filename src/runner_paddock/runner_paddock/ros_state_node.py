@@ -90,7 +90,8 @@ LOCAL_COSTMAP_TOPIC = '/local_costmap/costmap'
 GLOBAL_CLEAR_SERVICE = '/global_costmap/clear_entirely_global_costmap'
 LOCAL_CLEAR_SERVICE = '/local_costmap/clear_entirely_local_costmap'
 OBSTACLE_PARAMETER = 'obstacle_layer.enabled'
-OBSTACLE_REFRESH_SEC = 1.0
+OBSTACLE_REFRESH_SEC = 5.0
+OBSTACLE_STALE_SEC = 12.0
 OBSTACLE_TARGETS = {
     'global': '/global_costmap/global_costmap',
     'local': '/local_costmap/local_costmap',
@@ -121,7 +122,7 @@ INITIAL_POSE_STOP_TIMEOUT_SEC = 5.0
 INITIAL_POSE_CLEAR_TIMEOUT_SEC = 2.0
 INITIAL_POSE_POSITION_TOLERANCE_M = 0.25
 INITIAL_POSE_YAW_TOLERANCE_RAD = math.radians(15.0)
-TUNING_REFRESH_SEC = 1.0
+TUNING_REFRESH_SEC = 5.0
 TUNING_REQUEST_TIMEOUT_SEC = 2.0
 # Match slam_toolbox's RViz SetInitialPose defaults. slam_toolbox 2.8.5 uses
 # x/y/yaw as a scan-matching seed and ignores this input covariance, but a
@@ -234,6 +235,9 @@ class RosStateNode(ExplicitQoSEventNode):
             'local_costmap': None,
             'plan': None,
         }
+        self._visualization_guard = self.create_guard_condition(
+            self._reconcile_visualization_subscriptions
+        )
         self._obstacle_lock = threading.Lock()
         self._obstacle_request_id = 0
         self._obstacle_refresh_id = 0
@@ -394,7 +398,6 @@ class RosStateNode(ExplicitQoSEventNode):
             self._tf_buffer, self, spin_thread=False
         )
         self.create_timer(0.1, self._update_pose)
-        self.create_timer(0.1, self._reconcile_visualization_subscriptions)
         self.create_timer(OBSTACLE_REFRESH_SEC, self._refresh_obstacle_states)
         self.create_timer(TUNING_REFRESH_SEC, self._refresh_tuning_state)
         self._publish_gateway_state()
@@ -439,6 +442,7 @@ class RosStateNode(ExplicitQoSEventNode):
         self._cache.invalidate('map')
         if previous is not None:
             self.destroy_subscription(previous)
+        self._visualization_guard.trigger()
 
     def set_visualization_demand(
         self, conn_id: str, demand: frozenset[str]
@@ -448,7 +452,10 @@ class RosStateNode(ExplicitQoSEventNode):
         if not demand <= allowed:
             raise ValueError('unknown visualization kind')
         with self._visualization_lock:
+            if self._visualization_demands.get(conn_id) == demand:
+                return
             self._visualization_demands[conn_id] = demand
+        self._visualization_guard.trigger()
 
     def _reconcile_visualization_subscriptions(self) -> None:
         """Create and destroy optional readers from aggregate client demand."""
@@ -872,7 +879,9 @@ class RosStateNode(ExplicitQoSEventNode):
                 }
                 value[costmap]['available'] = confirmed_at is not None
                 value[costmap]['age_sec'] = age
-                value[costmap]['stale'] = age is None or age > 3.0
+                value[costmap]['stale'] = (
+                    age is None or age > OBSTACLE_STALE_SEC
+                )
         self._cache.update('obstacle_processing', value)
 
     def _refresh_obstacle_states(self) -> None:
@@ -1812,7 +1821,11 @@ class RosStateNode(ExplicitQoSEventNode):
     def disconnect(self, conn_id: str) -> None:
         """Release the lease if this browser connection held it."""
         with self._visualization_lock:
-            self._visualization_demands.pop(conn_id, None)
+            demand_removed = self._visualization_demands.pop(
+                conn_id, None
+            ) is not None
+        if demand_removed:
+            self._visualization_guard.trigger()
         with self._gateway_lock:
             result = self._gateway.on_disconnect(conn_id)
             for intent in result.intents:

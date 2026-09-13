@@ -78,6 +78,27 @@ SELECTED_MAP_FILE = Path(os.environ.get(
 STOP_STATE_TIMEOUT_SEC = 1.0
 SESSION_EVIDENCE_GRACE_SEC = 2.0
 SAVE_RASTER_TIMEOUT_SEC = 15.0
+MAP_STATE_HEARTBEAT_PERIOD_SEC = 1.0
+
+
+def _message_key(message) -> tuple:
+    """Return generated-message content without its publication stamp."""
+    return tuple(
+        (field, _freeze_message_value(getattr(message, field)))
+        for field in message.get_fields_and_field_types()
+        if field != 'stamp'
+    )
+
+
+def _freeze_message_value(value):
+    if hasattr(value, 'get_fields_and_field_types'):
+        return tuple(
+            (field, _freeze_message_value(getattr(value, field)))
+            for field in value.get_fields_and_field_types()
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_message_value(item) for item in value)
+    return value
 
 
 class MapSessionNode(Node):
@@ -104,6 +125,7 @@ class MapSessionNode(Node):
         self._stop_state_at: float | None = None
         self._last_map: OccupancyGrid | None = None
         self._last_map_at: float | None = None
+        self._last_state_key = None
 
         applied = self._load_selection()
         self._model.set_selection(applied, applied, '')
@@ -149,7 +171,11 @@ class MapSessionNode(Node):
             SerializePoseGraph, SERIALIZE_SERVICE,
             callback_group=group,
         )
-        self.create_timer(0.5, self._on_timer, callback_group=group)
+        self.create_timer(
+            MAP_STATE_HEARTBEAT_PERIOD_SEC,
+            self._on_timer,
+            callback_group=group,
+        )
         self.get_logger().info(
             f'map executor ready; catalog root {MAP_DIRECTORY}, '
             f'selected map {applied or "(none)"}'
@@ -254,7 +280,7 @@ class MapSessionNode(Node):
     def _on_timer(self) -> None:
         with self._lock:
             self._model.refresh(time.monotonic())
-        self._publish_state()
+        self._publish_state(force=True)
 
     # ---- requests -------------------------------------------------------
 
@@ -569,7 +595,7 @@ class MapSessionNode(Node):
 
     # ---- publication ----------------------------------------------------
 
-    def _publish_state(self) -> None:
+    def _publish_state(self, *, force: bool = False) -> None:
         with self._lock:
             model = self._model
             session = model.session
@@ -602,7 +628,11 @@ class MapSessionNode(Node):
             message.catalog = [
                 self._catalog_entry(entry) for entry in model.catalog()
             ]
+        key = _message_key(message)
+        if key == self._last_state_key and not force:
+            return
         self._state_pub.publish(message)
+        self._last_state_key = key
 
     @staticmethod
     def _catalog_entry(entry) -> MapCatalogEntry:

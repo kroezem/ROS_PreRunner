@@ -1,6 +1,9 @@
 """Focused lifecycle and generation-invalidation tests for the runtime."""
 
+from types import SimpleNamespace
+
 from action_msgs.msg import GoalStatus
+from builtin_interfaces.msg import Time
 import pytest
 
 from runner_bringup.navigation_runtime import (
@@ -10,8 +13,23 @@ from runner_bringup.navigation_runtime import (
     MissionRuntime,
     MissionState,
     nav2_error_detail,
+    NavigationRuntimeNode,
     SendGoal,
+    STATE_HEARTBEAT_PERIOD_SEC,
 )
+
+
+class _Publisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+
+class _Clock:
+    def now(self):
+        return SimpleNamespace(to_msg=lambda: Time(sec=1))
 
 
 def _pose(x=1.0, y=2.0, yaw_w=1.0):
@@ -40,6 +58,28 @@ def _select(runtime, revision=1, epoch=3, map_id='studio', mission_id='m1'):
         poses=[_pose()],
         now=0.0,
     )
+
+
+def test_state_is_two_hz_with_immediate_publish_on_semantic_change():
+    publisher = _Publisher()
+    runtime = MissionRuntime(boot_id='test-boot')
+    node = SimpleNamespace(
+        _runtime=runtime,
+        _state_pub=publisher,
+        _last_state_key=None,
+        get_clock=lambda: _Clock(),
+    )
+    NavigationRuntimeNode._publish_state(node)
+    NavigationRuntimeNode._publish_state(node)
+    assert len(publisher.messages) == 1
+
+    runtime.detail = 'changed'
+    NavigationRuntimeNode._publish_state(node)
+    assert len(publisher.messages) == 2
+
+    assert STATE_HEARTBEAT_PERIOD_SEC == 0.5
+    NavigationRuntimeNode._publish_state(node, force=True)
+    assert len(publisher.messages) == 3
 
 
 def test_pose_validation_rejects_nonfinite_and_zero_rotation():
