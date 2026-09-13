@@ -3,41 +3,50 @@
   <BehaviorTree ID="MainTree">
     <Sequence name="StartWithFreshPath">
       <UnsetBlackboard key="path"/>
-      <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
-        <RateController hz="3.0">
-          <RecoveryNode
-            number_of_retries="1"
-            name="ClearGlobalCostmapOnPlanningFailure">
-            <Fallback name="ReplanRouteWhenPathInvalid">
-              <ReactiveSequence name="CheckIfNewPathNeeded">
-                <Inverter>
-                  <GlobalUpdatedGoal/>
-                </Inverter>
-                <IsPathValid path="{path}"/>
-              </ReactiveSequence>
-              <ReactiveSequence>
-                <RemovePassedGoals
-                  input_goals="{goals}"
-                  output_goals="{goals}"
-                  radius="0.20"/>
-                <ComputePathThroughPoses
-                  goals="{goals}"
-                  path="{path}"
-                  planner_id="GridBased"
-                  error_code_id="{compute_path_error_code}"/>
-              </ReactiveSequence>
-            </Fallback>
-            <ClearEntireCostmap
-              name="ClearGlobalCostmap"
-              service_name="global_costmap/clear_entirely_global_costmap"/>
-          </RecoveryNode>
-        </RateController>
-        <FollowPath
-          path="{path}"
-          controller_id="FollowPath"
-          goal_checker_id="goal_checker"
-          error_code_id="{follow_path_error_code}"/>
-      </PipelineSequence>
+      <RecoveryNode
+        number_of_retries="1"
+        name="ReplanAfterControllerPatience">
+        <PipelineSequence name="NavigateRouteWithReplanningForwardOnly">
+          <RateController hz="3.0">
+            <RecoveryNode
+              number_of_retries="1"
+              name="ClearGlobalCostmapOnPlanningFailure">
+              <Fallback name="ReplanRouteWhenPathInvalid">
+                <ReactiveSequence name="CheckIfNewPathNeeded">
+                  <Inverter>
+                    <GlobalUpdatedGoal/>
+                  </Inverter>
+                  <IsPathValid path="{path}"/>
+                </ReactiveSequence>
+                <ReactiveSequence>
+                  <RemovePassedGoals
+                    input_goals="{goals}"
+                    output_goals="{goals}"
+                    radius="0.20"/>
+                  <ComputePathThroughPoses
+                    goals="{goals}"
+                    path="{path}"
+                    planner_id="GridBased"
+                    error_code_id="{compute_path_error_code}"/>
+                </ReactiveSequence>
+              </Fallback>
+              <ClearEntireCostmap
+                name="ClearGlobalCostmap"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+            </RecoveryNode>
+          </RateController>
+          <FollowPath
+            path="{path}"
+            controller_id="FollowPath"
+            goal_checker_id="goal_checker"
+            error_code_id="{follow_path_error_code}"/>
+        </PipelineSequence>
+        <Sequence name="ForceOneReplanAfterLocalControlFailure">
+          <WouldAControllerRecoveryHelp
+            error_code="{follow_path_error_code}"/>
+          <UnsetBlackboard key="path"/>
+        </Sequence>
+      </RecoveryNode>
     </Sequence>
   </BehaviorTree>
 </root>

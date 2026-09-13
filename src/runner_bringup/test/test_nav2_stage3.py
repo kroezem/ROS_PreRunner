@@ -77,6 +77,7 @@ def test_rpp_allows_reversing_and_uses_measured_speed_limits():
     assert rpp['desired_linear_vel'] == 0.45
     assert rpp['min_approach_linear_velocity'] == 0.25
     assert rpp['allow_reversing'] is True
+    assert controller['failure_tolerance'] == 2.0
     assert rpp['use_rotate_to_heading'] is False
     assert rpp['lookahead_dist'] == 0.40
     assert rpp['use_velocity_scaled_lookahead_dist'] is True
@@ -288,7 +289,7 @@ def test_slam_transform_publish_rate_is_ten_hz_with_existing_timeout():
 
 
 def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
-    """Only the rate-controlled planning branch has bounded recovery."""
+    """Controller patience is followed by one bounded forced replan."""
     root = ET.parse(BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     startup = root.find('./BehaviorTree/Sequence')
@@ -296,6 +297,8 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
     recovery = rate.find('./RecoveryNode')
+    controller_recovery = startup.find('./RecoveryNode')
+    force_replan = controller_recovery.find('./Sequence')
     planner = fallback.find('./ComputePathToPose')
     clear = recovery.find('./ClearEntireCostmap')
     follow = pipeline.find('./FollowPath')
@@ -308,15 +311,30 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
-    assert tags.count('RecoveryNode') == 1
+    assert tags.count('RecoveryNode') == 2
     assert tags.count('ClearEntireCostmap') == 1
-    assert tags.count('UnsetBlackboard') == 1
+    assert tags.count('UnsetBlackboard') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
         'UnsetBlackboard',
-        'PipelineSequence',
+        'RecoveryNode',
     ]
     assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
+    assert controller_recovery.attrib == {
+        'number_of_retries': '1',
+        'name': 'ReplanAfterControllerPatience',
+    }
+    assert [child.tag for child in controller_recovery] == [
+        'PipelineSequence',
+        'Sequence',
+    ]
+    assert [child.tag for child in force_replan] == [
+        'WouldAControllerRecoveryHelp',
+        'UnsetBlackboard',
+    ]
+    assert force_replan.find('./WouldAControllerRecoveryHelp').attrib == {
+        'error_code': '{follow_path_error_code}',
+    }
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',
@@ -371,7 +389,7 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
 
 
 def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
-    """Route planning has the same bounded, non-motion recovery."""
+    """Route control uses the same bounded, non-motion recovery."""
     root = ET.parse(ROUTE_BT_PATH).getroot()
     tags = [element.tag for element in root.iter()]
     startup = root.find('./BehaviorTree/Sequence')
@@ -379,6 +397,8 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     pipeline = root.find('.//PipelineSequence')
     rate = pipeline.find('./RateController')
     recovery = rate.find('./RecoveryNode')
+    controller_recovery = startup.find('./RecoveryNode')
+    force_replan = controller_recovery.find('./Sequence')
     replan = fallback.findall('./ReactiveSequence')[1]
     planner = replan.find('./ComputePathThroughPoses')
     clear = recovery.find('./ClearEntireCostmap')
@@ -393,15 +413,30 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
-    assert tags.count('RecoveryNode') == 1
+    assert tags.count('RecoveryNode') == 2
     assert tags.count('ClearEntireCostmap') == 1
-    assert tags.count('UnsetBlackboard') == 1
+    assert tags.count('UnsetBlackboard') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
         'UnsetBlackboard',
-        'PipelineSequence',
+        'RecoveryNode',
     ]
     assert startup.find('./UnsetBlackboard').attrib == {'key': 'path'}
+    assert controller_recovery.attrib == {
+        'number_of_retries': '1',
+        'name': 'ReplanAfterControllerPatience',
+    }
+    assert [child.tag for child in controller_recovery] == [
+        'PipelineSequence',
+        'Sequence',
+    ]
+    assert [child.tag for child in force_replan] == [
+        'WouldAControllerRecoveryHelp',
+        'UnsetBlackboard',
+    ]
+    assert force_replan.find('./WouldAControllerRecoveryHelp').attrib == {
+        'error_code': '{follow_path_error_code}',
+    }
     assert rate.attrib == {'hz': '3.0'}
     assert [child.tag for child in pipeline] == [
         'RateController',

@@ -161,8 +161,91 @@ def test_nav2_terminal_error_preserves_action_detail_after_code():
 
     assert runtime.state == MissionState.FAILED
     assert runtime.error_meaning == (
-        'NO_VALID_CONTROL (106): Unable to find a valid command'
+        'RECOVERY_EXHAUSTED: NO_VALID_CONTROL (106): '
+        'Unable to find a valid command'
     )
+
+
+def test_identical_failed_mission_redispatch_is_blocked_at_same_pose():
+    runtime = _autonomy_runtime()
+    _select(runtime)
+    runtime.dispatch(now=0.0)
+    runtime.on_goal_response(1, accepted=True, goal_uuid='g1')
+    runtime.observe_robot_pose(MissionPose(
+        frame_id='odom',
+        position=(2.75, -2.30, 0.0),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+    ))
+    runtime.on_result(
+        1, GoalStatus.STATUS_ABORTED, 104, 'Controller patience exceeded'
+    )
+
+    commands = runtime.dispatch(now=3.0)
+
+    assert commands == ()
+    assert runtime.action_generation == 1
+    assert not runtime.inflight
+    assert runtime.state == MissionState.FAILED
+    assert runtime.error_code == 104
+    assert runtime.error_meaning.startswith('ANTI_REDISPATCH_STORM:')
+    assert 'PATIENCE_EXCEEDED (104)' in runtime.error_meaning
+    assert 'dispatch rejected' in runtime.detail
+
+
+def test_new_mission_after_failure_can_dispatch():
+    runtime = _autonomy_runtime()
+    _select(runtime)
+    runtime.dispatch(now=0.0)
+    runtime.on_goal_response(1, accepted=True, goal_uuid='g1')
+    runtime.observe_robot_pose(MissionPose(
+        frame_id='odom',
+        position=(2.75, -2.30, 0.0),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+    ))
+    runtime.on_result(1, GoalStatus.STATUS_ABORTED, 104, '')
+
+    _select(runtime, revision=2, mission_id='m2')
+    commands = runtime.dispatch(now=3.0)
+
+    assert any(isinstance(command, SendGoal) for command in commands)
+    assert runtime.action_generation == 2
+    assert runtime.state == MissionState.DISPATCHING
+
+
+def test_failure_without_current_pose_does_not_guess_redispatch_identity():
+    runtime = _autonomy_runtime()
+    _select(runtime)
+    runtime.dispatch(now=0.0)
+    runtime.on_goal_response(1, accepted=True, goal_uuid='g1')
+    runtime.on_result(1, GoalStatus.STATUS_ABORTED, 104, '')
+
+    commands = runtime.dispatch(now=3.0)
+
+    assert any(isinstance(command, SendGoal) for command in commands)
+    assert runtime.action_generation == 2
+
+
+def test_material_robot_motion_allows_same_mission_redispatch():
+    runtime = _autonomy_runtime()
+    _select(runtime)
+    runtime.observe_robot_pose(MissionPose(
+        frame_id='odom',
+        position=(2.75, -2.30, 0.0),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+    ))
+    runtime.dispatch(now=0.0)
+    runtime.on_goal_response(1, accepted=True, goal_uuid='g1')
+    runtime.on_result(1, GoalStatus.STATUS_ABORTED, 104, '')
+
+    runtime.observe_robot_pose(MissionPose(
+        frame_id='odom',
+        position=(2.90, -2.30, 0.0),
+        orientation=(0.0, 0.0, 0.0, 1.0),
+    ))
+    commands = runtime.dispatch(now=3.0)
+
+    assert any(isinstance(command, SendGoal) for command in commands)
+    assert runtime.action_generation == 2
 
 
 def test_stale_result_from_older_generation_cannot_overwrite_current_state():

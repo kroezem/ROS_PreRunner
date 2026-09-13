@@ -41,7 +41,9 @@ controller_server:
     costmap_update_timeout: 1.0
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.0
+    # D-90 interim local-control recovery: publish zero velocity and keep
+    # retrying the retained path before the BT forces one bounded replan.
+    failure_tolerance: 2.0
     odom_topic: /odometry/filtered
     enable_stamped_cmd_vel: false
     progress_checker_plugins:

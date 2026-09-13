@@ -36,6 +36,7 @@ from nav2_msgs.action import (
     NavigateThroughPoses,
     NavigateToPose,
 )
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -50,6 +51,7 @@ STATE_HEARTBEAT_PERIOD_SEC = 0.5
 MODE_STATE_TOPIC = '/paddock/mode_state'
 NAVIGATE_TO_POSE_ACTION = '/navigate_to_pose'
 NAVIGATE_THROUGH_POSES_ACTION = '/navigate_through_poses'
+ODOMETRY_TOPIC = '/odometry/filtered'
 
 MISSION_SINGLE_GOAL = 0
 MISSION_ORDERED_POSES = 1
@@ -58,6 +60,11 @@ MAP_FRAME = 'map'
 CANCEL_RETRY_INTERVAL_SEC = 0.5
 MAX_CANCEL_ATTEMPTS = 5
 RESULT_RETRY_INTERVAL_SEC = 0.5
+
+# D-90 anti-storm identity thresholds. These distinguish a materially changed
+# robot posture from localization noise; they do not alter navigation control.
+REDISPATCH_POSITION_TOLERANCE_M = 0.10
+REDISPATCH_YAW_TOLERANCE_RAD = math.radians(10.0)
 
 
 def _nav2_error_names() -> dict[int, str]:
@@ -150,6 +157,16 @@ class Mission:
 
 
 @dataclass(frozen=True)
+class FailedDispatch:
+    """Terminal failure signature used to reject an identical redispatch."""
+
+    mission_id: str
+    robot_pose: MissionPose
+    error_code: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class SendGoal:
     """Command: send ``mission`` to Nav2 under ``generation``."""
 
@@ -191,6 +208,9 @@ class MissionRuntime:
     _autonomy_key: tuple | None = None
     _max_revision: int = 0
     _residual_cleared: bool = False
+    _robot_pose: MissionPose | None = None
+    _failed_dispatch: FailedDispatch | None = None
+    _inflight_mission_id: str = ''
 
     # -- observation ----------------------------------------------------------
 
@@ -268,6 +288,7 @@ class MissionRuntime:
             poses=tuple(poses),
         )
         self.mission_valid = True
+        self._failed_dispatch = None
         if not self._inflight:
             self.state = MissionState.IDLE
         self.detail = 'mission selected and validated'
@@ -285,9 +306,19 @@ class MissionRuntime:
             self.mission = None
             self.mission_valid = False
             return self._reject('dispatch rejected: mission epoch superseded')
+        blocked = self._identical_redispatch_failure()
+        if blocked is not None:
+            reason = (
+                'ANTI_REDISPATCH_STORM: identical mission and robot pose '
+                f'after {blocked.reason}; select a new goal before retrying'
+            )
+            self.error_code = blocked.error_code
+            self.error_meaning = reason
+            return self._reject(f'dispatch rejected: {reason}')
 
         self.action_generation += 1
         self._inflight = True
+        self._inflight_mission_id = self.mission.mission_id
         self._cancel_requested = False
         self.goal_uuid = ''
         self.nav2_status = -1
@@ -325,6 +356,7 @@ class MissionRuntime:
             return ()
         if not accepted:
             self._inflight = False
+            self._inflight_mission_id = ''
             self.state = MissionState.FAILED
             self.nav2_status = GoalStatus.STATUS_ABORTED
             self.error_meaning = 'Nav2 rejected the goal'
@@ -348,6 +380,11 @@ class MissionRuntime:
         if self.state == MissionState.ACTIVE:
             self.nav2_status = GoalStatus.STATUS_EXECUTING
 
+    def observe_robot_pose(self, robot_pose: MissionPose) -> None:
+        """Track the current odom-frame posture for D-90 dispatch identity."""
+        if robot_pose.is_valid(expected_frame='odom'):
+            self._robot_pose = robot_pose
+
     def on_result(
         self,
         generation: int,
@@ -358,18 +395,31 @@ class MissionRuntime:
         """Apply a terminal action result, dropping stale generations."""
         if generation != self.action_generation or not self._inflight:
             return
+        mission_id = self._inflight_mission_id
         self._inflight = False
+        self._inflight_mission_id = ''
         self._cancel_requested = False
         self.goal_uuid = ''
         self.nav2_status = int(status)
         self.error_code = int(error_code)
-        self.error_meaning = nav2_error_detail(error_code, error_meaning)
+        reason = nav2_error_detail(error_code, error_meaning)
+        self.error_meaning = reason
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.state = MissionState.SUCCEEDED
+            self._failed_dispatch = None
         elif status == GoalStatus.STATUS_CANCELED:
             self.state = MissionState.CANCELED
+            self._failed_dispatch = None
         else:
             self.state = MissionState.FAILED
+            self.error_meaning = f'RECOVERY_EXHAUSTED: {reason}'
+            if mission_id and self._robot_pose is not None:
+                self._failed_dispatch = FailedDispatch(
+                    mission_id=mission_id,
+                    robot_pose=self._robot_pose,
+                    error_code=int(error_code),
+                    reason=self.error_meaning,
+                )
         self.detail = (
             f'action terminal: {self.state.name} '
             f'({STATUS_NAMES.get(int(status), status)})'
@@ -415,6 +465,7 @@ class MissionRuntime:
         commands: list = []
         self.mission_valid = False
         self.mission = None
+        self._failed_dispatch = None
         if self._inflight:
             commands += self._begin_cancel(reason, now)
         elif self.state in (
@@ -430,6 +481,22 @@ class MissionRuntime:
         self.detail = reason
         return ()
 
+    def _identical_redispatch_failure(self) -> FailedDispatch | None:
+        """Return the prior failure if mission and observed posture match."""
+        failed = self._failed_dispatch
+        if (
+            failed is None
+            or self.mission is None
+            or failed.mission_id != self.mission.mission_id
+            or self._robot_pose is None
+        ):
+            return None
+        if _poses_materially_same(
+            failed.robot_pose, self._robot_pose
+        ):
+            return failed
+        return None
+
 
 def _pose_from_message(pose: PoseStamped) -> MissionPose:
     position = pose.pose.position
@@ -443,6 +510,47 @@ def _pose_from_message(pose: PoseStamped) -> MissionPose:
             orientation.z,
             orientation.w,
         ),
+    )
+
+
+def _pose_from_odometry(message: Odometry) -> MissionPose:
+    pose = message.pose.pose
+    return MissionPose(
+        frame_id=message.header.frame_id,
+        position=(pose.position.x, pose.position.y, pose.position.z),
+        orientation=(
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ),
+    )
+
+
+def _poses_materially_same(first: MissionPose, second: MissionPose) -> bool:
+    if first.frame_id != second.frame_id:
+        return False
+    distance = math.hypot(
+        first.position[0] - second.position[0],
+        first.position[1] - second.position[1],
+    )
+    first_yaw = _yaw(first.orientation)
+    second_yaw = _yaw(second.orientation)
+    yaw_delta = math.atan2(
+        math.sin(first_yaw - second_yaw),
+        math.cos(first_yaw - second_yaw),
+    )
+    return (
+        distance <= REDISPATCH_POSITION_TOLERANCE_M
+        and abs(yaw_delta) <= REDISPATCH_YAW_TOLERANCE_RAD
+    )
+
+
+def _yaw(orientation: tuple) -> float:
+    x, y, z, w = orientation
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
     )
 
 
@@ -506,6 +614,7 @@ class NavigationRuntimeNode(Node):
         self.create_subscription(
             ModeState, MODE_STATE_TOPIC, self._on_mode_state, state_qos
         )
+        self.create_subscription(Odometry, ODOMETRY_TOPIC, self._on_odometry, 10)
         self.create_timer(0.2, self._tick)
         self.create_timer(
             STATE_HEARTBEAT_PERIOD_SEC, self._publish_heartbeat
@@ -558,6 +667,9 @@ class NavigationRuntimeNode(Node):
             self.get_logger().warning(self._runtime.detail)
         self._run_commands(commands)
         self._publish_state()
+
+    def _on_odometry(self, message: Odometry) -> None:
+        self._runtime.observe_robot_pose(_pose_from_odometry(message))
 
     # -- command execution --------------------------------------------------
 
