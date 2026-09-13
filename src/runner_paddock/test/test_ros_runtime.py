@@ -31,6 +31,7 @@ from runner_paddock.autonomy_tuning import (
     ADAPTER_OWNER,
     CONFIDENT,
     CONTROLLER_OWNER,
+    INSANE,
     PARAMETERS as TUNING_PARAMETERS,
     TIMID,
 )
@@ -669,7 +670,7 @@ def test_incorrect_tf_pose_does_not_confirm_and_uses_existing_timeout():
     assert node._local_clear_client.calls == 0
 
 
-def test_timid_confident_and_custom_are_classified_from_live_readback():
+def test_timid_confident_insane_and_custom_are_classified_from_live_readback():
     node = _tuning_node(TIMID)
     RosStateNode._start_tuning_read(node)
     timid = node._cache.state_snapshot()['autonomy_tuning']
@@ -686,6 +687,26 @@ def test_timid_confident_and_custom_are_classified_from_live_readback():
     assert confident['preset'] == 'confident'
     assert confident['values'] == CONFIDENT
 
+    result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='insane'), 'controller'
+    )
+    insane = node._cache.state_snapshot()['autonomy_tuning']
+    assert result.accepted
+    assert insane['status'] == 'applied'
+    assert insane['preset'] == 'insane'
+    assert insane['values'] == INSANE
+    assert insane['values']['desired_linear_vel'] == 1.50
+    assert insane['values']['maximum_commanded_speed'] == 1.50
+    assert insane['values']['output_max'] == 0.22
+
+    result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='confident'), 'controller'
+    )
+    restored = node._cache.state_snapshot()['autonomy_tuning']
+    assert result.accepted
+    assert restored['preset'] == 'confident'
+    assert restored['values'] == CONFIDENT
+
     custom_values = {**CONFIDENT, 'lookahead_time': 1.01}
     result = RosStateNode._request_autonomy_tuning(
         node, AutonomyTuningIntent(values=custom_values), 'controller'
@@ -696,11 +717,12 @@ def test_timid_confident_and_custom_are_classified_from_live_readback():
     assert custom['values']['lookahead_time'] == 1.01
 
 
-def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write():
+@pytest.mark.parametrize('preset', ['confident', 'insane'])
+def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
     node = _tuning_node(TIMID)
 
     RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='confident'), 'controller'
+        node, AutonomyTuningIntent(preset=preset), 'controller'
     )
 
     for client in node._tuning_set_clients.values():

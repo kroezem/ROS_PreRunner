@@ -250,6 +250,10 @@ def test_autonomy_tuning_is_lease_scoped_and_structured():
     })
 
     assert preset.intents == (AutonomyTuningIntent(preset='confident'),)
+    insane = gw.handle('c1', {
+        'action': 'set_autonomy_tuning', 'preset': 'insane',
+    })
+    assert insane.intents == (AutonomyTuningIntent(preset='insane'),)
     assert custom.intents == (AutonomyTuningIntent(
         values={'lookahead_time': 1.1}
     ),)

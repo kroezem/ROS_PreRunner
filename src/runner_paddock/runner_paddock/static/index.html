@@ -164,10 +164,11 @@
           <div class="preset-actions" aria-label="Adaptive speed preset">
             <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
             <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
+            <button type="button" class="speed-preset" data-speed-preset="insane">INSANE</button>
           </div>
           <div class="tuning-grid">
             <label>Nominal speed <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Absolute ceiling <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Absolute ceiling <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" max="2.0" step="0.01"> m/s</label>
             <label>Regulated minimum <input data-tuning-field="regulated_linear_scaling_min_speed" type="number" min="0.25" step="0.01"> m/s</label>
             <label>Cost slowdown distance <input data-tuning-field="cost_scaling_dist" type="number" min="0.01" step="0.01"> m</label>
             <label>Cost slowdown gain <input data-tuning-field="cost_scaling_gain" type="number" min="0.01" max="1" step="0.01"></label>
@@ -187,7 +188,7 @@
             <label>Ki <input data-tuning-field="integral_gain" type="number" min="0" step="0.001"></label>
             <label>Feedforward slope <input data-tuning-field="feedforward_effort_per_speed" type="number" min="0.001" step="0.0001"></label>
             <label>Feedforward intercept <input data-tuning-field="feedforward_effort_intercept" type="number" step="0.0001"></label>
-            <label>Output limit <input data-tuning-field="output_max" type="number" min="0.001" max="0.14" step="0.001"></label>
+            <label>Output limit <input data-tuning-field="output_max" type="number" min="0.001" max="0.30" step="0.001"></label>
           </div>
           <button id="btn-apply-engineering" type="button">APPLY ENGINEERING</button>
         </details>

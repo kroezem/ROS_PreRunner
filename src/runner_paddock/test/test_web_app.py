@@ -142,6 +142,7 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="btn-confirm-initial-pose"' in response.text
         assert 'data-speed-preset="timid"' in response.text
         assert 'data-speed-preset="confident"' in response.text
+        assert 'data-speed-preset="insane"' in response.text
         control_html = response.text.split('id="view-control"', 1)[1].split(
             'id="view-configure"', 1)[0]
         assert 'data-speed-preset=' not in control_html

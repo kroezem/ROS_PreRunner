@@ -1,6 +1,6 @@
 # Runner — Architecture & Current-State Specification v1.5
 
-**Current-state specification · 12 September 2026**
+**Current-state specification · updated 13 September 2026**
 
 Baseline: `/home/matti/runner_ws`, clean HEAD
 `4366b5252058da8d665c1c5b0b15e22e7ed8760a` ("Preserve Paddock runtime
@@ -28,9 +28,9 @@ implemented in source and covered by tests as **current**, distinguishes
 what is deployed but not yet hardware-validated or time-bounded as
 **provisional/open**, and reserves **future** for capability that does not
 exist yet. Historical D-numbers are always qualified by source version and
-subject; **no new D-number is allocated by this document** — the six
-commits reconciled here are implementation/optimization/bugfix work, not new
-architectural decisions. Where current code or a decision Matti has ratified
+subject. The original v1.5 reconciliation allocated no new D-number; the
+13 September experimental speed policy is recorded as D-88. Where current
+code or a decision Matti has ratified
 supersedes an older numeric limit or claim, this document states the current
 value and does not carry the old one forward as if still binding.
 **Deploy coherence is not assumed**: this document describes the repository
@@ -69,7 +69,7 @@ selected zero is a real braking command; STOP is a latched, durably
 persisted global inhibit with explicit clear semantics.
 
 Reverse autonomy, obstacle-aware costmaps, a 7-state mission lifecycle, live
-speed-policy tuning (Timid/Confident/Custom), complete map bundle lifecycle
+speed-policy tuning (Timid/Confident/Insane/Custom), complete map bundle lifecycle
 (new/save/select/delete), MCAP recording, and a field Wi-Fi AP remain real,
 tested, current behavior — not proposals. None of this changed in this
 round. What did change since v1.4 is operational headroom and one lifecycle
@@ -711,7 +711,7 @@ about this machinery's behavior under compute load (repeated
 not reflect any code change to `navigation_runtime.py`, the mission
 lifecycle, or reverse-autonomy configuration in this round.
 
-## 12. Longitudinal control and Timid/Confident/Custom speed policy
+## 12. Longitudinal control and Timid/Confident/Insane/Custom speed policy
 
 `drive_adapter` (`runner_drive_adapter`) remains the one shared,
 persistent, closed-loop conversion for both Nav2's SI `/cmd_vel_nav` and
@@ -733,27 +733,28 @@ rejected by the parameter callback as not live-tunable and requires a
 process restart — these remain engineering-only, launch-time
 configuration.
 
-**Timid / Confident are the two normal operator presets**
-(`autonomy_tuning.py:91-116`), applied atomically across both owners
+**Timid / Confident are the two normal operator presets; Insane is a third,
+explicitly experimental preset.** They are applied atomically across both owners
 (`controller_server` and `drive_adapter`) via `SetParametersAtomically`,
 then confirmed by an independent `GetParameters` read-back before being
-reported `applied` (`ros_state_node.py:1240-1341`). Reverified against
-current source at this baseline — values are unchanged from v1.4:
+reported `applied`. Timid and Confident remain unchanged from v1.4; Insane
+copies every Confident value except the three explicitly shown experimental
+overrides:
 
-| Field | Timid | Confident |
-|---|---:|---:|
-| `desired_linear_vel` (m/s) | 0.45 | **1.00** |
-| `maximum_commanded_speed` (m/s) | 0.60 | **1.00** |
-| `regulated_linear_scaling_min_speed` (m/s) | 0.30 | 0.40 |
-| `cost_scaling_dist` (m) | 0.45 | 0.60 |
-| `cost_scaling_gain` | 1.0 | 1.0 |
-| `regulated_linear_scaling_min_radius` (m) | 0.75 | 0.75 |
-| `min_lookahead_dist` / `max_lookahead_dist` (m) | 0.30 / 0.80 | 0.30 / 0.80 |
-| `lookahead_time` (s) | 1.0 | 1.0 |
-| `max_allowed_time_to_collision_up_to_carrot` (s) | 0.15 | 0.60 |
-| `proportional_gain` / `integral_gain` | 0.05 / 0.01 | 0.05 / 0.01 |
-| `feedforward_effort_per_speed` / `_intercept` | 0.1188 / 0.0174 | 0.1188 / 0.0174 |
-| `output_max` | 0.14 | 0.14 |
+| Field | Timid | Confident | Insane (experimental) |
+|---|---:|---:|---:|
+| `desired_linear_vel` (m/s) | 0.45 | **1.00** | **1.50** |
+| `maximum_commanded_speed` (m/s) | 0.60 | **1.00** | **1.50** |
+| `regulated_linear_scaling_min_speed` (m/s) | 0.30 | 0.40 | 0.40 |
+| `cost_scaling_dist` (m) | 0.45 | 0.60 | 0.60 |
+| `cost_scaling_gain` | 1.0 | 1.0 | 1.0 |
+| `regulated_linear_scaling_min_radius` (m) | 0.75 | 0.75 | 0.75 |
+| `min_lookahead_dist` / `max_lookahead_dist` (m) | 0.30 / 0.80 | 0.30 / 0.80 | 0.30 / 0.80 |
+| `lookahead_time` (s) | 1.0 | 1.0 | 1.0 |
+| `max_allowed_time_to_collision_up_to_carrot` (s) | 0.15 | 0.60 | 0.60 |
+| `proportional_gain` / `integral_gain` | 0.05 / 0.01 | 0.05 / 0.01 | 0.05 / 0.01 |
+| `feedforward_effort_per_speed` / `_intercept` | 0.1188 / 0.0174 | 0.1188 / 0.0174 | 0.1188 / 0.0174 |
+| `output_max` | 0.14 | 0.14 | **0.22** |
 
 **Confident's 1.00 m/s intentionally supersedes v1.3's 0.60 m/s autonomy
 ceiling** by explicit operator decision — it is not a bug or an
@@ -761,6 +762,18 @@ unintended regression of the frozen-controller policy. The characterized
 feedforward at 1.00 m/s (0.1188×1.00+0.0174 ≈ 0.136) stays under the
 unchanged `output_max` actuator-effort ceiling of 0.14; Confident does not
 raise the normalized-effort safety ceiling itself.
+
+**D-88 — experimental speed/effort ceilings.** Insane deliberately
+supersedes D-84's and the earlier v1.5 policy's universal `output_max ≤ 0.14`
+rule for this experimental profile only. Timid and Confident retain their
+established target speeds and `output_max = 0.14`; they are not retuned.
+Paddock permits an absolute `maximum_commanded_speed` of 2.0 m/s and an
+absolute `output_max` of 0.30 for experimental tuning. These are validation
+ceilings, not defaults, commanded targets, or evidence that 2.0 m/s has been
+physically validated. The existing invariant that `output_max` must reach
+the feedforward effort implied by `maximum_commanded_speed` remains binding.
+At Insane's 1.50 m/s target the unchanged feedforward requires 0.1956, which
+is covered by its explicit 0.22 output limit.
 
 Confident's larger `cost_scaling_dist` (0.60 m vs Timid's 0.45 m) and larger
 `max_allowed_time_to_collision_up_to_carrot` (0.60 s vs 0.15 s) are **more
@@ -781,23 +794,21 @@ earlier rather than later. Confident is faster **and** more cautious about
 when it starts slowing for an obstacle — it does not trade away obstacle
 margin for speed.
 
-**Custom** is not a third preset a user selects — it is `matching_preset()`
-(`autonomy_tuning.py:182-189`)'s truthful classification of the live
-read-back whenever the ten controller fields plus five adapter fields do
-not exactly match either named preset. The operator reaches a genuinely
+**Custom** is not a preset a user selects — it is `matching_preset()`'s
+truthful classification of the live read-back whenever the ten controller
+fields plus five adapter fields do not exactly match a named preset. The operator reaches a genuinely
 custom state only through direct field editing, which the UI places under
 collapsed **"Advanced speed policy"** and **"Engineering / controller"**
 disclosures in `CONFIGURE → AUTONOMY` (`static/index.html:158-186`) — direct
 RPP and longitudinal-controller field tuning is Advanced/Engineering
 functionality, not the primary operator surface (§16). `validate_values`
-(`autonomy_tuning.py:130-179`) enforces cross-field bounds on any custom
+enforces cross-field bounds on any custom
 write regardless of entry point: positivity, `cost_scaling_gain ≤ 1.0`,
 `regulated_linear_scaling_min_speed ≤ desired_linear_vel ≤
 maximum_commanded_speed`, `min_lookahead_dist ≤ max_lookahead_dist`,
-non-negative feedforward across the command range, and **`output_max` may
-never exceed 0.14 and must reach the maximum feedforward implied by the
-requested `maximum_commanded_speed`** — the actuator-effort ceiling cannot
-be raised through this surface at all.
+non-negative feedforward across the command range, **`maximum_commanded_speed
+≤ 2.0`, `output_max ≤ 0.30`, and `output_max` must reach the maximum
+feedforward implied by the requested `maximum_commanded_speed`**.
 
 Manual browser-speed bounds are unchanged: ceiling 0 (disabled) or
 `[0.25, 0.40]` m/s, default 0.40, moving floor 0.25 m/s
@@ -1357,9 +1368,10 @@ guidance, not new implementation.
 | §17 "CPU headroom is a measured, open engineering concern... optimization conclusion explicitly left open" | Investigated (§17.1–§17.3). One concrete, isolated win identified and delivered: removal of an independently measured ~17%-of-one-core idle workload (`keyboard_bridge`). Two further hypotheses (Paddock full-state JSON serialization; mode_supervisor cgroup/PID enumeration) were tested and **ruled out** as dominant CPU causes. A dominant *readiness-callback wall-time* cost was identified (mode_supervisor's synchronous systemd/D-Bus inspection, §17.3) — this is a wall-time finding, not a demonstrated explanation for mode_supervisor's separately measured ~30%-of-one-core CPU cost, whose actual mechanism remains unresolved and open. Aggregate stationary-AUTONOMY host workload also looked better across two non-identical point-in-time samples (mid-50s% vs. 68–70%) — **not established as a controlled measurement of `keyboard_bridge`'s aggregate headroom contribution** (§17.1); the original `confident_0` saturation/starvation scenario has not yet been re-measured end-to-end (§18) |
 | §7 command/data-flow table and diagram | Unchanged; still accurate |
 | §12 Confident 1.00 m/s / Timid 0.60 m/s policy | Unchanged and reverified against current source (§12); the CPU findings in §17.1 are not evidence against this policy — they are a compute-headroom finding, not a controller-tuning finding |
+| §12 universal `output_max ≤ 0.14` policy | **Superseded by D-88.** Timid and Confident remain unchanged; the explicitly experimental Insane preset uses 1.50 m/s and `output_max = 0.22`. Paddock's absolute experimental validation ceilings are 2.0 m/s and 0.30, neither of which is a default or a claim of physical validation (§12). |
 | §15 deploy-coherence caution | Reinforced: `4366b52`'s unit-file change is itself a concrete instance requiring `--check`/`--restart` or reboot to take effect on any given Pi (§15, §18) |
 | §9 Initial Pose workflow | Source-level sequence unchanged from v1.4. Two operator-observed discrepancies (apparent costmap survival past clear; spurious "no fresh slam_toolbox pose" report) surfaced during this round and were deliberately deferred — **new open items** (§9, §18), not v1.4 carryovers and not yet root-caused |
-| §19 historical D-number table (v1.0–v1.3 subjects, reconciled again in v1.4 §19) | All dispositions remain in force; nothing in this round reopens or renumbers them. **No new D-number is allocated by this document** — all six commits reconciled here are optimization/bugfix/investigation work, not new architectural decisions |
+| §19 historical D-number table (v1.0–v1.3 subjects, reconciled again in v1.4 §19) | All earlier dispositions remain in force except D-84's universal 0.14 effort ceiling, which D-88 narrowly supersedes for explicitly experimental tuning. The original six v1.5 commits remain optimization/bugfix/investigation work; D-88 records the later operator-ratified experimental policy. |
 
 ## 21. Historical appendix: completed v1.3 migration stages and post-v1.4 cleanup
 

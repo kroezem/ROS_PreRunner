@@ -422,7 +422,7 @@ class OperatorGateway:
         preset = str(action.get('preset', '')).strip().lower()
         values = action.get('values', {})
         if preset:
-            if preset not in ('timid', 'confident') or values:
+            if preset not in ('timid', 'confident', 'insane') or values:
                 return self._reject(conn_id, 'invalid autonomy preset request')
         elif not isinstance(values, dict):
             return self._reject(conn_id, 'autonomy tuning values must be an object')

@@ -20,6 +20,7 @@ from runner_paddock.autonomy_tuning import (
     ADAPTER_OWNER,
     CONFIDENT,
     CONTROLLER_OWNER,
+    INSANE,
     matching_preset,
     PARAMETERS,
     TIMID,
@@ -73,6 +74,23 @@ def test_confident_v1_exact_values_and_owner_partition():
     assert '/speed_limit' not in str(PARAMETERS)
 
 
+def test_insane_exactly_copies_confident_except_experimental_limits():
+    assert INSANE == {
+        **CONFIDENT,
+        'desired_linear_vel': 1.50,
+        'maximum_commanded_speed': 1.50,
+        'output_max': 0.22,
+    }
+    values = validate_values(dict(INSANE))
+    assert matching_preset(values) == 'insane'
+    assert values_for_owner(values, CONTROLLER_OWNER)[
+        'FollowPath.desired_linear_vel'
+    ] == 1.50
+    adapter = values_for_owner(values, ADAPTER_OWNER)
+    assert adapter['maximum_commanded_speed'] == 1.50
+    assert adapter['output_max'] == 0.22
+
+
 def test_manual_edit_classifies_live_values_as_custom():
     values = dict(CONFIDENT)
     values['lookahead_time'] = 1.01
@@ -102,3 +120,21 @@ def test_incomplete_or_nonfinite_edits_are_rejected():
         validate_values(incomplete)
     with pytest.raises(ValueError, match='finite'):
         validate_values({**TIMID, 'lookahead_time': float('nan')})
+
+
+@pytest.mark.parametrize(
+    ('changes', 'message'),
+    [
+        ({'desired_linear_vel': 2.01, 'maximum_commanded_speed': 2.01},
+         'maximum_commanded_speed must not exceed 2.0'),
+        ({'output_max': 0.301}, 'output_max must not exceed 0.3'),
+    ],
+)
+def test_experimental_absolute_ceilings_are_enforced(changes, message):
+    with pytest.raises(ValueError, match=message):
+        validate_values({**INSANE, **changes})
+
+
+def test_output_limit_must_still_reach_feedforward_requirement():
+    with pytest.raises(ValueError, match='must reach maximum feedforward'):
+        validate_values({**INSANE, 'output_max': 0.19})
