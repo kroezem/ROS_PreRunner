@@ -404,6 +404,11 @@ class RecordingExecutor:
     def _catalog_fingerprint(self) -> tuple:
         """Cheaply detect changes without reparsing every rosbag metadata file."""
         rows = []
+        active_output = (
+            self.output_path
+            if self.state in (self.STARTING, self.RECORDING, self.STOPPING)
+            else None
+        )
         try:
             paths = tuple(self.root.iterdir())
         except OSError:
@@ -419,7 +424,10 @@ class RecordingExecutor:
             metadata = path / 'metadata.yaml'
             manifest = path / '.paddock-recording.json'
             metadata_rows = []
-            for child in (metadata, manifest):
+            catalog_files = (metadata,)
+            if path != active_output:
+                catalog_files += (manifest,)
+            for child in catalog_files:
                 try:
                     child_stat = child.stat()
                 except OSError:

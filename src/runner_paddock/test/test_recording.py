@@ -16,6 +16,7 @@
 
 from datetime import datetime, timezone
 import json
+import os
 
 import pytest
 
@@ -217,3 +218,72 @@ def test_catalog_reuses_metadata_until_directory_changes(tmp_path, monkeypatch):
     metadata.write_text(metadata.read_text() + '# finalized update\n')
     executor.catalog()
     assert calls == 2
+
+
+def test_active_manifest_updates_reuse_finalized_catalog(tmp_path, monkeypatch):
+    root = tmp_path / 'bags'
+    finished = root / 'finished'
+    finished.mkdir(parents=True)
+    (finished / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 2\n',
+        encoding='utf-8',
+    )
+
+    now = [10.0]
+    return_code = [None]
+    process = FakeProcess()
+    process.poll = lambda: return_code[0]
+    executor = RecordingExecutor(
+        root,
+        runtime_path=tmp_path / 'runtime.json',
+        popen=lambda *args, **kwargs: process,
+        monotonic=lambda: now[0],
+    )
+    executor.start(7, 'active', 'runner_debug')
+    active = root / 'active'
+    active.mkdir()
+    executor.poll()
+
+    scans = 0
+    original = recording.read_recording_info
+
+    def counted(path):
+        nonlocal scans
+        if path == finished:
+            scans += 1
+        return original(path)
+
+    monkeypatch.setattr(recording, 'read_recording_info', counted)
+    assert [entry.name for entry in executor.catalog()] == ['finished']
+    assert scans == 1
+
+    manifest = active / '.paddock-recording.json'
+    for modified_ns in (20_000_000_000, 21_000_000_000, 22_000_000_000):
+        now[0] += 0.5
+        executor.poll()
+        # Force distinct timestamps so the test fails on a fingerprint that
+        # includes the manifest, independent of filesystem timestamp granularity.
+        os.utime(manifest, ns=(modified_ns, modified_ns))
+        assert [entry.name for entry in executor.catalog()] == ['finished']
+        assert executor.elapsed_sec() == pytest.approx(now[0] - 10.0)
+
+    assert executor.state == executor.RECORDING
+    assert scans == 1
+
+    monkeypatch.setattr(executor, '_signal', lambda signal: None)
+    executor.stop(8)
+    (active / 'metadata.yaml').write_text(
+        'rosbag2_bagfile_information:\n'
+        '  duration:\n    nanoseconds: 1500000000\n'
+        '  starting_time:\n    nanoseconds_since_epoch: 3\n',
+        encoding='utf-8',
+    )
+    return_code[0] = 0
+    executor.poll()
+
+    entries = {entry.name: entry for entry in executor.catalog()}
+    assert executor.state == executor.IDLE
+    assert entries['active'].profile == 'runner_debug'
+    assert scans == 2
