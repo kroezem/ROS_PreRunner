@@ -26,6 +26,7 @@
 #include "nav2_regulated_pure_pursuit_controller/regulated_pure_pursuit_controller.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 #include "nav2_core/controller_exceptions.hpp"
+#include "runner_path_speed_profile/path_speed_profile.hpp"
 
 class RclCppFixture
 {
@@ -76,14 +77,19 @@ public:
 
   void setLatestProfile(const runner_interfaces::msg::PathSpeedProfile & profile)
   {
-    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
-    latest_path_speed_profile_ = profile;
+    receivePathSpeedProfile(profile);
   }
 
   bool profileMatched()
   {
     std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
     return path_speed_profile_matched_;
+  }
+
+  uint64_t activeProfileHash()
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    return active_path_speed_profile_.path_hash;
   }
 
   void setRegulationFloor(double floor) {params_->regulated_linear_scaling_min_speed = floor;}
@@ -228,6 +234,97 @@ TEST(RegulatedPurePursuitTest, ProfileOverridesNormalFloorAndMismatchFallsBack)
   EXPECT_FALSE(ctrl->profileMatched());
   ctrl->applyConstraintsWrapper(0.0, speed, 0.0, path, linear_velocity, sign);
   EXPECT_DOUBLE_EQ(linear_velocity, 0.17);
+}
+
+TEST(RegulatedPurePursuitTest, ProfileAndPathAssociateInEitherArrivalOrder)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testRPPProfileOrdering");
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("profile_order_costmap");
+  costmap->on_configure(rclcpp_lifecycle::State());
+
+  nav_msgs::msg::Path first_path;
+  first_path.header.frame_id = "map";
+  first_path.header.stamp.sec = 1;
+  first_path.poses.resize(3);
+  first_path.poses[1].pose.position.x = 1.0;
+  first_path.poses[2].pose.position.x = 2.0;
+  const auto first_profile = runner_path_speed_profile::makeProfile(
+    first_path, std::vector<double>(3, 1.0), 0.45,
+    runner_path_speed_profile::ProfileConfig{});
+
+  auto profile_first = std::make_shared<BasicAPIRPP>();
+  profile_first->configure(node, "ProfileFirst", tf, costmap);
+  profile_first->setLatestProfile(first_profile);
+  EXPECT_FALSE(profile_first->profileMatched());
+  profile_first->setPlan(first_path);
+  EXPECT_TRUE(profile_first->profileMatched());
+  EXPECT_EQ(profile_first->activeProfileHash(), first_profile.path_hash);
+
+  nav_msgs::msg::Path second_path = first_path;
+  second_path.header.stamp.sec = 2;
+  second_path.poses[1].pose.position.y = 0.1;
+  const auto second_profile = runner_path_speed_profile::makeProfile(
+    second_path, std::vector<double>(3, 1.0), 0.45,
+    runner_path_speed_profile::ProfileConfig{});
+
+  auto path_first = std::make_shared<BasicAPIRPP>();
+  path_first->configure(node, "PathFirst", tf, costmap);
+  path_first->setPlan(second_path);
+  EXPECT_FALSE(path_first->profileMatched());
+  path_first->setLatestProfile(second_profile);
+  EXPECT_TRUE(path_first->profileMatched());
+  EXPECT_EQ(path_first->activeProfileHash(), second_profile.path_hash);
+}
+
+TEST(RegulatedPurePursuitTest, DifferentPathProfileNeverReplacesMatchedAssociation)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testRPPProfileIdentity");
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("profile_identity_costmap");
+  costmap->on_configure(rclcpp_lifecycle::State());
+  auto ctrl = std::make_shared<BasicAPIRPP>();
+  ctrl->configure(node, "PathIdentity", tf, costmap);
+
+  nav_msgs::msg::Path active_path;
+  active_path.header.frame_id = "map";
+  active_path.header.stamp.sec = 10;
+  active_path.poses.resize(2);
+  active_path.poses[1].pose.position.x = 1.0;
+  const auto active_profile = runner_path_speed_profile::makeProfile(
+    active_path, std::vector<double>(2, 1.0), 0.45,
+    runner_path_speed_profile::ProfileConfig{});
+
+  nav_msgs::msg::Path other_path = active_path;
+  other_path.header.stamp.sec = 11;
+  other_path.poses[1].pose.position.y = 1.0;
+  const auto other_profile = runner_path_speed_profile::makeProfile(
+    other_path, std::vector<double>(2, 1.0), 0.45,
+    runner_path_speed_profile::ProfileConfig{});
+
+  ctrl->setPlan(active_path);
+  ctrl->setLatestProfile(other_profile);
+  EXPECT_FALSE(ctrl->profileMatched());
+
+  ctrl->setLatestProfile(active_profile);
+  ASSERT_TRUE(ctrl->profileMatched());
+  const auto matched_hash = ctrl->activeProfileHash();
+  ctrl->setLatestProfile(other_profile);
+  EXPECT_TRUE(ctrl->profileMatched());
+  EXPECT_EQ(ctrl->activeProfileHash(), matched_hash);
+
+  auto changed_active_profile = active_profile;
+  changed_active_profile.points.front().speed_ceiling_mps =
+    changed_active_profile.creep_speed_mps;
+  ctrl->setLatestProfile(changed_active_profile);
+  EXPECT_FALSE(ctrl->profileMatched());
+  ctrl->setLatestProfile(active_profile);
+  ASSERT_TRUE(ctrl->profileMatched());
+
+  auto malformed_active_profile = active_profile;
+  malformed_active_profile.points.pop_back();
+  ctrl->setLatestProfile(malformed_active_profile);
+  EXPECT_FALSE(ctrl->profileMatched());
 }
 
 TEST(RegulatedPurePursuitTest, createCarrotMsg)

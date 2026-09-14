@@ -16,6 +16,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rcl_interfaces/srv/get_parameters.hpp"
 #include "runner_interfaces/msg/path_speed_profile.hpp"
+#include "runner_interfaces/srv/set_path_speed_profile.hpp"
 #include "runner_path_speed_profile/path_speed_profile.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2_ros/buffer.h"
@@ -104,6 +105,7 @@ private:
   rclcpp::Node::SharedPtr node_;
   std::unique_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_subscriber_;
   rclcpp::Client<rcl_interfaces::srv::GetParameters>::SharedPtr parameter_client_;
+  rclcpp::Client<runner_interfaces::srv::SetPathSpeedProfile>::SharedPtr profile_client_;
   rclcpp::Publisher<runner_interfaces::msg::PathSpeedProfile>::SharedPtr publisher_;
   std::chrono::milliseconds server_timeout_;
 };

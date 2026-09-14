@@ -18,6 +18,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <memory>
 #include <algorithm>
 #include <mutex>
@@ -29,6 +30,7 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "runner_interfaces/msg/path_speed_profile.hpp"
+#include "runner_interfaces/srv/set_path_speed_profile.hpp"
 #include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_regulated_pure_pursuit_controller/collision_checker.hpp"
 #include "nav2_regulated_pure_pursuit_controller/parameter_handler.hpp"
@@ -208,6 +210,10 @@ protected:
    */
   double findVelocitySignChange(const nav_msgs::msg::Path & transformed_plan);
 
+  void receivePathSpeedProfile(
+    const runner_interfaces::msg::PathSpeedProfile & profile);
+  bool matchCachedPathSpeedProfileLocked(std::string & reason);
+
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::string plugin_name_;
@@ -236,7 +242,9 @@ protected:
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::CollisionChecker> collision_checker_;
   rclcpp::Subscription<runner_interfaces::msg::PathSpeedProfile>::SharedPtr
     path_speed_profile_sub_;
-  runner_interfaces::msg::PathSpeedProfile latest_path_speed_profile_;
+  rclcpp::Service<runner_interfaces::srv::SetPathSpeedProfile>::SharedPtr
+    path_speed_profile_service_;
+  std::deque<runner_interfaces::msg::PathSpeedProfile> path_speed_profile_cache_;
   runner_interfaces::msg::PathSpeedProfile active_path_speed_profile_;
   nav_msgs::msg::Path current_profile_path_;
   std::mutex path_speed_profile_mutex_;

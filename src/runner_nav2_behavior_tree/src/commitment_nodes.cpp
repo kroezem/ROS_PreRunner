@@ -318,6 +318,8 @@ GeneratePathSpeedProfile::GeneratePathSpeedProfile(
     rclcpp::Node::WeakPtr(node_), "/global_costmap/costmap_raw");
   parameter_client_ = node_->create_client<rcl_interfaces::srv::GetParameters>(
     "/controller_server/get_parameters");
+  profile_client_ = node_->create_client<runner_interfaces::srv::SetPathSpeedProfile>(
+    "/controller_server/FollowPath/set_path_speed_profile");
   publisher_ = node_->create_publisher<runner_interfaces::msg::PathSpeedProfile>(
     "/navigation/path_speed_profile", eventQos());
 }
@@ -394,6 +396,38 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
   auto profile = runner_path_speed_profile::makeProfile(
     path, clearance, preset_ceiling, config);
   profile.header.stamp = node_->now();
+
+  if (!profile_client_->wait_for_service(server_timeout_)) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Path speed profile handoff unavailable; refusing to dispatch committed path");
+    return BT::NodeStatus::FAILURE;
+  }
+  auto profile_request =
+    std::make_shared<runner_interfaces::srv::SetPathSpeedProfile::Request>();
+  profile_request->path = path;
+  profile_request->profile = profile;
+  auto profile_future = profile_client_->async_send_request(profile_request);
+  if (rclcpp::spin_until_future_complete(node_, profile_future, server_timeout_) !=
+    rclcpp::FutureReturnCode::SUCCESS)
+  {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Path speed profile handoff timed out; refusing to dispatch committed path");
+    return BT::NodeStatus::FAILURE;
+  }
+  const auto profile_response = profile_future.get();
+  if (!profile_response->accepted) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Path speed profile handoff rejected (%s); refusing to dispatch committed path",
+      profile_response->reason.c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // The service response establishes that the controller cached this exact
+  // path/profile pair before FollowPath can send the path action goal. Keep
+  // the topic as the observable, transient-local record of that handoff.
   publisher_->publish(profile);
   if (!preset_available || !costmap_available) {
     RCLCPP_WARN(

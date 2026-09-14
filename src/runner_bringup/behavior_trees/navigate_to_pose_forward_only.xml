@@ -47,8 +47,8 @@
                         robot_frame="base_link"
                         transform_tolerance="0.3"
                         rejection_reason="{candidate_rejection_reason}"/>
+                      <GeneratePathSpeedProfile path="{candidate_path}"/>
                       <SetBlackboard value="{candidate_path}" output_key="path"/>
-                      <GeneratePathSpeedProfile path="{path}"/>
                       <ReportPathCommitment
                         event="path_committed"
                         reason="{replan_reason}"/>

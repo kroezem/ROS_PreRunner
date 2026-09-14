@@ -16,9 +16,11 @@ bounded Stage-B controller recovery remain independent replan authorities.
 constants. Commitment events are published on
 `/navigation/path_commitment_state` for the `navigation_debug` profile.
 
-After candidate validation and commitment, `GeneratePathSpeedProfile` reads
+After candidate validation and before commitment, `GeneratePathSpeedProfile` reads
 the current controller preset and the already-published full global costmap.
-It publishes one keyed, transient-local `/navigation/path_speed_profile`;
-retained paths do not run the generator again. Profile generation is strictly
-annotative: unavailable inputs select a conservative creep profile and never
-reject or alter the committed route.
+It hands the exact path/profile pair to the controller through an acknowledged
+service before `FollowPath` may dispatch the path, then publishes the keyed,
+transient-local `/navigation/path_speed_profile` for observation. Retained paths
+do not run the generator again. Profile generation is strictly annotative:
+unavailable shaping inputs select a conservative creep profile; an unavailable
+or rejected controller handoff prevents dispatch of an unpaired fresh path.

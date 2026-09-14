@@ -87,24 +87,28 @@ void RegulatedPurePursuitController::configure(
     "/navigation/path_speed_profile",
     rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local(),
     [this](const runner_interfaces::msg::PathSpeedProfile::SharedPtr message) {
-      std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
-      latest_path_speed_profile_ = *message;
-      if (current_profile_path_.poses.empty()) {
+      receivePathSpeedProfile(*message);
+    });
+  path_speed_profile_service_ =
+    node->create_service<runner_interfaces::srv::SetPathSpeedProfile>(
+    plugin_name_ + "/set_path_speed_profile",
+    [this](
+      const runner_interfaces::srv::SetPathSpeedProfile::Request::SharedPtr request,
+      runner_interfaces::srv::SetPathSpeedProfile::Response::SharedPtr response)
+    {
+      if (!runner_path_speed_profile::validateProfile(
+          request->profile, request->path, response->reason))
+      {
+        response->accepted = false;
+        RCLCPP_WARN(
+          logger_, "Rejected committed-path speed profile handoff (%s)",
+          response->reason.c_str());
         return;
       }
-      std::string reason;
-      if (runner_path_speed_profile::validateProfile(
-          latest_path_speed_profile_, current_profile_path_, reason))
-      {
-        active_path_speed_profile_ = latest_path_speed_profile_;
-        path_speed_profile_matched_ = true;
-        RCLCPP_INFO(logger_, "Matched committed-path speed profile");
-      } else {
-        path_speed_profile_matched_ = false;
-        RCLCPP_WARN(
-          logger_, "Path speed profile mismatch (%s); using %.3f m/s fallback",
-          reason.c_str(), path_speed_profile_fallback_);
-      }
+
+      receivePathSpeedProfile(request->profile);
+      response->accepted = true;
+      response->reason = "accepted";
     });
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
@@ -127,6 +131,7 @@ void RegulatedPurePursuitController::cleanup()
   curvature_carrot_pub_.reset();
   is_rotating_to_heading_pub_.reset();
   path_speed_profile_sub_.reset();
+  path_speed_profile_service_.reset();
 }
 
 void RegulatedPurePursuitController::activate()
@@ -541,17 +546,92 @@ void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
   std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
   current_profile_path_ = path;
   std::string reason;
-  if (runner_path_speed_profile::validateProfile(
-      latest_path_speed_profile_, current_profile_path_, reason))
-  {
-    active_path_speed_profile_ = latest_path_speed_profile_;
-    path_speed_profile_matched_ = true;
-  } else {
-    path_speed_profile_matched_ = false;
+  if (!matchCachedPathSpeedProfileLocked(reason)) {
     RCLCPP_WARN(
       logger_, "No matching committed-path speed profile (%s); using %.3f m/s fallback",
       reason.c_str(), path_speed_profile_fallback_);
   }
+}
+
+void RegulatedPurePursuitController::receivePathSpeedProfile(
+  const runner_interfaces::msg::PathSpeedProfile & profile)
+{
+  std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+  path_speed_profile_cache_.push_back(profile);
+  constexpr std::size_t max_cached_profiles = 10u;
+  if (path_speed_profile_cache_.size() > max_cached_profiles) {
+    path_speed_profile_cache_.pop_front();
+  }
+
+  if (current_profile_path_.poses.empty()) {
+    return;
+  }
+
+  std::string reason;
+  if (path_speed_profile_matched_) {
+    const bool valid_for_current = runner_path_speed_profile::validateProfile(
+      profile, current_profile_path_, reason);
+    if (valid_for_current && profile == active_path_speed_profile_) {
+      return;
+    }
+    const bool targets_current_path =
+      profile.pose_count == current_profile_path_.poses.size() &&
+      profile.path_hash == runner_path_speed_profile::pathIdentity(current_profile_path_) &&
+      profile.committed_path_stamp.sec == current_profile_path_.header.stamp.sec &&
+      profile.committed_path_stamp.nanosec == current_profile_path_.header.stamp.nanosec;
+    if (!targets_current_path) {
+      return;
+    }
+    path_speed_profile_matched_ = false;
+    if (valid_for_current) {
+      reason = "profile_changed_for_active_path";
+    }
+    RCLCPP_WARN(
+      logger_, "Path speed profile mismatch (%s); using %.3f m/s fallback",
+      reason.c_str(), path_speed_profile_fallback_);
+    return;
+  }
+
+  if (matchCachedPathSpeedProfileLocked(reason)) {
+    RCLCPP_INFO(logger_, "Matched committed-path speed profile");
+  } else {
+    RCLCPP_WARN(
+      logger_, "Path speed profile mismatch (%s); using %.3f m/s fallback",
+      reason.c_str(), path_speed_profile_fallback_);
+  }
+}
+
+bool RegulatedPurePursuitController::matchCachedPathSpeedProfileLocked(std::string & reason)
+{
+  path_speed_profile_matched_ = false;
+  reason = "profile_unavailable";
+  const auto path_hash = runner_path_speed_profile::pathIdentity(current_profile_path_);
+  for (auto profile = path_speed_profile_cache_.rbegin();
+    profile != path_speed_profile_cache_.rend(); ++profile)
+  {
+    std::string candidate_reason;
+    const bool valid = runner_path_speed_profile::validateProfile(
+      *profile, current_profile_path_, candidate_reason);
+    if (reason == "profile_unavailable") {
+      reason = candidate_reason;
+    }
+    const bool targets_current_path =
+      profile->pose_count == current_profile_path_.poses.size() &&
+      profile->path_hash == path_hash &&
+      profile->committed_path_stamp.sec == current_profile_path_.header.stamp.sec &&
+      profile->committed_path_stamp.nanosec == current_profile_path_.header.stamp.nanosec;
+    if (!targets_current_path) {
+      continue;
+    }
+    if (!valid) {
+      reason = candidate_reason;
+      return false;
+    }
+    active_path_speed_profile_ = *profile;
+    path_speed_profile_matched_ = true;
+    return true;
+  }
+  return false;
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(

@@ -573,7 +573,7 @@ def test_candidate_is_validated_before_it_can_replace_committed_path(
     assert tags.count('GeneratePathSpeedProfile') == 1
     assert 'CertifyCandidatePath' not in tags
     assert [child.tag for child in accept] == [
-        'CandidatePathValid', 'SetBlackboard', 'GeneratePathSpeedProfile',
+        'CandidatePathValid', 'GeneratePathSpeedProfile', 'SetBlackboard',
         'ReportPathCommitment',
     ]
     assert accept.find('./CandidatePathValid').attrib == {
@@ -587,7 +587,7 @@ def test_candidate_is_validated_before_it_can_replace_committed_path(
         'value': '{candidate_path}', 'output_key': 'path',
     }
     assert accept.find('./GeneratePathSpeedProfile').attrib == {
-        'path': '{path}',
+        'path': '{candidate_path}',
     }
     assert [child.tag for child in reject] == [
         'ReportPathCommitment', 'AlwaysFailure',
