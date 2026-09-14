@@ -92,6 +92,11 @@ public:
     return active_path_speed_profile_.path_hash;
   }
 
+  std::string profileServiceName() const
+  {
+    return path_speed_profile_service_->get_service_name();
+  }
+
   void setRegulationFloor(double floor) {params_->regulated_linear_scaling_min_speed = floor;}
 
   double getLookAheadDistanceWrapper(const geometry_msgs::msg::Twist & twist)
@@ -255,6 +260,9 @@ TEST(RegulatedPurePursuitTest, ProfileAndPathAssociateInEitherArrivalOrder)
 
   auto profile_first = std::make_shared<BasicAPIRPP>();
   profile_first->configure(node, "ProfileFirst", tf, costmap);
+  EXPECT_EQ(
+    profile_first->profileServiceName(),
+    "/testRPPProfileOrdering/ProfileFirst/set_path_speed_profile");
   profile_first->setLatestProfile(first_profile);
   EXPECT_FALSE(profile_first->profileMatched());
   profile_first->setPlan(first_path);

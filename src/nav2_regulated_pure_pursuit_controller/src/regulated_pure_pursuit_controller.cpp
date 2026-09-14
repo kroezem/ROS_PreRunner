@@ -91,7 +91,7 @@ void RegulatedPurePursuitController::configure(
     });
   path_speed_profile_service_ =
     node->create_service<runner_interfaces::srv::SetPathSpeedProfile>(
-    plugin_name_ + "/set_path_speed_profile",
+    "~/" + plugin_name_ + "/set_path_speed_profile",
     [this](
       const runner_interfaces::srv::SetPathSpeedProfile::Request::SharedPtr request,
       runner_interfaces::srv::SetPathSpeedProfile::Response::SharedPtr response)
