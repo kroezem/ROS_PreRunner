@@ -95,12 +95,29 @@ CandidatePathCertificationResult certifyCandidateGeometry(
       arc_length += poseDistance(path.poses[end], path.poses[end + 1]);
       ++end;
     }
+
+    // Near the goal there may not be enough remaining poses to reach a full
+    // curvature_window looking forward only. Extending forward is impossible
+    // there, so extend the window backward from `start` instead: without
+    // this, the last one or two discretized edges are measured over an
+    // artificially short arc, and an ordinary quantized terminal heading
+    // correction (e.g. Smac snapping to the goal's heading bin) reads as an
+    // instantaneous curvature spike instead of the gentle turn it actually
+    // is. This only changes windows that would otherwise be truncated;
+    // interior windows that already reach curvature_window going forward
+    // are untouched.
+    std::size_t begin = start;
+    while (begin > 0 && arc_length < config.curvature_window) {
+      arc_length += poseDistance(path.poses[begin - 1], path.poses[begin]);
+      --begin;
+    }
+
     if (arc_length < config.minimum_pose_step) {
       continue;
     }
     const double heading_change = std::abs(normalizeAngle(
       yaw(path.poses[end].pose.orientation) -
-      yaw(path.poses[start].pose.orientation)));
+      yaw(path.poses[begin].pose.orientation)));
     if (heading_change / arc_length > maximum_curvature + 1e-6) {
       result.reason = "curvature_exceeds_runner_limit";
       return result;
