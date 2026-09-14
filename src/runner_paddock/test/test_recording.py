@@ -68,6 +68,7 @@ def test_navigation_debug_profile_is_exact_routine_evidence_set():
     assert NAVIGATION_DEBUG_TOPICS == (
         '/scan', '/local_costmap/costmap', '/global_costmap/costmap',
         '/plan', '/navigation/path_commitment_state',
+        '/behavior_tree_log',
         '/lookahead_collision_arc', '/odometry/filtered',
         '/imu/data', '/imu/read_errors', '/tf', '/tf_static', '/map',
         '/cmd_vel_nav', '/cmd_vel_auto_raw', '/cmd_vel_auto', '/cmd_vel',

@@ -82,6 +82,11 @@ NAVIGATION_DEBUG_TOPICS = (
     '/global_costmap/costmap',
     '/plan',
     '/navigation/path_commitment_state',
+    # Nav2's built-in per-node status-change log (nav2_behavior_tree::
+    # RosTopicLogger), always published by bt_navigator regardless of
+    # enable_groot_monitoring. Diagnostic only: shows the first BT node
+    # to transition to FAILURE ahead of a root/PipelineSequence failure.
+    '/behavior_tree_log',
     '/lookahead_collision_arc',
     '/odometry/filtered',
     '/imu/data',
