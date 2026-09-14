@@ -17,6 +17,7 @@
 #include "tf2_ros/buffer.h"
 
 #include "runner_nav2_behavior_tree/blockage_persistence.hpp"
+#include "runner_nav2_behavior_tree/candidate_path_certification.hpp"
 
 namespace runner_nav2_behavior_tree
 {
@@ -43,6 +44,21 @@ public:
 private:
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  rclcpp::Client<nav2_msgs::srv::IsPathValid>::SharedPtr client_;
+  std::chrono::milliseconds server_timeout_;
+};
+
+class CertifyCandidatePathCondition : public BT::ConditionNode
+{
+public:
+  CertifyCandidatePathCondition(
+    const std::string & name, const BT::NodeConfiguration & config);
+
+  static BT::PortsList providedPorts();
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
   rclcpp::Client<nav2_msgs::srv::IsPathValid>::SharedPtr client_;
   std::chrono::milliseconds server_timeout_;
 };

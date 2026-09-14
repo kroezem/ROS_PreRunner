@@ -38,11 +38,75 @@
                     input_goals="{goals}"
                     output_goals="{goals}"
                     radius="0.20"/>
-                  <ComputePathThroughPoses
-                    goals="{goals}"
-                    path="{candidate_path}"
-                    planner_id="GridBased"
-                    error_code_id="{compute_path_error_code}"/>
+                  <Fallback name="SelectCertifiedCandidateForwardFirst">
+                    <Sequence name="TryForwardCandidate">
+                      <Fallback name="GenerateForwardCandidate">
+                        <ComputePathThroughPoses
+                          goals="{goals}"
+                          path="{candidate_path}"
+                          planner_id="ForwardGridBased"
+                          error_code_id="{compute_path_error_code}"/>
+                        <Sequence>
+                          <ReportPathCommitment event="forward_planning_failed" reason="no_forward_candidate"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                      <Fallback name="CertifyForwardCandidate">
+                        <Sequence>
+                          <CertifyCandidatePath
+                            path="{candidate_path}"
+                            physical_curvature_limit="2.1236"
+                            curvature_margin="0.95"
+                            curvature_window="0.15"
+                            minimum_reversal_segment="0.10"
+                            minimum_pose_step="0.01"
+                            direction_projection_threshold="0.5"
+                            certification_reason="{candidate_certification_reason}"/>
+                          <ReportPathCommitment event="forward_candidate_accepted" reason="{candidate_certification_reason}"/>
+                        </Sequence>
+                        <Sequence>
+                          <ReportPathCommitment event="candidate_certification_rejected" reason="{candidate_certification_reason}"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                    </Sequence>
+                    <Sequence name="TryReverseFallbackCandidate">
+                      <ReportPathCommitment event="reverse_fallback_attempted" reason="forward_no_certified_candidate"/>
+                      <Fallback name="GenerateReverseCandidate">
+                        <ComputePathThroughPoses
+                          goals="{goals}"
+                          path="{candidate_path}"
+                          planner_id="ReverseGridBased"
+                          error_code_id="{compute_path_error_code}"/>
+                        <Sequence>
+                          <ReportPathCommitment event="reverse_planning_failed" reason="no_reverse_candidate"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                      <Fallback name="CertifyReverseCandidate">
+                        <Sequence>
+                          <CertifyCandidatePath
+                            path="{candidate_path}"
+                            physical_curvature_limit="2.1236"
+                            curvature_margin="0.95"
+                            curvature_window="0.15"
+                            minimum_reversal_segment="0.10"
+                            minimum_pose_step="0.01"
+                            direction_projection_threshold="0.5"
+                            certification_reason="{candidate_certification_reason}"/>
+                          <ReportPathCommitment event="reverse_candidate_accepted" reason="{candidate_certification_reason}"/>
+                        </Sequence>
+                        <Sequence>
+                          <ReportPathCommitment event="candidate_certification_rejected" reason="{candidate_certification_reason}"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                    </Sequence>
+                    <Sequence>
+                      <ReportPathCommitment event="planning_exhausted" reason="no_certified_candidate"/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
                   <Fallback name="ValidateCandidateAgainstCurrentGlobalCostmap">
                     <Sequence>
                       <CandidatePathValid

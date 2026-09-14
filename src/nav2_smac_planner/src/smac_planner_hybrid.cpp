@@ -30,6 +30,12 @@ namespace nav2_smac_planner
 namespace
 {
 
+// NodeHybrid's motion primitives and distance lookup are process-wide static
+// assets. Runner intentionally hosts matched Dubins and Reeds-Shepp plugin
+// instances in one planner server, so searches must not overlap while either
+// instance has selected its model.
+std::mutex hybrid_motion_model_mutex;
+
 class PlanningCostmapRestoreGuard
 {
 public:
@@ -379,6 +385,7 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   std::function<bool()> cancel_checker)
 {
   std::lock_guard<std::mutex> lock_reinit(_mutex);
+  std::lock_guard<std::mutex> lock_motion_model(hybrid_motion_model_mutex);
   steady_clock::time_point a = steady_clock::now();
 
   // The live layered costmap must remain free to update during Hybrid-A*.
@@ -401,6 +408,26 @@ nav_msgs::msg::Path SmacPlannerHybrid::createPlan(
   nav2_costmap_2d::Costmap2D * costmap = costmap_snapshot.get();
   if (_costmap_downsampler) {
     costmap = _costmap_downsampler->downsample(*costmap_snapshot, _downsampling_factor);
+  }
+
+  // AStarAlgorithm only initializes NodeHybrid's static motion model when a
+  // plugin's observed costmap dimensions change. With two same-sized plugin
+  // instances that is insufficient: the fallback plugin may have selected a
+  // different model since this instance last ran. Restore this request's
+  // primitives every time, and rebuild the distance heuristic only when its
+  // geometry/model changed.
+  unsigned int size_x = costmap->getSizeInCellsX();
+  unsigned int size_y = costmap->getSizeInCellsY();
+  unsigned int angle_quantizations = _angle_quantizations;
+  const bool distance_model_changed =
+    NodeHybrid::motion_table.motion_model != _motion_model ||
+    NodeHybrid::motion_table.min_turning_radius != _search_info.minimum_turning_radius ||
+    NodeHybrid::motion_table.num_angle_quantization != _angle_quantizations;
+  NodeHybrid::initMotionModel(
+    _motion_model, size_x, size_y, angle_quantizations, _search_info);
+  if (distance_model_changed) {
+    NodeHybrid::precomputeDistanceHeuristic(
+      _lookup_table_dim, _motion_model, _angle_quantizations, _search_info);
   }
 
   // All search and smoothing reads below use the snapshot (or its private
@@ -621,6 +648,7 @@ SmacPlannerHybrid::dynamicParametersCallback(std::vector<rclcpp::Parameter> para
 {
   rcl_interfaces::msg::SetParametersResult result;
   std::lock_guard<std::mutex> lock_reinit(_mutex);
+  std::lock_guard<std::mutex> lock_motion_model(hybrid_motion_model_mutex);
 
   bool reinit_collision_checker = false;
   bool reinit_a_star = false;

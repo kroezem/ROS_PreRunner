@@ -92,6 +92,48 @@ TEST(SmacTest, test_smac_se2)
   nodeSE2.reset();
 }
 
+TEST(SmacTest, alternating_hybrid_plugins_restore_their_motion_model)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("SmacAlternatingModelsTest");
+  node->declare_parameter("forward.motion_model_for_search", std::string("DUBIN"));
+  node->declare_parameter("reverse.motion_model_for_search", std::string("REEDS_SHEPP"));
+
+  auto costmap_ros = std::make_shared<nav2_costmap_2d::Costmap2DROS>("global_costmap_models");
+  costmap_ros->on_configure(rclcpp_lifecycle::State());
+  auto forward = std::make_unique<nav2_smac_planner::SmacPlannerHybrid>();
+  auto reverse = std::make_unique<nav2_smac_planner::SmacPlannerHybrid>();
+  forward->configure(node, "forward", nullptr, costmap_ros);
+  reverse->configure(node, "reverse", nullptr, costmap_ros);
+  forward->activate();
+  reverse->activate();
+
+  geometry_msgs::msg::PoseStamped start, goal;
+  start.pose.orientation.w = 1.0;
+  goal.pose.position.x = 0.01;
+  goal.pose.position.y = 0.01;
+  goal.pose.orientation.w = 1.0;
+  auto never_cancel = []() {return false;};
+
+  forward->createPlan(start, goal, never_cancel);
+  EXPECT_EQ(
+    nav2_smac_planner::NodeHybrid::motion_table.motion_model,
+    nav2_smac_planner::MotionModel::DUBIN);
+  reverse->createPlan(start, goal, never_cancel);
+  EXPECT_EQ(
+    nav2_smac_planner::NodeHybrid::motion_table.motion_model,
+    nav2_smac_planner::MotionModel::REEDS_SHEPP);
+  forward->createPlan(start, goal, never_cancel);
+  EXPECT_EQ(
+    nav2_smac_planner::NodeHybrid::motion_table.motion_model,
+    nav2_smac_planner::MotionModel::DUBIN);
+
+  reverse->deactivate();
+  forward->deactivate();
+  reverse->cleanup();
+  forward->cleanup();
+  costmap_ros->on_cleanup(rclcpp_lifecycle::State());
+}
+
 TEST(SmacTest, test_smac_se2_reconfigure)
 {
   rclcpp_lifecycle::LifecycleNode::SharedPtr nodeSE2 =
