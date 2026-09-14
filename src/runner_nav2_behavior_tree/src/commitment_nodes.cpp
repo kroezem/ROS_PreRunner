@@ -211,14 +211,42 @@ BT::PortsList PersistentPathValidCondition::providedPorts()
   };
 }
 
+namespace
+{
+
+// TEMPORARY DIAGNOSTIC (see investigation into the ~350 ms FollowPath
+// teardown): traces PersistentPathValidCondition::tick() around its
+// synchronous is_path_valid call to establish whether it enters
+// spin_until_future_complete() and fails to return before bt_navigator
+// externally halts the tree. Remove once the mechanism is confirmed.
+const char * futureReturnCodeName(rclcpp::FutureReturnCode code)
+{
+  switch (code) {
+    case rclcpp::FutureReturnCode::SUCCESS:
+      return "SUCCESS";
+    case rclcpp::FutureReturnCode::INTERRUPTED:
+      return "INTERRUPTED";
+    case rclcpp::FutureReturnCode::TIMEOUT:
+      return "TIMEOUT";
+  }
+  return "UNKNOWN";
+}
+
+}  // namespace
+
 BT::NodeStatus PersistentPathValidCondition::tick()
 {
+  RCLCPP_INFO(node_->get_logger(), "[PPV_DIAG] tick: entry");
+
   nav_msgs::msg::Path path;
   getInput("path", path);
   if (path.poses.empty()) {
     committed_path_ = path;
     closest_index_ = 0;
     persistence_.reset();
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[PPV_DIAG] tick: return FAILURE reason=empty_path");
     return BT::NodeStatus::FAILURE;
   }
 
@@ -250,19 +278,33 @@ BT::NodeStatus PersistentPathValidCondition::tick()
       publish("committed_path_retained", "progress_pose_unavailable");
       validation_unavailable_reported_ = true;
     }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[PPV_DIAG] tick: return SUCCESS reason=progress_pose_unavailable");
     return BT::NodeStatus::SUCCESS;
   }
 
   auto request = std::make_shared<nav2_msgs::srv::IsPathValid::Request>();
   request->path = std::move(corridor);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[PPV_DIAG] tick: before async_send_request server_timeout_ms=%ld",
+    static_cast<long>(server_timeout_.count()));
   auto future = client_->async_send_request(request);
-  if (rclcpp::spin_until_future_complete(node_, future, server_timeout_) !=
-    rclcpp::FutureReturnCode::SUCCESS)
-  {
+  RCLCPP_INFO(node_->get_logger(), "[PPV_DIAG] tick: before spin_until_future_complete");
+  const auto spin_result = rclcpp::spin_until_future_complete(node_, future, server_timeout_);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[PPV_DIAG] tick: spin_until_future_complete returned %s",
+    futureReturnCodeName(spin_result));
+  if (spin_result != rclcpp::FutureReturnCode::SUCCESS) {
     if (!validation_unavailable_reported_) {
       publish("committed_path_retained", "global_validation_unavailable");
       validation_unavailable_reported_ = true;
     }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[PPV_DIAG] tick: return SUCCESS reason=global_validation_unavailable");
     return BT::NodeStatus::SUCCESS;
   }
   validation_unavailable_reported_ = false;
@@ -274,6 +316,9 @@ BT::NodeStatus PersistentPathValidCondition::tick()
     if (before > 0) {
       publish("committed_path_retained", "transient_blockage_cleared");
     }
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[PPV_DIAG] tick: return SUCCESS reason=path_valid");
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -282,6 +327,9 @@ BT::NodeStatus PersistentPathValidCondition::tick()
     reason << "transient_blockage_" << persistence_.blockedObservations() << "_of_" <<
       std::max(1u, required_observations);
     publish("committed_path_retained", reason.str());
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[PPV_DIAG] tick: return SUCCESS reason=%s", reason.str().c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -289,6 +337,9 @@ BT::NodeStatus PersistentPathValidCondition::tick()
   if (before < std::max(1u, required_observations)) {
     publish("replan_requested", "persistent_blockage");
   }
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "[PPV_DIAG] tick: return FAILURE reason=persistent_blockage");
   return BT::NodeStatus::FAILURE;
 }
 
