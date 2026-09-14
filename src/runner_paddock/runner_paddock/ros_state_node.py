@@ -58,6 +58,7 @@ from runner_paddock.autonomy_tuning import (
     ADAPTER_OWNER,
     CONTROLLER_OWNER,
     matching_preset,
+    NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
     PRESETS as TUNING_PRESETS,
     validate_values as validate_tuning_values,
@@ -428,7 +429,7 @@ class RosStateNode(ExplicitQoSEventNode):
                 spec.node_name for spec in TUNING_PARAMETERS.values()
                 if spec.owner == owner
             )
-            for owner in (CONTROLLER_OWNER, ADAPTER_OWNER)
+            for owner in (CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER)
         }
         self._tuning_get_clients = {
             owner: self.create_client(

@@ -24,6 +24,7 @@ from runner_paddock.autonomy_tuning import (
     CONTROLLER_OWNER,
     INSANE,
     matching_preset,
+    NAVIGATOR_OWNER,
     PARAMETERS,
     TIMID,
     validate_values,
@@ -45,8 +46,6 @@ def test_timid_exactly_reproduces_committed_conservative_policy():
         'desired_linear_vel': 0.45,
         'maximum_commanded_speed': 0.60,
         'regulated_linear_scaling_min_speed': 0.30,
-        'cost_scaling_dist': 0.45,
-        'cost_scaling_gain': 1.0,
         'regulated_linear_scaling_min_radius': 0.75,
         'min_lookahead_dist': 0.30,
         'max_lookahead_dist': 0.80,
@@ -57,6 +56,11 @@ def test_timid_exactly_reproduces_committed_conservative_policy():
         'feedforward_effort_per_speed': 0.1188,
         'feedforward_effort_intercept': 0.0174,
         'output_max': 0.14,
+        'creep_speed': 0.25,
+        'caution_speed': 0.5,
+        'passable_clearance': 0.15,
+        'open_clearance': 0.35,
+        'recovery_acceleration': 1.0,
     }
     assert matching_preset(validate_values(dict(TIMID))) == 'timid'
 
@@ -67,13 +71,13 @@ def test_confident_v1_exact_values_and_owner_partition():
         'desired_linear_vel': 1.00,
         'maximum_commanded_speed': 1.00,
         'regulated_linear_scaling_min_speed': 0.40,
-        'cost_scaling_dist': 0.60,
         'max_allowed_time_to_collision_up_to_carrot': 0.60,
     }
     values = validate_values(dict(CONFIDENT))
     assert matching_preset(values) == 'confident'
     controller = values_for_owner(values, CONTROLLER_OWNER)
     adapter = values_for_owner(values, ADAPTER_OWNER)
+    navigator = values_for_owner(values, NAVIGATOR_OWNER)
     assert set(controller) == {
         spec.parameter_name for spec in PARAMETERS.values()
         if spec.owner == CONTROLLER_OWNER
@@ -82,7 +86,14 @@ def test_confident_v1_exact_values_and_owner_partition():
         spec.parameter_name for spec in PARAMETERS.values()
         if spec.owner == ADAPTER_OWNER
     }
+    assert set(navigator) == {
+        spec.parameter_name for spec in PARAMETERS.values()
+        if spec.owner == NAVIGATOR_OWNER
+    }
+    assert navigator['speed_policy.caution_speed'] == 0.5
     assert '/speed_limit' not in str(PARAMETERS)
+    assert 'cost_scaling_dist' not in PARAMETERS
+    assert 'cost_scaling_gain' not in PARAMETERS
 
 
 def test_insane_exactly_copies_confident_except_experimental_limits():
@@ -114,7 +125,8 @@ def test_manual_edit_classifies_live_values_as_custom():
         {'desired_linear_vel': 1.01},
         {'regulated_linear_scaling_min_speed': 1.01},
         {'min_lookahead_dist': 0.81},
-        {'cost_scaling_gain': 1.01},
+        {'caution_speed': 0.2},
+        {'open_clearance': 0.1},
         {'output_max': 0.13},
     ],
 )

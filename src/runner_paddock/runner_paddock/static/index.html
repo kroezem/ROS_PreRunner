@@ -163,25 +163,35 @@
         </div>
         <details class="setting-group tuning-section" open>
           <summary>Advanced speed policy</summary>
-          <p class="hint">Every displayed value is live ROS read-back. Applying edits writes each parameter's existing owner atomically.</p>
+          <p class="hint">Every displayed value is live ROS read-back. Applying edits writes each parameter's existing owner atomically. The committed-path speed profile (D2) is authoritative for hazard-based slowdown; the controller's own proximity scaling is disabled so it cannot silently reduce speed underneath it.</p>
           <div class="preset-actions" aria-label="Adaptive speed preset">
             <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
             <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
             <button type="button" class="speed-preset" data-speed-preset="insane">INSANE</button>
           </div>
           <div class="tuning-grid">
-            <label>Nominal speed <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Absolute ceiling <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Regulated minimum <input data-tuning-field="regulated_linear_scaling_min_speed" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Cost slowdown distance <input data-tuning-field="cost_scaling_dist" type="number" min="0.01" step="0.01"> m</label>
-            <label>Cost slowdown gain <input data-tuning-field="cost_scaling_gain" type="number" min="0.01" max="1" step="0.01"></label>
+            <label>Nominal speed (preset ceiling) <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Absolute ceiling (adapter) <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
+            <label>Regulated minimum (curvature floor) <input data-tuning-field="regulated_linear_scaling_min_speed" type="number" min="0.25" step="0.01"> m/s</label>
             <label>Curvature radius <input data-tuning-field="regulated_linear_scaling_min_radius" type="number" min="0.01" step="0.01"> m</label>
             <label>Minimum lookahead <input data-tuning-field="min_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
             <label>Maximum lookahead <input data-tuning-field="max_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
             <label>Lookahead time <input data-tuning-field="lookahead_time" type="number" min="0.01" step="0.01"> s</label>
-            <label>Collision horizon <input data-tuning-field="max_allowed_time_to_collision_up_to_carrot" type="number" min="0.01" step="0.01"> s</label>
+            <label>Collision horizon (safety backstop) <input data-tuning-field="max_allowed_time_to_collision_up_to_carrot" type="number" min="0.01" step="0.01"> s</label>
           </div>
           <button id="btn-apply-speed-policy" type="button">APPLY SPEED POLICY</button>
+        </details>
+        <details class="setting-group tuning-section" open>
+          <summary>D2 committed-path speed law</summary>
+          <p class="hint">Clearance tiers applied to the committed path, beyond the vehicle footprint. Below passable clearance the path is creep-only; from passable up to open clearance it holds a fixed caution speed; at/above open clearance, clearance no longer constrains speed. Recovery acceleration bounds how fast speed releases back up after a constraint, independent of braking.</p>
+          <div class="tuning-grid">
+            <label>Creep speed <input data-tuning-field="creep_speed" type="number" min="0.01" step="0.01"> m/s</label>
+            <label>Caution speed <input data-tuning-field="caution_speed" type="number" min="0.01" step="0.01"> m/s</label>
+            <label>Passable clearance <input data-tuning-field="passable_clearance" type="number" min="0" step="0.01"> m</label>
+            <label>Open clearance <input data-tuning-field="open_clearance" type="number" min="0.01" step="0.01"> m</label>
+            <label>Recovery acceleration <input data-tuning-field="recovery_acceleration" type="number" min="0.01" step="0.01"> m/s²</label>
+          </div>
+          <button id="btn-apply-speed-law" type="button">APPLY SPEED POLICY</button>
         </details>
         <details class="setting-group tuning-section">
           <summary>Engineering / controller</summary>

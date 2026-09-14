@@ -33,6 +33,59 @@ rclcpp::QoS eventQos()
   return rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local();
 }
 
+void declareSpeedPolicyParameterIfAbsent(
+  rclcpp::Node & node, const std::string & name, double value)
+{
+  if (!node.has_parameter(name)) {
+    node.declare_parameter(name, value);
+  }
+}
+
+// Declared on the shared bt_navigator node (not as BT ports) so Paddock can
+// change them live via the standard parameter services, with no rebuild and
+// no BT XML edit; a fresh commit picks up whatever is current at tick time.
+void declareSpeedPolicyParameters(rclcpp::Node & node)
+{
+  const runner_path_speed_profile::ProfileConfig defaults;
+  declareSpeedPolicyParameterIfAbsent(node, "speed_policy.creep_speed", defaults.creep_speed);
+  declareSpeedPolicyParameterIfAbsent(node, "speed_policy.caution_speed", defaults.caution_speed);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.curvature_window", defaults.curvature_window);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.max_lateral_acceleration", defaults.max_lateral_acceleration);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.passable_clearance", defaults.passable_clearance);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.open_clearance", defaults.open_clearance);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.min_tier_run_length", defaults.min_tier_run_length);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.footprint_radius", defaults.footprint_radius);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.braking_linear", defaults.braking_linear);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.braking_constant", defaults.braking_constant);
+  declareSpeedPolicyParameterIfAbsent(
+    node, "speed_policy.recovery_acceleration", defaults.recovery_acceleration);
+}
+
+runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(rclcpp::Node & node)
+{
+  runner_path_speed_profile::ProfileConfig config;
+  node.get_parameter("speed_policy.creep_speed", config.creep_speed);
+  node.get_parameter("speed_policy.caution_speed", config.caution_speed);
+  node.get_parameter("speed_policy.curvature_window", config.curvature_window);
+  node.get_parameter("speed_policy.max_lateral_acceleration", config.max_lateral_acceleration);
+  node.get_parameter("speed_policy.passable_clearance", config.passable_clearance);
+  node.get_parameter("speed_policy.open_clearance", config.open_clearance);
+  node.get_parameter("speed_policy.min_tier_run_length", config.min_tier_run_length);
+  node.get_parameter("speed_policy.footprint_radius", config.footprint_radius);
+  node.get_parameter("speed_policy.braking_linear", config.braking_linear);
+  node.get_parameter("speed_policy.braking_constant", config.braking_constant);
+  node.get_parameter("speed_policy.recovery_acceleration", config.recovery_acceleration);
+  return config;
+}
+
 }  // namespace
 
 BT::PortsList PathExistsCondition::providedPorts()
@@ -322,6 +375,7 @@ GeneratePathSpeedProfile::GeneratePathSpeedProfile(
     "/controller_server/FollowPath/set_path_speed_profile");
   publisher_ = node_->create_publisher<runner_interfaces::msg::PathSpeedProfile>(
     "/navigation/path_speed_profile", eventQos());
+  declareSpeedPolicyParameters(*node_);
 }
 
 BT::PortsList GeneratePathSpeedProfile::providedPorts()
@@ -330,15 +384,6 @@ BT::PortsList GeneratePathSpeedProfile::providedPorts()
   BT::RegisterJsonDefinition<std::chrono::milliseconds>();
   return {
     BT::InputPort<nav_msgs::msg::Path>("path", "Newly committed path"),
-    BT::InputPort<double>("creep_speed", 0.25, "Minimum nonzero profile speed"),
-    BT::InputPort<double>("curvature_window", 0.40, "Curvature window in metres"),
-    BT::InputPort<double>(
-      "max_lateral_acceleration", 0.35, "Curvature shaping acceleration"),
-    BT::InputPort<double>("tight_clearance", 0.15, "Clearance capped at creep"),
-    BT::InputPort<double>("free_clearance", 0.35, "Clearance allowing preset ceiling"),
-    BT::InputPort<double>("footprint_radius", 0.2444, "Conservative footprint radius"),
-    BT::InputPort<double>("braking_linear", 1.6, "Linear coefficient in a(v)"),
-    BT::InputPort<double>("braking_constant", 0.27, "Constant coefficient in a(v)"),
     BT::InputPort<std::chrono::milliseconds>("server_timeout")
   };
 }
@@ -351,15 +396,7 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
     return BT::NodeStatus::SUCCESS;
   }
 
-  runner_path_speed_profile::ProfileConfig config;
-  getInput("creep_speed", config.creep_speed);
-  getInput("curvature_window", config.curvature_window);
-  getInput("max_lateral_acceleration", config.max_lateral_acceleration);
-  getInput("tight_clearance", config.tight_clearance);
-  getInput("free_clearance", config.free_clearance);
-  getInput("footprint_radius", config.footprint_radius);
-  getInput("braking_linear", config.braking_linear);
-  getInput("braking_constant", config.braking_constant);
+  runner_path_speed_profile::ProfileConfig config = readSpeedPolicyParameters(*node_);
   getInput("server_timeout", server_timeout_);
 
   double preset_ceiling = config.creep_speed;

@@ -24,3 +24,10 @@ transient-local `/navigation/path_speed_profile` for observation. Retained paths
 do not run the generator again. Profile generation is strictly annotative:
 unavailable shaping inputs select a conservative creep profile; an unavailable
 or rejected controller handoff prevents dispatch of an unpaired fresh path.
+
+The speed law itself (clearance tiers, hysteresis, braking, and recovery —
+see `runner_path_speed_profile::ProfileConfig`) is declared as
+`speed_policy.*` parameters directly on the shared `bt_navigator` node rather
+than as BT ports, so Paddock (or `ros2 param set`) can change them live; the
+next fresh commit picks up whatever is current at tick time. They are not
+BT-XML-overridable.

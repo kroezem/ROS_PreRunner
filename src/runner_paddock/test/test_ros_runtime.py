@@ -37,6 +37,7 @@ from runner_paddock.autonomy_tuning import (
     CONFIDENT,
     CONTROLLER_OWNER,
     INSANE,
+    NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
     PRESETS as TUNING_PRESETS,
     TIMID,
@@ -211,7 +212,7 @@ def _tuning_node(values):
             for field, spec in TUNING_PARAMETERS.items()
             if spec.owner == owner
         }
-        for owner in (CONTROLLER_OWNER, ADAPTER_OWNER)
+        for owner in (CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER)
     }
     node._tuning_get_clients = {
         owner: _TuningClient(owner, state, 'get')

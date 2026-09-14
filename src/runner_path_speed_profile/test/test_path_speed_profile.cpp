@@ -119,6 +119,94 @@ TEST(PathSpeedProfile, SamplesBelowRppNormalFloorAndAtExactZero)
   EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.4), 0.0);
 }
 
+TEST(PathSpeedProfile, ClearanceStepsBetweenExactTiersWithNoRamp)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  // Spaced far enough apart that braking/recovery kinematics do not bind,
+  // isolating the clearance tiering itself.
+  for (int i = 0; i < 5; ++i) {
+    appendPose(path, 2.0 * i);
+  }
+  runner_path_speed_profile::ProfileConfig config;
+  // clearances: fully tight, just below open, fully open, just above tight
+  const std::vector<double> clearance = {
+    0.0, config.open_clearance - 0.01, 1.0, config.passable_clearance + 0.01, 1.0};
+  const auto profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, config);
+  EXPECT_DOUBLE_EQ(profile.points[0].speed_ceiling_mps, config.creep_speed);
+  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, config.caution_speed);
+  EXPECT_DOUBLE_EQ(profile.points[3].speed_ceiling_mps, config.caution_speed);
+  // No intermediate value between creep and caution, or caution and open,
+  // is ever produced by clearance alone.
+  for (const auto & point : profile.points) {
+    const double v = point.speed_ceiling_mps;
+    EXPECT_TRUE(
+      v == 0.0 || v == config.creep_speed || v == config.caution_speed ||
+      v > config.caution_speed);
+  }
+}
+
+TEST(PathSpeedProfile, HysteresisAbsorbsAShortOpenSpikeInsideACautionCorridor)
+{
+  // Reproduces the bag-observed sawtooth precursor: a single noisy pose
+  // reading "open" surrounded on both (equal) sides by "caution" must not
+  // leak through as a momentary speed-up. Poses are spaced well clear of
+  // the goal so end-of-path braking cannot also explain a lower reading.
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i < 7; ++i) {
+    appendPose(path, 0.2 * i);  // spike span (0.2 m) still < min_tier_run_length
+  }
+  runner_path_speed_profile::ProfileConfig config;
+  const std::vector<double> clearance = {
+    0.20, 0.20, 1.0, 0.20, 0.20, 0.20, 0.20};
+  const auto profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, config);
+  EXPECT_DOUBLE_EQ(profile.points[2].speed_ceiling_mps, config.caution_speed);
+}
+
+TEST(PathSpeedProfile, HysteresisNeverErasesAGenuineIsolatedCreepHazard)
+{
+  // A real single-pose clearance drop inside an otherwise open corridor
+  // must survive hysteresis exactly, even though it is a short run: only
+  // less-restrictive short runs get smoothed away, never the reverse.
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i < 5; ++i) {
+    appendPose(path, 0.5 * i);
+  }
+  runner_path_speed_profile::ProfileConfig config;
+  const std::vector<double> clearance = {1.0, 1.0, 0.0, 1.0, 1.0};
+  const auto profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, config);
+  EXPECT_DOUBLE_EQ(profile.points[2].speed_ceiling_mps, config.creep_speed);
+}
+
+TEST(PathSpeedProfile, ForwardRecoveryIsFasterThanBackwardBraking)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i < 6; ++i) {
+    appendPose(path, 0.3 * i);
+  }
+  runner_path_speed_profile::ProfileConfig config;
+  config.recovery_acceleration = 5.0;  // deliberately much faster than braking
+  // Force a full creep zone at the very start (post-constraint recovery)
+  // and a symmetric approach to a stop at the very end (pre-stop braking)
+  // over an equal number of poses/distance, then compare how far the
+  // ceiling has climbed vs. how far it has fallen.
+  const std::vector<double> clearance = {0.0, 1.0, 1.0, 1.0, 1.0, 0.0};
+  const auto profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, config);
+  const double recovered_by_pose_2 = profile.points[2].speed_ceiling_mps;
+  const double braked_by_pose_3 = profile.points[3].speed_ceiling_mps;
+  // Recovery from creep_speed at pose 1 should climb faster over the same
+  // 0.3 m step than braking descends approaching the symmetric endpoint.
+  EXPECT_GT(recovered_by_pose_2 - config.creep_speed, 0.0);
+  EXPECT_GT(recovered_by_pose_2, braked_by_pose_3);
+}
+
 TEST(PathSpeedProfile, ReadsLiveCostmapClearance)
 {
   nav2_costmap_2d::Costmap2D costmap(20, 20, 0.1, 0.0, 0.0, 0);

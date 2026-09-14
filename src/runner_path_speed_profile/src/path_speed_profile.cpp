@@ -141,16 +141,88 @@ double reachableSpeed(
   return low;
 }
 
+// Forward recovery is deliberately not the inverse of reachableSpeed()
+// above: it uses plain constant-acceleration kinematics so release after a
+// constraint can be tuned (recovery_acceleration) independently of the
+// braking model used to approach one.
+double reachableSpeedByAcceleration(
+  double from_speed, double distance, double ceiling, double acceleration)
+{
+  if (distance <= 0.0) {
+    return std::min(from_speed, ceiling);
+  }
+  const double reachable = std::sqrt(
+    std::max(0.0, from_speed * from_speed + 2.0 * acceleration * distance));
+  return std::min(reachable, ceiling);
+}
+
+// Per-pose clearance tier speed, before curvature and hysteresis. Returns
+// +inf for the open tier so a plain std::min() combines it with anything.
+std::vector<double> clearanceTierSpeeds(
+  const std::vector<double> & clearance, std::size_t pose_count,
+  const ProfileConfig & config)
+{
+  std::vector<double> tier(pose_count);
+  for (std::size_t i = 0; i < pose_count; ++i) {
+    const double clear = clearance.size() == pose_count ? clearance[i] : 0.0;
+    if (!std::isfinite(clear) || clear < config.passable_clearance) {
+      tier[i] = config.creep_speed;
+    } else if (clear < config.open_clearance) {
+      tier[i] = config.caution_speed;
+    } else {
+      tier[i] = std::numeric_limits<double>::infinity();
+    }
+  }
+  return tier;
+}
+
+// Merge interior tier runs shorter than min_tier_run_length into the most
+// restrictive (lowest-speed) of the run and its two neighbouring runs, so a
+// single noisy grid cell cannot flip the tier for one pose, and a brief
+// higher-speed reading sandwiched between two more restrictive runs cannot
+// leak through either. Runs touching either end of the path are untouched.
+void applyTierHysteresis(
+  std::vector<double> & tier, const std::vector<double> & s, double min_run_length)
+{
+  if (tier.size() < 3u) {
+    return;
+  }
+  std::size_t i = 0;
+  while (i < tier.size()) {
+    std::size_t end = i;
+    while (end + 1u < tier.size() && tier[end + 1u] == tier[i]) {
+      ++end;
+    }
+    const bool interior = i > 0u && end + 1u < tier.size();
+    // A run's arclength coverage extends halfway to each neighbouring pose,
+    // not just between its own first and last pose — a single pose run at
+    // wide spacing legitimately covers a wide stretch of path.
+    const double left_half = interior ? 0.5 * (s[i] - s[i - 1u]) : 0.0;
+    const double right_half = interior ? 0.5 * (s[end + 1u] - s[end]) : 0.0;
+    const double span = (s[end] - s[i]) + left_half + right_half;
+    if (interior && span < min_run_length) {
+      const double restrictive = std::min(tier[i], std::min(tier[i - 1u], tier[end + 1u]));
+      for (std::size_t k = i; k <= end; ++k) {
+        tier[k] = restrictive;
+      }
+    }
+    i = end + 1u;
+  }
+}
+
 bool validConfig(const ProfileConfig & c)
 {
   return std::isfinite(c.creep_speed) && c.creep_speed > 0.0 &&
+         std::isfinite(c.caution_speed) && c.caution_speed > c.creep_speed &&
          std::isfinite(c.curvature_window) && c.curvature_window > 0.0 &&
          std::isfinite(c.max_lateral_acceleration) && c.max_lateral_acceleration > 0.0 &&
-         std::isfinite(c.tight_clearance) && c.tight_clearance >= 0.0 &&
-         std::isfinite(c.free_clearance) && c.free_clearance > c.tight_clearance &&
+         std::isfinite(c.passable_clearance) && c.passable_clearance >= 0.0 &&
+         std::isfinite(c.open_clearance) && c.open_clearance > c.passable_clearance &&
+         std::isfinite(c.min_tier_run_length) && c.min_tier_run_length >= 0.0 &&
          std::isfinite(c.footprint_radius) && c.footprint_radius >= 0.0 &&
          std::isfinite(c.braking_linear) && c.braking_linear > 0.0 &&
          std::isfinite(c.braking_constant) && c.braking_constant > 0.0 &&
+         std::isfinite(c.recovery_acceleration) && c.recovery_acceleration > 0.0 &&
          std::isfinite(c.minimum_pose_step) && c.minimum_pose_step > 0.0 &&
          std::isfinite(c.direction_projection_threshold) &&
          c.direction_projection_threshold > 0.0 && c.direction_projection_threshold < 1.0;
@@ -297,15 +369,12 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
           ceiling[i], std::sqrt(config.max_lateral_acceleration / curvature));
       }
     }
-    const double clear = clearance.size() == path.poses.size() ? clearance[i] : 0.0;
-    double clearance_ceiling = config.creep_speed;
-    if (std::isfinite(clear) && clear > config.tight_clearance) {
-      const double ratio = std::clamp(
-        (clear - config.tight_clearance) /
-        (config.free_clearance - config.tight_clearance), 0.0, 1.0);
-      clearance_ceiling = config.creep_speed + ratio * (preset_ceiling - config.creep_speed);
-    }
-    ceiling[i] = std::min(ceiling[i], clearance_ceiling);
+  }
+
+  auto clearance_tier = clearanceTierSpeeds(clearance, path.poses.size(), config);
+  applyTierHysteresis(clearance_tier, s, config.min_tier_run_length);
+  for (std::size_t i = 0; i < path.poses.size(); ++i) {
+    ceiling[i] = std::min(ceiling[i], clearance_tier[i]);
     ceiling[i] = std::clamp(ceiling[i], config.creep_speed, preset_ceiling);
   }
 
@@ -352,13 +421,18 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
   }
   ceiling.back() = 0.0;
 
-  // The adopted a(v)=1.6v+0.27 model is integrated into a stopping-distance
-  // potential. The same bound makes acceleration and braking feasibility O(n).
+  // Forward pass: release back toward the ceiling bounded by plain
+  // constant-acceleration kinematics (recovery_acceleration), independent
+  // of the braking model below, so recovery need not be as conservative
+  // as the stop it follows.
   for (std::size_t i = 1; i < ceiling.size(); ++i) {
     ceiling[i] = std::min(
-      ceiling[i], reachableSpeed(ceiling[i - 1u], s[i] - s[i - 1u],
-      preset_ceiling, config));
+      ceiling[i], reachableSpeedByAcceleration(
+        ceiling[i - 1u], s[i] - s[i - 1u], preset_ceiling, config.recovery_acceleration));
   }
+  // Backward pass: the adopted a(v)=1.6v+0.27 braking model integrated into
+  // a stopping-distance potential, ensuring the vehicle can always brake in
+  // time for a downstream constraint.
   for (std::size_t i = ceiling.size() - 1u; i > 0u; --i) {
     ceiling[i - 1u] = std::min(
       ceiling[i - 1u], reachableSpeed(ceiling[i], s[i] - s[i - 1u],

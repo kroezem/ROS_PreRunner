@@ -504,7 +504,7 @@ function render() {
     "button.mode, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
-    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-engineering, " +
+    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-speed-law, #btn-apply-engineering, " +
     "[data-speed-preset], [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
   ).forEach((button) => {
     button.disabled = !controller;
@@ -529,7 +529,7 @@ function render() {
   $("btn-initial-pose-mode").hidden = !autonomyControl;
   $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
   const tuningReady = controller && tuning.available === true && tuning.status !== "applying";
-  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-engineering").forEach((button) => {
+  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-speed-law, #btn-apply-engineering").forEach((button) => {
     button.disabled = !tuningReady;
   });
   if (!runAvailable) stopRun();
@@ -1424,6 +1424,7 @@ function applyTuningForm() {
   send({ action: "set_autonomy_tuning", values });
 }
 $("btn-apply-speed-policy").addEventListener("click", applyTuningForm);
+$("btn-apply-speed-law").addEventListener("click", applyTuningForm);
 $("btn-apply-engineering").addEventListener("click", applyTuningForm);
 ["global", "local"].forEach((costmap) => {
   [true, false].forEach((enabled) => {

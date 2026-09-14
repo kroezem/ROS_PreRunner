@@ -21,6 +21,7 @@ from runner_interfaces.msg import AutonomyTuningPolicy
 
 CONTROLLER_OWNER = 'controller'
 ADAPTER_OWNER = 'adapter'
+NAVIGATOR_OWNER = 'navigator'
 ABSOLUTE_BOUNDS = {
     'maximum_commanded_speed': (
         AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED
@@ -46,14 +47,6 @@ PARAMETERS = {
     'regulated_linear_scaling_min_speed': TuningParameter(
         CONTROLLER_OWNER, '/controller_server',
         'FollowPath.regulated_linear_scaling_min_speed',
-    ),
-    'cost_scaling_dist': TuningParameter(
-        CONTROLLER_OWNER, '/controller_server',
-        'FollowPath.cost_scaling_dist',
-    ),
-    'cost_scaling_gain': TuningParameter(
-        CONTROLLER_OWNER, '/controller_server',
-        'FollowPath.cost_scaling_gain',
     ),
     'regulated_linear_scaling_min_radius': TuningParameter(
         CONTROLLER_OWNER, '/controller_server',
@@ -93,14 +86,32 @@ PARAMETERS = {
     'output_max': TuningParameter(
         ADAPTER_OWNER, '/drive_adapter', 'output_max',
     ),
+    # D2 committed-path speed law. Declared on the shared bt_navigator node
+    # (see runner_nav2_behavior_tree::GeneratePathSpeedProfile); a fresh
+    # commit picks up whatever value is current at that moment, no rebuild
+    # or BT edit needed. desired_linear_vel (above) remains the authoritative
+    # preset ceiling these tiers are clamped beneath.
+    'creep_speed': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.creep_speed',
+    ),
+    'caution_speed': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.caution_speed',
+    ),
+    'passable_clearance': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.passable_clearance',
+    ),
+    'open_clearance': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.open_clearance',
+    ),
+    'recovery_acceleration': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.recovery_acceleration',
+    ),
 }
 
 TIMID = {
     'desired_linear_vel': 0.45,
     'maximum_commanded_speed': 0.60,
     'regulated_linear_scaling_min_speed': 0.30,
-    'cost_scaling_dist': 0.45,
-    'cost_scaling_gain': 1.0,
     'regulated_linear_scaling_min_radius': 0.75,
     'min_lookahead_dist': 0.30,
     'max_lookahead_dist': 0.80,
@@ -111,6 +122,14 @@ TIMID = {
     'feedforward_effort_per_speed': 0.1188,
     'feedforward_effort_intercept': 0.0174,
     'output_max': 0.14,
+    # D2 speed law: unchanged across driving-aggressiveness presets. The
+    # presets scale the preset ceiling and reaction distances; the
+    # clearance-tier and recovery shape stay put.
+    'creep_speed': 0.25,
+    'caution_speed': 0.5,
+    'passable_clearance': 0.15,
+    'open_clearance': 0.35,
+    'recovery_acceleration': 1.0,
 }
 
 CONFIDENT = {
@@ -118,7 +137,6 @@ CONFIDENT = {
     'desired_linear_vel': 1.00,
     'maximum_commanded_speed': 1.00,
     'regulated_linear_scaling_min_speed': 0.40,
-    'cost_scaling_dist': 0.60,
     'max_allowed_time_to_collision_up_to_carrot': 0.60,
 }
 
@@ -156,15 +174,19 @@ def validate_values(values: dict) -> dict[str, float]:
             raise ValueError(f'{name} must be a finite number')
 
     positive = set(PARAMETERS) - {
-        'integral_gain', 'feedforward_effort_intercept',
+        'integral_gain', 'feedforward_effort_intercept', 'passable_clearance',
     }
     for name in positive:
         if normalized[name] <= 0.0:
             raise ValueError(f'{name} must be greater than zero')
     if normalized['integral_gain'] < 0.0:
         raise ValueError('integral_gain must be nonnegative')
-    if normalized['cost_scaling_gain'] > 1.0:
-        raise ValueError('cost_scaling_gain must not exceed 1.0')
+    if normalized['passable_clearance'] < 0.0:
+        raise ValueError('passable_clearance must be nonnegative')
+    if normalized['open_clearance'] <= normalized['passable_clearance']:
+        raise ValueError('open_clearance must exceed passable_clearance')
+    if normalized['caution_speed'] <= normalized['creep_speed']:
+        raise ValueError('caution_speed must exceed creep_speed')
     if normalized['regulated_linear_scaling_min_speed'] > normalized[
         'desired_linear_vel'
     ]:
