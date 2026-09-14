@@ -19,12 +19,17 @@ import threading
 from types import SimpleNamespace
 
 from builtin_interfaces.msg import Time
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Path
 import pytest
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.msg import ParameterValue
 from runner_interfaces.msg import ConfigState
 from runner_interfaces.msg import ModeState
+from runner_interfaces.msg import NavigationState
+from runner_interfaces.msg import PathSpeedProfile
+from runner_interfaces.msg import PathSpeedProfilePoint
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.autonomy_tuning import (
@@ -42,7 +47,7 @@ from runner_paddock.gateway import InitialPoseIntent
 from runner_paddock.gateway import ObstacleProcessingIntent
 from runner_paddock.ros_runtime import RosRuntime
 import runner_paddock.ros_state_node as ros_state_node
-from runner_paddock.ros_state_node import _grid, RosStateNode
+from runner_paddock.ros_state_node import _grid, _path_identity, RosStateNode
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
 
@@ -251,6 +256,47 @@ def _obstacle_node(*, current, set_success=True):
     return node
 
 
+def _route_node():
+    node = RosStateNode.__new__(RosStateNode)
+    node._cache = StateCache(clock=lambda: 10.0)
+    node._pending_plan_candidates = {}
+    node._pending_path_profiles = {}
+    node._committed_profile_identity = None
+    node._navigation_route_identity = None
+    node.get_logger = lambda: SimpleNamespace(warning=lambda _message: None)
+    return node
+
+
+def _candidate_path(stamp_sec, coordinates):
+    path = Path()
+    path.header.frame_id = 'map'
+    path.header.stamp = Time(sec=stamp_sec)
+    for x, y in coordinates:
+        pose = PoseStamped()
+        pose.header.frame_id = 'map'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.orientation.w = 1.0
+        path.poses.append(pose)
+    return path
+
+
+def _speed_profile(path, speeds, ceiling=1.0):
+    profile = PathSpeedProfile()
+    profile.header.frame_id = path.header.frame_id
+    profile.committed_path_stamp = path.header.stamp
+    profile.path_hash = _path_identity(path)
+    profile.pose_count = len(path.poses)
+    profile.goal_arclength_m = float(len(path.poses) - 1)
+    profile.preset_ceiling_mps = ceiling
+    profile.creep_speed_mps = 0.25
+    for index, speed in enumerate(speeds):
+        profile.points.append(PathSpeedProfilePoint(
+            arclength_m=float(index), speed_ceiling_mps=speed,
+        ))
+    return profile
+
+
 def test_runtime_start_stop_leaves_no_executor_thread():
     runtime = RosRuntime(StateCache())
     runtime.start()
@@ -383,6 +429,7 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
         _on_global_costmap=lambda _message: None,
         _on_local_costmap=lambda _message: None,
         _on_plan=lambda _message: None,
+        _on_path_speed_profile=lambda _message: None,
         _visualization_guard=SimpleNamespace(trigger=lambda: None),
     )
 
@@ -411,7 +458,8 @@ def test_stable_runtime_reacquires_map_with_epoch_bound_subscription():
     node._visualization_lock = threading.Lock()
     node._visualization_demands = {'browser': frozenset(('map',))}
     node._visualization_subscriptions = {
-        'global_costmap': None, 'local_costmap': None, 'plan': None,
+        'global_costmap': None, 'local_costmap': None,
+        'plan_candidate': None, 'path_speed_profile': None,
     }
     node._latest_qos = object()
     RosStateNode._reconcile_visualization_subscriptions(node)
@@ -451,6 +499,75 @@ def test_grid_validation_preserves_cells_and_rejects_bad_input():
         _grid(message)
 
 
+def test_only_d2_confirmed_candidate_replaces_retained_committed_route():
+    node = _route_node()
+    committed = _candidate_path(1, [(0.0, 0.0), (1.0, 0.0)])
+    rejected = _candidate_path(2, [(0.0, 0.0), (0.0, 1.0)])
+    assert _path_identity(committed) == 11_122_328_123_272_432_682
+
+    RosStateNode._on_plan(node, committed)
+    assert node._cache.large_snapshot('plan') == (0, None)
+    RosStateNode._on_path_speed_profile(
+        node, _speed_profile(committed, [0.25, 1.0])
+    )
+    first_revision, first_route = node._cache.large_snapshot('plan')
+    assert first_revision == 1
+    assert first_route['poses'][1]['pose']['position']['x'] == 1.0
+    assert first_route['preset_ceiling_mps'] == 1.0
+    assert first_route['points'][1]['speed_ceiling_mps'] == 1.0
+
+    RosStateNode._on_plan(node, rejected)
+    assert node._cache.large_snapshot('plan') == (
+        first_revision, first_route
+    )
+
+    replacement = _candidate_path(3, [(0.0, 0.0), (2.0, 0.0)])
+    RosStateNode._on_plan(node, replacement)
+    RosStateNode._on_path_speed_profile(
+        node, _speed_profile(replacement, [0.25, 1.5], ceiling=1.5)
+    )
+    revision, route = node._cache.large_snapshot('plan')
+    assert revision == first_revision + 1
+    assert route['poses'][1]['pose']['position']['x'] == 2.0
+    assert route['preset_ceiling_mps'] == 1.5
+
+
+def test_profile_can_arrive_before_matching_candidate_without_accepting_others():
+    node = _route_node()
+    committed = _candidate_path(4, [(0.0, 0.0), (3.0, 0.0)])
+    rejected = _candidate_path(5, [(0.0, 0.0), (0.0, 3.0)])
+
+    RosStateNode._on_path_speed_profile(
+        node, _speed_profile(committed, [0.25, 0.45], ceiling=0.45)
+    )
+    RosStateNode._on_plan(node, rejected)
+    assert node._cache.large_snapshot('plan') == (0, None)
+    RosStateNode._on_plan(node, committed)
+    revision, route = node._cache.large_snapshot('plan')
+    assert revision == 1
+    assert route['preset_ceiling_mps'] == 0.45
+    assert route['poses'][1]['pose']['position']['x'] == 3.0
+
+
+def test_navigation_lifecycle_change_clears_committed_route():
+    node = _route_node()
+    path = _candidate_path(1, [(0.0, 0.0), (1.0, 0.0)])
+    RosStateNode._on_plan(node, path)
+    RosStateNode._on_path_speed_profile(
+        node, _speed_profile(path, [0.25, 1.0])
+    )
+
+    state = NavigationState(
+        boot_id='boot', mission_id='mission', mission_revision=1,
+        action_generation=1, mission_valid=True,
+    )
+    RosStateNode._on_navigation_state(node, state)
+    assert node._cache.large_snapshot('plan')[1] is not None
+    state.action_generation = 2
+    RosStateNode._on_navigation_state(node, state)
+    assert node._cache.large_snapshot('plan') == (2, None)
+
+
 def test_queued_previous_runtime_map_is_rejected_after_resubscribe():
     cache = StateCache(clock=lambda: 10.0)
     node = SimpleNamespace(
@@ -482,7 +599,8 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
         _visualization_lock=threading.Lock(),
         _visualization_demands={},
         _visualization_subscriptions={
-            'global_costmap': None, 'local_costmap': None, 'plan': None,
+            'global_costmap': None, 'local_costmap': None,
+            'plan_candidate': None, 'path_speed_profile': None,
         },
         _visualization_applied=frozenset(),
         _map_subscription=None,
@@ -493,6 +611,7 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
         _on_global_costmap=lambda _message: None,
         _on_local_costmap=lambda _message: None,
         _on_plan=lambda _message: None,
+        _on_path_speed_profile=lambda _message: None,
         create_subscription=create_subscription,
         destroy_subscription=destroyed.append,
         _visualization_guard=SimpleNamespace(
@@ -508,12 +627,13 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
     RosStateNode._reconcile_visualization_subscriptions(node)
     assert {subscription.topic for subscription in created} == {
         '/map', '/global_costmap/costmap', '/local_costmap/costmap', '/plan',
+        '/navigation/path_speed_profile',
     }
 
     RosStateNode.set_visualization_demand(node, 'second', frozenset(('plan',)))
     assert len(guard_triggers) == 2
     RosStateNode._reconcile_visualization_subscriptions(node)
-    assert len(created) == 4
+    assert len(created) == 5
 
     with node._visualization_lock:
         node._visualization_demands.pop('first')
@@ -525,7 +645,7 @@ def test_visualization_demand_aggregates_clients_without_duplicate_readers():
     with node._visualization_lock:
         node._visualization_demands.pop('second')
     RosStateNode._reconcile_visualization_subscriptions(node)
-    assert len(destroyed) == 4
+    assert len(destroyed) == 5
 
 
 def test_low_rate_parameter_refresh_keeps_normal_obstacle_state_fresh(

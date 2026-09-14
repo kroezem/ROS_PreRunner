@@ -47,7 +47,9 @@ class StateCache:
         'encoder_state': 0.2,
         'map_state': 3.0,
         'navigation_state': 2.0,
-        'plan': 2.0,
+        # D2 publishes the authoritative committed route once per commitment.
+        # Retention ends at an explicit navigation/commitment lifecycle change.
+        'plan': None,
         'global_costmap': 2.0,
         'local_costmap': 1.0,
         'recording_state': 2.5,

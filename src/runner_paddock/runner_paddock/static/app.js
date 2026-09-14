@@ -35,6 +35,7 @@ const mapContext = mapCanvas.getContext("2d");
 const mapGeometry = window.PaddockMapGeometry;
 const joystickGeometry = window.PaddockJoystickGeometry;
 const mapViewportStorage = window.PaddockMapViewportStorage;
+const routeVisualization = window.PaddockRouteVisualization;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
 let mapViewIdentity = null;
 const mapLayers = {
@@ -47,7 +48,7 @@ const LAYER_DEFAULTS = {
   map: { visible: true, color: "#171717", opacity: 1 },
   global_costmap: { visible: true, color: "#ff3b30", opacity: 0.58 },
   local_costmap: { visible: true, color: "#b34cff", opacity: 0.62 },
-  plan: { visible: true, color: "#ffc247" },
+  plan: { visible: true },
   robot: { visible: true, color: "#00b4d8" },
   goal: { visible: true, color: "#90e0ef" },
 };
@@ -99,7 +100,7 @@ function initializeLayerControls() {
     const color = $(`layer-color-${kind}`);
     const opacity = $(`layer-opacity-${kind}`);
     visible.checked = layerSettings[kind].visible;
-    color.value = layerSettings[kind].color;
+    if (color) color.value = layerSettings[kind].color;
     if (opacity) opacity.value = String(layerSettings[kind].opacity);
     visible.addEventListener("change", () => {
       layerSettings[kind].visible = visible.checked;
@@ -107,7 +108,7 @@ function initializeLayerControls() {
       sendVisualizationDemand();
       renderMap();
     });
-    color.addEventListener("input", () => {
+    if (color) color.addEventListener("input", () => {
       layerSettings[kind].color = color.value;
       if (mapLayers[kind] && mapLayers[kind].grid) {
         mapLayers[kind].raster = makeGridRaster(mapLayers[kind].grid, kind);
@@ -191,7 +192,8 @@ function connect() {
       if (["map", "global_costmap", "local_costmap"].includes(frame.type)) {
         updateMapLayer(frame.type, frame.cleared ? null : frame);
       } else {
-        rememberPlan(frame);
+        if (frame.cleared) retainedPlan = null;
+        else rememberPlan(frame);
         renderMap();
       }
     } else if (frame.type === "ack") {
@@ -902,11 +904,19 @@ function planIsInMapFrame(plan) {
 }
 
 function rememberPlan(plan) {
-  if (!planIsInMapFrame(plan) || plan.poses.length < 2) return;
+  if (!planIsInMapFrame(plan) || plan.poses.length < 2 ||
+      !Array.isArray(plan.points) || plan.points.length !== plan.poses.length ||
+      !Number.isFinite(plan.preset_ceiling_mps) || plan.preset_ceiling_mps <= 0) return;
   const nav = latest.navigation_state || {};
   const mode = latest.mode || {};
+  const segmentColors = plan.points.slice(0, -1).map((_point, index) =>
+    routeVisualization.rainbowColor(
+      routeVisualization.segmentSpeed(plan.points, index),
+      plan.preset_ceiling_mps,
+    ));
   retainedPlan = {
     plan,
+    segmentColors,
     bootId: nav.boot_id || "",
     actionGeneration: nav.action_generation,
     missionRevision: nav.mission_revision,
@@ -917,7 +927,6 @@ function rememberPlan(plan) {
 function planDisplayState() {
   const nav = latest.navigation_state || {};
   const mode = latest.mode || {};
-  const source = ((latest.health || {}).sources || {}).plan;
   const inFlight = [1, 2, 3].includes(nav.state);
   const applicable = mode.mode === 2 && mode.status === 0 && nav.mission_valid && inFlight;
   if (!applicable) return { plan: null, kind: "none", label: "plan unavailable" };
@@ -929,16 +938,11 @@ function planDisplayState() {
     retainedPlan.runtimeEpoch === mode.runtime_epoch;
   if (!contextMatches) return { plan: null, kind: "none", label: "awaiting plan" };
 
-  const livePlan = latest.plan;
-  const liveAvailable = planIsInMapFrame(livePlan) && livePlan.poses.length >= 2 &&
-    (!source || source.fresh) && livePlan.revision === retainedPlan.plan.revision;
-  if (liveAvailable) {
-    return { plan: retainedPlan.plan, kind: "current", label: `plan ${retainedPlan.plan.poses.length} points` };
-  }
   return {
     plan: retainedPlan.plan,
-    kind: "last-known",
-    label: `last known plan ${retainedPlan.plan.poses.length} points · live plan unavailable`,
+    segmentColors: retainedPlan.segmentColors,
+    kind: "current",
+    label: `committed route ${retainedPlan.plan.poses.length} points`,
   };
 }
 
@@ -947,20 +951,22 @@ function drawPlan() {
   const plan = display.plan;
   if (!layerSettings.plan.visible || !plan) return;
   mapContext.save();
-  mapContext.strokeStyle = layerSettings.plan.color;
-  mapContext.lineWidth = (display.kind === "current" ? 3 : 2.5) * devicePixelRatio;
-  mapContext.globalAlpha = display.kind === "current" ? 1 : 0.48;
-  if (display.kind !== "current") {
-    mapContext.setLineDash([8 * devicePixelRatio, 7 * devicePixelRatio]);
-  }
+  mapContext.lineWidth = 3 * devicePixelRatio;
   mapContext.lineJoin = "round";
-  mapContext.beginPath();
-  plan.poses.forEach((item, index) => {
-    const point = screenFromWorld(item.pose.position.x, item.pose.position.y);
-    if (index === 0) mapContext.moveTo(point.x, point.y);
-    else mapContext.lineTo(point.x, point.y);
-  });
-  mapContext.stroke();
+  mapContext.lineCap = "round";
+  for (let index = 0; index + 1 < plan.poses.length; index += 1) {
+    const start = screenFromWorld(
+      plan.poses[index].pose.position.x, plan.poses[index].pose.position.y,
+    );
+    const end = screenFromWorld(
+      plan.poses[index + 1].pose.position.x, plan.poses[index + 1].pose.position.y,
+    );
+    mapContext.strokeStyle = display.segmentColors[index];
+    mapContext.beginPath();
+    mapContext.moveTo(start.x, start.y);
+    mapContext.lineTo(end.x, end.y);
+    mapContext.stroke();
+  }
   mapContext.restore();
 }
 
@@ -1002,12 +1008,13 @@ function renderMap() {
   const globalCostmap = mapLayers.global_costmap.grid;
   const local = mapLayers.local_costmap.grid;
   const planDisplay = planDisplayState();
-  const rawPlan = latest.plan;
   let planStatus = planDisplay.label;
-  if (rawPlan && !planIsInMapFrame(rawPlan)) {
-    planStatus = `plan frame rejected (${rawPlan.frame_id || "empty"})`;
+  $("plan-badge").hidden = planDisplay.kind !== "current";
+  const legend = $("route-speed-legend");
+  legend.hidden = planDisplay.kind !== "current" || !layerSettings.plan.visible;
+  if (!legend.hidden) {
+    $("route-speed-max").textContent = `${planDisplay.plan.preset_ceiling_mps.toFixed(2)} m/s`;
   }
-  $("plan-badge").hidden = planDisplay.kind !== "last-known";
   $("map-status").textContent = global
     ? `${global.width}×${global.height} · ${global.resolution.toFixed(3)} m/cell · ${global.frame_id || "?"} · ` +
       `global costmap ${globalCostmap && globalFresh ? "available" : globalCostmap ? "stale" : "unavailable"} · ` +
@@ -1032,8 +1039,7 @@ function updateLayerStatuses(sources, auth) {
     local_costmap: layerSourceStatus(
       sources.local_costmap, Boolean(mapLayers.local_costmap.grid),
     ),
-    plan: planDisplay.kind === "current" ? "available" :
-      (planDisplay.kind === "last-known" ? "last known" : "unavailable"),
+    plan: planDisplay.kind === "current" ? "committed" : "unavailable",
     robot: layerSourceStatus(sources.pose, Boolean(latest.pose)),
     goal: layerSourceStatus(
       sources.command_authority, Boolean(auth.autonomy_goal_selected),
@@ -1042,7 +1048,7 @@ function updateLayerStatuses(sources, auth) {
   Object.entries(statuses).forEach(([kind, status]) => {
     const element = $(`layer-status-${kind}`);
     element.textContent = status;
-    element.classList.toggle("bad", status !== "available" && status !== "last known");
+    element.classList.toggle("bad", !["available", "committed"].includes(status));
   });
 }
 

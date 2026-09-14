@@ -15,6 +15,7 @@
 """Paddock gateway ROS node: reads state topics, writes operator intent."""
 
 import math
+import struct
 import threading
 import time
 from typing import Any
@@ -48,6 +49,7 @@ from runner_interfaces.msg import ModeState
 from runner_interfaces.msg import NavigationState
 from runner_interfaces.msg import PaddockControlEvent
 from runner_interfaces.msg import PaddockControlLease
+from runner_interfaces.msg import PathSpeedProfile
 from runner_interfaces.msg import RecordingRequest, RecordingState
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
@@ -97,6 +99,7 @@ OBSTACLE_TARGETS = {
     'local': '/local_costmap/local_costmap',
 }
 PLAN_TOPIC = '/plan'
+PATH_SPEED_PROFILE_TOPIC = '/navigation/path_speed_profile'
 MODE_STATE_TOPIC = '/paddock/mode_state'
 MAP_STATE_TOPIC = '/paddock/map_state'
 NAVIGATION_STATE_TOPIC = '/paddock/navigation_state'
@@ -167,6 +170,50 @@ def _pose(pose: Any) -> dict[str, Any]:
     }
 
 
+def _path_identity(message: Path) -> int:
+    """Reproduce D2's stable 64-bit identity for one candidate path."""
+    value = 14_695_981_039_346_656_037
+
+    def add_bytes(data: bytes) -> None:
+        nonlocal value
+        for byte in data:
+            value ^= byte
+            value = (value * 1_099_511_628_211) & 0xffffffffffffffff
+
+    add_bytes(message.header.frame_id.encode('utf-8'))
+    add_bytes(len(message.poses).to_bytes(8, byteorder='little'))
+    for stamped_pose in message.poses:
+        pose = stamped_pose.pose
+        values = (
+            pose.position.x, pose.position.y, pose.position.z,
+            pose.orientation.x, pose.orientation.y,
+            pose.orientation.z, pose.orientation.w,
+        )
+        _finite(*values)
+        for number in values:
+            # Match D2's canonicalization of negative zero before hashing.
+            add_bytes(struct.pack('<d', 0.0 if number == 0.0 else number))
+    return value
+
+
+def _path_key(message: Path) -> tuple[int, int, int, int, str]:
+    stamp = _stamp(message.header.stamp)
+    return (
+        stamp['sec'], stamp['nanosec'], _path_identity(message),
+        len(message.poses), message.header.frame_id,
+    )
+
+
+def _profile_key(
+    message: PathSpeedProfile,
+) -> tuple[int, int, int, int, str]:
+    stamp = _stamp(message.committed_path_stamp)
+    return (
+        stamp['sec'], stamp['nanosec'], int(message.path_hash),
+        int(message.pose_count), message.header.frame_id,
+    )
+
+
 def _yaw(orientation: Any) -> float:
     """Return planar yaw from a finite ROS quaternion."""
     _finite(orientation.x, orientation.y, orientation.z, orientation.w)
@@ -233,8 +280,13 @@ class RosStateNode(ExplicitQoSEventNode):
         self._visualization_subscriptions = {
             'global_costmap': None,
             'local_costmap': None,
-            'plan': None,
+            'plan_candidate': None,
+            'path_speed_profile': None,
         }
+        self._pending_plan_candidates = {}
+        self._pending_path_profiles = {}
+        self._committed_profile_identity = None
+        self._navigation_route_identity = None
         self._visualization_guard = self.create_guard_condition(
             self._reconcile_visualization_subscriptions
         )
@@ -465,23 +517,31 @@ class RosStateNode(ExplicitQoSEventNode):
 
         specifications = {
             'global_costmap': (
+                'global_costmap',
                 OccupancyGrid, GLOBAL_COSTMAP_TOPIC,
                 self._on_global_costmap, self._map_qos,
             ),
             'local_costmap': (
+                'local_costmap',
                 OccupancyGrid, LOCAL_COSTMAP_TOPIC,
                 self._on_local_costmap, self._map_qos,
             ),
-            'plan': (Path, PLAN_TOPIC, self._on_plan, self._latest_qos),
+            'plan_candidate': (
+                'plan', Path, PLAN_TOPIC, self._on_plan, self._latest_qos,
+            ),
+            'path_speed_profile': (
+                'plan', PathSpeedProfile, PATH_SPEED_PROFILE_TOPIC,
+                self._on_path_speed_profile, self._map_qos,
+            ),
         }
-        for kind, specification in specifications.items():
-            subscription = self._visualization_subscriptions[kind]
+        for reader, (kind, *specification) in specifications.items():
+            subscription = self._visualization_subscriptions[reader]
             if kind in demand and subscription is None:
-                self._visualization_subscriptions[kind] = (
+                self._visualization_subscriptions[reader] = (
                     self.create_subscription(*specification)
                 )
             elif kind not in demand and subscription is not None:
-                self._visualization_subscriptions[kind] = None
+                self._visualization_subscriptions[reader] = None
                 self.destroy_subscription(subscription)
 
         wants_map = 'map' in demand
@@ -565,13 +625,80 @@ class RosStateNode(ExplicitQoSEventNode):
                     'frame_id': stamped_pose.header.frame_id,
                     'pose': _pose(stamped_pose.pose),
                 })
-            self._cache.update('plan', {
+            candidate = {
                 'stamp': _stamp(message.header.stamp),
                 'frame_id': message.header.frame_id,
                 'poses': poses,
-            })
+            }
+            key = _path_key(message)
+            self._pending_plan_candidates[key] = candidate
+            while len(self._pending_plan_candidates) > 16:
+                self._pending_plan_candidates.pop(next(iter(
+                    self._pending_plan_candidates
+                )))
+            self._commit_profiled_route(key)
         except (TypeError, ValueError) as error:
             self.get_logger().warning(f'Rejected invalid {PLAN_TOPIC}: {error}')
+
+    def _on_path_speed_profile(self, message: PathSpeedProfile) -> None:
+        """Publish a route only when D2 confirms the exact candidate identity."""
+        try:
+            key = _profile_key(message)
+            if len(message.points) != int(message.pose_count):
+                raise ValueError('profile point count does not match pose count')
+            _finite(
+                message.goal_arclength_m,
+                message.preset_ceiling_mps,
+                message.creep_speed_mps,
+            )
+            if message.preset_ceiling_mps <= 0.0:
+                raise ValueError('profile ceiling must be positive')
+            points = []
+            previous_arclength = -math.inf
+            for point in message.points:
+                _finite(point.arclength_m, point.speed_ceiling_mps)
+                if point.arclength_m < previous_arclength:
+                    raise ValueError('profile arclength is not monotonic')
+                if point.speed_ceiling_mps < 0.0:
+                    raise ValueError('profile speed ceiling is negative')
+                previous_arclength = point.arclength_m
+                points.append({
+                    'arclength_m': float(point.arclength_m),
+                    'speed_ceiling_mps': float(point.speed_ceiling_mps),
+                    'cusp_state': int(point.cusp_state),
+                })
+            profile = {
+                'committed_path_stamp': _stamp(
+                    message.committed_path_stamp
+                ),
+                # JSON numbers cannot represent every uint64 exactly.
+                'path_hash': str(int(message.path_hash)),
+                'pose_count': int(message.pose_count),
+                'goal_arclength_m': float(message.goal_arclength_m),
+                'preset_ceiling_mps': float(message.preset_ceiling_mps),
+                'creep_speed_mps': float(message.creep_speed_mps),
+                'points': points,
+            }
+            if key != self._committed_profile_identity:
+                if key not in self._pending_plan_candidates:
+                    self._cache.invalidate('plan')
+                self._committed_profile_identity = key
+            self._pending_path_profiles[key] = profile
+            self._commit_profiled_route(key)
+        except (TypeError, ValueError) as error:
+            self.get_logger().warning(
+                f'Rejected invalid {PATH_SPEED_PROFILE_TOPIC}: {error}'
+            )
+
+    def _commit_profiled_route(self, key: tuple) -> None:
+        """Join candidate geometry to the authoritative D2 commitment event."""
+        candidate = self._pending_plan_candidates.get(key)
+        profile = self._pending_path_profiles.get(key)
+        if candidate is None or profile is None:
+            return
+        self._cache.update('plan', {**candidate, **profile})
+        self._pending_plan_candidates.clear()
+        self._pending_path_profiles.clear()
 
     def _on_mode(self, message: ModeState) -> None:
         try:
@@ -643,6 +770,20 @@ class RosStateNode(ExplicitQoSEventNode):
 
     def _on_navigation_state(self, message: NavigationState) -> None:
         try:
+            route_identity = (
+                message.boot_id, message.mission_id,
+                int(message.mission_revision), int(message.action_generation),
+                bool(message.mission_valid),
+            )
+            if (
+                self._navigation_route_identity is not None
+                and route_identity != self._navigation_route_identity
+            ):
+                self._cache.invalidate('plan')
+                self._pending_plan_candidates.clear()
+                self._pending_path_profiles.clear()
+                self._committed_profile_identity = None
+            self._navigation_route_identity = route_identity
             self._cache.update('navigation_state', {
                 'stamp': _stamp(message.stamp),
                 'boot_id': message.boot_id,

@@ -35,6 +35,17 @@ def test_revisions_only_advance_when_payload_changes():
     assert cache.large_snapshot('plan') == (2, changed)
 
 
+def test_committed_plan_does_not_expire_without_a_lifecycle_tombstone():
+    now = [10.0]
+    cache = StateCache(clock=lambda: now[0])
+    value = {'frame_id': 'map', 'poses': [{'x': 1.0}]}
+    cache.update('plan', value)
+
+    now[0] += 3600.0
+    assert cache.state_snapshot()['health']['sources']['plan']['fresh']
+    assert cache.large_snapshot('plan') == (1, value)
+
+
 def test_health_reports_age_and_freshness_without_wall_clock_math():
     now = [20.0]
     cache = StateCache(clock=lambda: now[0])
