@@ -11,8 +11,12 @@
 #include "behaviortree_cpp/action_node.h"
 #include "behaviortree_cpp/condition_node.h"
 #include "nav2_msgs/srv/is_path_valid.hpp"
+#include "nav2_costmap_2d/costmap_subscriber.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rcl_interfaces/srv/get_parameters.hpp"
+#include "runner_interfaces/msg/path_speed_profile.hpp"
+#include "runner_path_speed_profile/path_speed_profile.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2_ros/buffer.h"
 
@@ -85,6 +89,23 @@ public:
 
 private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+};
+
+class GeneratePathSpeedProfile : public BT::SyncActionNode
+{
+public:
+  GeneratePathSpeedProfile(
+    const std::string & name, const BT::NodeConfiguration & config);
+
+  static BT::PortsList providedPorts();
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  std::unique_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_subscriber_;
+  rclcpp::Client<rcl_interfaces::srv::GetParameters>::SharedPtr parameter_client_;
+  rclcpp::Publisher<runner_interfaces::msg::PathSpeedProfile>::SharedPtr publisher_;
+  std::chrono::milliseconds server_timeout_;
 };
 
 }  // namespace runner_nav2_behavior_tree

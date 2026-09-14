@@ -82,6 +82,7 @@ NAVIGATION_DEBUG_TOPICS = (
     '/global_costmap/costmap',
     '/plan',
     '/navigation/path_commitment_state',
+    '/navigation/path_speed_profile',
     # Nav2's built-in per-node status-change log (nav2_behavior_tree::
     # RosTopicLogger), always published by bt_navigator regardless of
     # enable_groot_monitoring. Diagnostic only: shows the first BT node

@@ -16,6 +16,8 @@
   <depend>nav2_util</depend>
   <depend>nav2_costmap_2d</depend>
   <depend>rclcpp</depend>
+  <depend>runner_interfaces</depend>
+  <depend>runner_path_speed_profile</depend>
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>pluginlib</depend>

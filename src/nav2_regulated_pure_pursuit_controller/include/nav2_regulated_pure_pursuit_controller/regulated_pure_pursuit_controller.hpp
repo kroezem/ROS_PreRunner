@@ -28,6 +28,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "runner_interfaces/msg/path_speed_profile.hpp"
 #include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_regulated_pure_pursuit_controller/collision_checker.hpp"
 #include "nav2_regulated_pure_pursuit_controller/parameter_handler.hpp"
@@ -233,6 +234,14 @@ protected:
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::PathHandler> path_handler_;
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::ParameterHandler> param_handler_;
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::CollisionChecker> collision_checker_;
+  rclcpp::Subscription<runner_interfaces::msg::PathSpeedProfile>::SharedPtr
+    path_speed_profile_sub_;
+  runner_interfaces::msg::PathSpeedProfile latest_path_speed_profile_;
+  runner_interfaces::msg::PathSpeedProfile active_path_speed_profile_;
+  nav_msgs::msg::Path current_profile_path_;
+  std::mutex path_speed_profile_mutex_;
+  double path_speed_profile_fallback_{0.25};
+  bool path_speed_profile_matched_{false};
 };
 
 }  // namespace nav2_regulated_pure_pursuit_controller

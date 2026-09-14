@@ -6,10 +6,14 @@ find_package(ament_cmake_gtest REQUIRED)
 find_package(behaviortree_cpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_behavior_tree REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
+find_package(runner_interfaces REQUIRED)
+find_package(runner_path_speed_profile REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
@@ -29,10 +33,14 @@ ament_target_dependencies(runner_nav2_behavior_tree_nodes
   behaviortree_cpp
   geometry_msgs
   nav2_behavior_tree
+  nav2_costmap_2d
   nav2_msgs
   nav2_util
   nav_msgs
   rclcpp
+  rcl_interfaces
+  runner_interfaces
+  runner_path_speed_profile
   std_msgs
   tf2_ros)
 

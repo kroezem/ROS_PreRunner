@@ -26,6 +26,7 @@
 #include "nav2_util/node_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
+#include "runner_path_speed_profile/path_speed_profile.hpp"
 
 using std::hypot;
 using std::min;
@@ -72,6 +73,40 @@ void RegulatedPurePursuitController::configure(
   node->get_parameter("controller_frequency", control_frequency);
   control_duration_ = 1.0 / control_frequency;
 
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".path_speed_profile_fallback",
+    rclcpp::ParameterValue(0.25));
+  node->get_parameter(
+    plugin_name_ + ".path_speed_profile_fallback", path_speed_profile_fallback_);
+  if (!std::isfinite(path_speed_profile_fallback_) || path_speed_profile_fallback_ < 0.0) {
+    throw nav2_core::ControllerException(
+        "path_speed_profile_fallback must be finite and nonnegative");
+  }
+  path_speed_profile_sub_ =
+    node->create_subscription<runner_interfaces::msg::PathSpeedProfile>(
+    "/navigation/path_speed_profile",
+    rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local(),
+    [this](const runner_interfaces::msg::PathSpeedProfile::SharedPtr message) {
+      std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+      latest_path_speed_profile_ = *message;
+      if (current_profile_path_.poses.empty()) {
+        return;
+      }
+      std::string reason;
+      if (runner_path_speed_profile::validateProfile(
+          latest_path_speed_profile_, current_profile_path_, reason))
+      {
+        active_path_speed_profile_ = latest_path_speed_profile_;
+        path_speed_profile_matched_ = true;
+        RCLCPP_INFO(logger_, "Matched committed-path speed profile");
+      } else {
+        path_speed_profile_matched_ = false;
+        RCLCPP_WARN(
+          logger_, "Path speed profile mismatch (%s); using %.3f m/s fallback",
+          reason.c_str(), path_speed_profile_fallback_);
+      }
+    });
+
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("lookahead_point", 1);
   curvature_carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>(
@@ -91,6 +126,7 @@ void RegulatedPurePursuitController::cleanup()
   carrot_pub_.reset();
   curvature_carrot_pub_.reset();
   is_rotating_to_heading_pub_.reset();
+  path_speed_profile_sub_.reset();
 }
 
 void RegulatedPurePursuitController::activate()
@@ -476,6 +512,18 @@ void RegulatedPurePursuitController::applyConstraints(
   linear_vel = std::min(cost_vel, curvature_vel);
   linear_vel = std::max(linear_vel, params_->regulated_linear_scaling_min_speed);
 
+  // The profile is deliberately applied after RPP's normal minimum-speed
+  // floor, so a matched committed path may command below it or exactly zero.
+  double profile_ceiling = path_speed_profile_fallback_;
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    if (path_speed_profile_matched_) {
+      profile_ceiling = runner_path_speed_profile::sampleCeiling(
+        active_path_speed_profile_, path_handler_->getPathOffset());
+    }
+  }
+  linear_vel = std::min(linear_vel, profile_ceiling);
+
   // Apply constraint to reduce speed on approach to the final goal pose
   linear_vel = heuristics::approachVelocityConstraint(
     linear_vel, path, params_->min_approach_linear_velocity,
@@ -490,6 +538,20 @@ void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
   has_reached_xy_tolerance_ = false;
   path_handler_->setPlan(path);
+  std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+  current_profile_path_ = path;
+  std::string reason;
+  if (runner_path_speed_profile::validateProfile(
+      latest_path_speed_profile_, current_profile_path_, reason))
+  {
+    active_path_speed_profile_ = latest_path_speed_profile_;
+    path_speed_profile_matched_ = true;
+  } else {
+    path_speed_profile_matched_ = false;
+    RCLCPP_WARN(
+      logger_, "No matching committed-path speed profile (%s); using %.3f m/s fallback",
+      reason.c_str(), path_speed_profile_fallback_);
+  }
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(

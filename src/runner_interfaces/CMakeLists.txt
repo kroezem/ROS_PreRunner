@@ -4,6 +4,7 @@ project(runner_interfaces)
 find_package(ament_cmake REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -28,13 +29,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ManualDemand.msg"
   "msg/PaddockControlEvent.msg"
   "msg/PaddockControlLease.msg"
+  "msg/PathSpeedProfile.msg"
+  "msg/PathSpeedProfilePoint.msg"
   "msg/RecordingEntry.msg"
   "msg/RecordingRequest.msg"
   "msg/RecordingState.msg"
   "msg/SpeedEnvelopeEntry.msg"
   "msg/SpeedEnvelopeStatus.msg"
   "msg/SystemTelemetry.msg"
-  DEPENDENCIES builtin_interfaces geometry_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

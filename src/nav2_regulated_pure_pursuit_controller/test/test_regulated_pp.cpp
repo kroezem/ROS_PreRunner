@@ -55,6 +55,39 @@ public:
   void setCostRegulationScaling() {params_->use_cost_regulated_linear_velocity_scaling = true;}
   void resetVelocityRegulationScaling() {params_->use_regulated_linear_velocity_scaling = false;}
 
+  void setProfileCeiling(double ceiling)
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    active_path_speed_profile_.goal_arclength_m = 1.0;
+    active_path_speed_profile_.points.resize(2);
+    active_path_speed_profile_.points[0].arclength_m = 0.0;
+    active_path_speed_profile_.points[0].speed_ceiling_mps = ceiling;
+    active_path_speed_profile_.points[1].arclength_m = 1.0;
+    active_path_speed_profile_.points[1].speed_ceiling_mps = ceiling;
+    path_speed_profile_matched_ = true;
+  }
+
+  void useProfileFallback(double fallback)
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    path_speed_profile_fallback_ = fallback;
+    path_speed_profile_matched_ = false;
+  }
+
+  void setLatestProfile(const runner_interfaces::msg::PathSpeedProfile & profile)
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    latest_path_speed_profile_ = profile;
+  }
+
+  bool profileMatched()
+  {
+    std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
+    return path_speed_profile_matched_;
+  }
+
+  void setRegulationFloor(double floor) {params_->regulated_linear_scaling_min_speed = floor;}
+
   double getLookAheadDistanceWrapper(const geometry_msgs::msg::Twist & twist)
   {
     return getLookAheadDistance(twist);
@@ -121,6 +154,8 @@ public:
   {
     return path_handler_->transformGlobalPlan(pose, params_->max_robot_pose_search_dist);
   }
+
+  double getPathOffset() const {return path_handler_->getPathOffset();}
 };
 
 TEST(RegulatedPurePursuitTest, basicAPI)
@@ -157,6 +192,42 @@ TEST(RegulatedPurePursuitTest, basicAPI)
   EXPECT_EQ(ctrl->getSpeed(), base_speed * 0.3);
   ctrl->setSpeedLimit(nav2_costmap_2d::NO_SPEED_LIMIT, true);
   EXPECT_EQ(ctrl->getSpeed(), base_speed);
+}
+
+TEST(RegulatedPurePursuitTest, ProfileOverridesNormalFloorAndMismatchFallsBack)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testRPPProfile");
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("fake_profile_costmap");
+  costmap->on_configure(rclcpp_lifecycle::State());
+  auto ctrl = std::make_shared<BasicAPIRPP>();
+  ctrl->configure(node, "PathFollower", tf, costmap);
+  ctrl->setRegulationFloor(0.30);
+
+  nav_msgs::msg::Path path;
+  path.poses.resize(2);
+  path.poses[1].pose.position.x = 10.0;
+  geometry_msgs::msg::Twist speed;
+  double sign = 1.0;
+  double linear_velocity = 0.45;
+  ctrl->setProfileCeiling(0.10);
+  ctrl->applyConstraintsWrapper(0.0, speed, 0.0, path, linear_velocity, sign);
+  EXPECT_DOUBLE_EQ(linear_velocity, 0.10);
+
+  linear_velocity = 0.45;
+  ctrl->setProfileCeiling(0.0);
+  ctrl->applyConstraintsWrapper(0.0, speed, 0.0, path, linear_velocity, sign);
+  EXPECT_DOUBLE_EQ(linear_velocity, 0.0);
+
+  linear_velocity = 0.45;
+  ctrl->useProfileFallback(0.17);
+  runner_interfaces::msg::PathSpeedProfile stale_profile;
+  stale_profile.pose_count = 3;
+  ctrl->setLatestProfile(stale_profile);
+  ctrl->setPlan(path);
+  EXPECT_FALSE(ctrl->profileMatched());
+  ctrl->applyConstraintsWrapper(0.0, speed, 0.0, path, linear_velocity, sign);
+  EXPECT_DOUBLE_EQ(linear_velocity, 0.17);
 }
 
 TEST(RegulatedPurePursuitTest, createCarrotMsg)
@@ -619,6 +690,8 @@ TEST(RegulatedPurePursuitTest, applyConstraints)
     rclcpp::ParameterValue(approach_velocity_scaling_dist));
 
   ctrl->configure(node, name, tf, costmap);
+  // Isolate the pre-existing regulation assertions from the additive profile term.
+  ctrl->setProfileCeiling(100.0);
 
   auto no_approach_path = path_utils::generate_path(
     geometry_msgs::msg::PoseStamped(), 0.1, {
@@ -971,6 +1044,7 @@ TEST_F(TransformGlobalPlanTest, transform_start_selection)
   EXPECT_NEAR(transformed_plan.poses.size(), global_plan.poses.size() / 2, 1);
   EXPECT_NEAR(transformed_plan.poses[0].pose.position.x, 0.0, 0.5);
   EXPECT_NEAR(transformed_plan.poses[0].pose.position.y, 0.0, 0.5);
+  EXPECT_NEAR(ctrl_->getPathOffset(), M_PI * circle_radius, spacing);
 }
 
 // This should throw an exception when all poses are outside of the costmap

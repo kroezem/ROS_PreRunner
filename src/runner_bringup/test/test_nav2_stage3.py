@@ -86,6 +86,7 @@ def test_rpp_allows_reversing_and_uses_measured_speed_limits():
     assert rpp['lookahead_time'] == 1.0
     assert rpp['regulated_linear_scaling_min_radius'] == 0.75
     assert rpp['regulated_linear_scaling_min_speed'] == 0.30
+    assert rpp['path_speed_profile_fallback'] == 0.25
     assert rpp['use_cost_regulated_linear_velocity_scaling'] is True
     assert rpp['inflation_cost_scaling_factor'] == 10.0
     assert rpp['cost_scaling_dist'] == 0.45
@@ -332,6 +333,7 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     assert tags.count('UnsetBlackboard') == 2
     assert tags.count('PersistentPathValid') == 1
     assert tags.count('CandidatePathValid') == 1
+    assert tags.count('GeneratePathSpeedProfile') == 1
     assert tags.count('CertifyCandidatePath') == 0
     assert tags.count('PathExists') == 1
     assert tags.count('ReportPathCommitment') == 2
@@ -461,6 +463,7 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     assert tags.count('UnsetBlackboard') == 2
     assert tags.count('PersistentPathValid') == 1
     assert tags.count('CandidatePathValid') == 1
+    assert tags.count('GeneratePathSpeedProfile') == 1
     assert tags.count('CertifyCandidatePath') == 0
     assert tags.count('PathExists') == 1
     assert tags.count('ReportPathCommitment') == 2
@@ -567,9 +570,11 @@ def test_candidate_is_validated_before_it_can_replace_committed_path(
     accept, reject = validation.findall('./Sequence')
 
     assert tags.count('CandidatePathValid') == 1
+    assert tags.count('GeneratePathSpeedProfile') == 1
     assert 'CertifyCandidatePath' not in tags
     assert [child.tag for child in accept] == [
-        'CandidatePathValid', 'SetBlackboard', 'ReportPathCommitment',
+        'CandidatePathValid', 'SetBlackboard', 'GeneratePathSpeedProfile',
+        'ReportPathCommitment',
     ]
     assert accept.find('./CandidatePathValid').attrib == {
         'path': '{candidate_path}',
@@ -580,6 +585,9 @@ def test_candidate_is_validated_before_it_can_replace_committed_path(
     }
     assert accept.find('./SetBlackboard').attrib == {
         'value': '{candidate_path}', 'output_key': 'path',
+    }
+    assert accept.find('./GeneratePathSpeedProfile').attrib == {
+        'path': '{path}',
     }
     assert [child.tag for child in reject] == [
         'ReportPathCommitment', 'AlwaysFailure',

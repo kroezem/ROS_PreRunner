@@ -8,6 +8,8 @@ find_package(nav2_core REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(runner_interfaces REQUIRED)
+find_package(runner_path_speed_profile REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -23,6 +25,8 @@ include_directories(
 
 set(dependencies
   rclcpp
+  runner_interfaces
+  runner_path_speed_profile
   geometry_msgs
   nav2_costmap_2d
   pluginlib
@@ -71,4 +75,3 @@ ament_export_dependencies(${dependencies})
 pluginlib_export_plugin_description_file(nav2_core nav2_regulated_pure_pursuit_controller.xml)
 
 ament_package()
-

@@ -11,10 +11,14 @@
   <depend>behaviortree_cpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav2_behavior_tree</depend>
+  <depend>nav2_costmap_2d</depend>
   <depend>nav2_msgs</depend>
   <depend>nav2_util</depend>
   <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>runner_interfaces</depend>
+  <depend>runner_path_speed_profile</depend>
   <depend>std_msgs</depend>
   <depend>tf2_ros</depend>
 

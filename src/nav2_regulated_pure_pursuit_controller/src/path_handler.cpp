@@ -119,6 +119,12 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
 
   // Remove the portion of the global plan that we've already passed so we don't
   // process it on the next iteration (this is called path pruning)
+  for (auto iterator = global_plan_.poses.begin(); iterator != transformation_begin; ++iterator) {
+    const auto next = std::next(iterator);
+    if (next != global_plan_.poses.end()) {
+      path_offset_ += euclidean_distance(*iterator, *next);
+    }
+  }
   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
 
   if (transformed_plan.poses.empty()) {

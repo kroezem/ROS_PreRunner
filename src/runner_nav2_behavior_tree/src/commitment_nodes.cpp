@@ -146,42 +146,14 @@ BT::PortsList PersistentPathValidCondition::providedPorts()
   };
 }
 
-namespace
-{
-
-// TEMPORARY DIAGNOSTIC (see investigation into the ~350 ms FollowPath
-// teardown): traces PersistentPathValidCondition::tick() around its
-// synchronous is_path_valid call to establish whether it enters
-// spin_until_future_complete() and fails to return before bt_navigator
-// externally halts the tree. Remove once the mechanism is confirmed.
-const char * futureReturnCodeName(rclcpp::FutureReturnCode code)
-{
-  switch (code) {
-    case rclcpp::FutureReturnCode::SUCCESS:
-      return "SUCCESS";
-    case rclcpp::FutureReturnCode::INTERRUPTED:
-      return "INTERRUPTED";
-    case rclcpp::FutureReturnCode::TIMEOUT:
-      return "TIMEOUT";
-  }
-  return "UNKNOWN";
-}
-
-}  // namespace
-
 BT::NodeStatus PersistentPathValidCondition::tick()
 {
-  RCLCPP_INFO(node_->get_logger(), "[PPV_DIAG] tick: entry");
-
   nav_msgs::msg::Path path;
   getInput("path", path);
   if (path.poses.empty()) {
     committed_path_ = path;
     closest_index_ = 0;
     persistence_.reset();
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[PPV_DIAG] tick: return FAILURE reason=empty_path");
     return BT::NodeStatus::FAILURE;
   }
 
@@ -213,33 +185,18 @@ BT::NodeStatus PersistentPathValidCondition::tick()
       publish("committed_path_retained", "progress_pose_unavailable");
       validation_unavailable_reported_ = true;
     }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[PPV_DIAG] tick: return SUCCESS reason=progress_pose_unavailable");
     return BT::NodeStatus::SUCCESS;
   }
 
   auto request = std::make_shared<nav2_msgs::srv::IsPathValid::Request>();
   request->path = std::move(corridor);
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "[PPV_DIAG] tick: before async_send_request server_timeout_ms=%ld",
-    static_cast<long>(server_timeout_.count()));
   auto future = client_->async_send_request(request);
-  RCLCPP_INFO(node_->get_logger(), "[PPV_DIAG] tick: before spin_until_future_complete");
   const auto spin_result = rclcpp::spin_until_future_complete(node_, future, server_timeout_);
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "[PPV_DIAG] tick: spin_until_future_complete returned %s",
-    futureReturnCodeName(spin_result));
   if (spin_result != rclcpp::FutureReturnCode::SUCCESS) {
     if (!validation_unavailable_reported_) {
       publish("committed_path_retained", "global_validation_unavailable");
       validation_unavailable_reported_ = true;
     }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[PPV_DIAG] tick: return SUCCESS reason=global_validation_unavailable");
     return BT::NodeStatus::SUCCESS;
   }
   validation_unavailable_reported_ = false;
@@ -252,9 +209,6 @@ BT::NodeStatus PersistentPathValidCondition::tick()
     if (before > 0) {
       publish("committed_path_retained", "transient_blockage_cleared");
     }
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[PPV_DIAG] tick: return SUCCESS reason=path_valid");
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -263,9 +217,6 @@ BT::NodeStatus PersistentPathValidCondition::tick()
     reason << "transient_blockage_" << persistence_.blockedObservations() << "_of_" <<
       std::max(1u, required_observations);
     publish("committed_path_retained", reason.str());
-    RCLCPP_INFO(
-      node_->get_logger(),
-      "[PPV_DIAG] tick: return SUCCESS reason=%s", reason.str().c_str());
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -273,9 +224,6 @@ BT::NodeStatus PersistentPathValidCondition::tick()
   if (before < std::max(1u, required_observations)) {
     publish("replan_requested", "persistent_blockage");
   }
-  RCLCPP_INFO(
-    node_->get_logger(),
-    "[PPV_DIAG] tick: return FAILURE reason=persistent_blockage");
   return BT::NodeStatus::FAILURE;
 }
 
@@ -360,6 +308,104 @@ BT::NodeStatus ReportPathCommitment::tick()
   return BT::NodeStatus::SUCCESS;
 }
 
+GeneratePathSpeedProfile::GeneratePathSpeedProfile(
+  const std::string & name, const BT::NodeConfiguration & config)
+: BT::SyncActionNode(name, config)
+{
+  node_ = config.blackboard->get<rclcpp::Node::SharedPtr>("node");
+  server_timeout_ = config.blackboard->get<std::chrono::milliseconds>("server_timeout");
+  costmap_subscriber_ = std::make_unique<nav2_costmap_2d::CostmapSubscriber>(
+    rclcpp::Node::WeakPtr(node_), "/global_costmap/costmap_raw");
+  parameter_client_ = node_->create_client<rcl_interfaces::srv::GetParameters>(
+    "/controller_server/get_parameters");
+  publisher_ = node_->create_publisher<runner_interfaces::msg::PathSpeedProfile>(
+    "/navigation/path_speed_profile", eventQos());
+}
+
+BT::PortsList GeneratePathSpeedProfile::providedPorts()
+{
+  BT::RegisterJsonDefinition<nav_msgs::msg::Path>();
+  BT::RegisterJsonDefinition<std::chrono::milliseconds>();
+  return {
+    BT::InputPort<nav_msgs::msg::Path>("path", "Newly committed path"),
+    BT::InputPort<double>("creep_speed", 0.25, "Minimum nonzero profile speed"),
+    BT::InputPort<double>("curvature_window", 0.40, "Curvature window in metres"),
+    BT::InputPort<double>(
+      "max_lateral_acceleration", 0.35, "Curvature shaping acceleration"),
+    BT::InputPort<double>("tight_clearance", 0.15, "Clearance capped at creep"),
+    BT::InputPort<double>("free_clearance", 0.35, "Clearance allowing preset ceiling"),
+    BT::InputPort<double>("footprint_radius", 0.2444, "Conservative footprint radius"),
+    BT::InputPort<double>("braking_linear", 1.6, "Linear coefficient in a(v)"),
+    BT::InputPort<double>("braking_constant", 0.27, "Constant coefficient in a(v)"),
+    BT::InputPort<std::chrono::milliseconds>("server_timeout")
+  };
+}
+
+BT::NodeStatus GeneratePathSpeedProfile::tick()
+{
+  nav_msgs::msg::Path path;
+  if (!getInput("path", path) || path.poses.empty()) {
+    RCLCPP_WARN(node_->get_logger(), "Path speed profile fallback: committed path unavailable");
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  runner_path_speed_profile::ProfileConfig config;
+  getInput("creep_speed", config.creep_speed);
+  getInput("curvature_window", config.curvature_window);
+  getInput("max_lateral_acceleration", config.max_lateral_acceleration);
+  getInput("tight_clearance", config.tight_clearance);
+  getInput("free_clearance", config.free_clearance);
+  getInput("footprint_radius", config.footprint_radius);
+  getInput("braking_linear", config.braking_linear);
+  getInput("braking_constant", config.braking_constant);
+  getInput("server_timeout", server_timeout_);
+
+  double preset_ceiling = config.creep_speed;
+  bool preset_available = false;
+  auto request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
+  request->names.push_back("FollowPath.desired_linear_vel");
+  auto future = parameter_client_->async_send_request(request);
+  if (rclcpp::spin_until_future_complete(node_, future, server_timeout_) ==
+    rclcpp::FutureReturnCode::SUCCESS)
+  {
+    const auto response = future.get();
+    if (response->values.size() == 1u &&
+      response->values.front().type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE)
+    {
+      preset_ceiling = response->values.front().double_value;
+      preset_available = std::isfinite(preset_ceiling) && preset_ceiling >= config.creep_speed;
+    }
+  }
+
+  std::vector<double> clearance;
+  bool costmap_available = false;
+  try {
+    const auto costmap = costmap_subscriber_->getCostmap();
+    if (costmap) {
+      clearance = runner_path_speed_profile::costmapClearance(
+        path, *costmap, config.footprint_radius);
+      costmap_available = clearance.size() == path.poses.size();
+    }
+  } catch (const std::exception & error) {
+    RCLCPP_WARN(
+      node_->get_logger(), "Path speed profile costmap unavailable: %s", error.what());
+  }
+
+  auto profile = runner_path_speed_profile::makeProfile(
+    path, clearance, preset_ceiling, config);
+  profile.header.stamp = node_->now();
+  publisher_->publish(profile);
+  if (!preset_available || !costmap_available) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Path speed profile published with conservative fallback (%s%s)",
+      preset_available ? "" : "preset unavailable",
+      costmap_available ? "" :
+      (preset_available ? "costmap unavailable" : ", costmap unavailable"));
+  }
+  return BT::NodeStatus::SUCCESS;
+}
+
 }  // namespace runner_nav2_behavior_tree
 
 BT_REGISTER_NODES(factory)
@@ -372,4 +418,6 @@ BT_REGISTER_NODES(factory)
     "PersistentPathValid");
   factory.registerNodeType<runner_nav2_behavior_tree::ReportPathCommitment>(
     "ReportPathCommitment");
+  factory.registerNodeType<runner_nav2_behavior_tree::GeneratePathSpeedProfile>(
+    "GeneratePathSpeedProfile");
 }
