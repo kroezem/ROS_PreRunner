@@ -309,10 +309,11 @@ BT::NodeStatus PersistentPathValidCondition::tick()
   }
   validation_unavailable_reported_ = false;
 
+  const auto response = future.get();
   const auto before = persistence_.blockedObservations();
   const bool persistent = persistence_.observe(
-    future.get()->is_valid, required_observations);
-  if (future.get()->is_valid) {
+    response->is_valid, required_observations);
+  if (response->is_valid) {
     if (before > 0) {
       publish("committed_path_retained", "transient_blockage_cleared");
     }
