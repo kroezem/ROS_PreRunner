@@ -20,6 +20,12 @@ target_include_directories(runner_nav2_behavior_tree_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_compile_features(runner_nav2_behavior_tree_nodes PUBLIC cxx_std_17)
+# Required by behaviortree_cpp's BT_REGISTER_NODES macro: without it,
+# BT_RegisterNodesFromPlugin compiles with internal linkage and
+# BT::BehaviorTreeFactory::registerFromPlugin cannot dlsym it, so none of
+# this plugin's custom node types (PathExists, CandidatePathValid, etc.)
+# are ever registered.
+target_compile_definitions(runner_nav2_behavior_tree_nodes PRIVATE BT_PLUGIN_EXPORT)
 ament_target_dependencies(runner_nav2_behavior_tree_nodes
   behaviortree_cpp
   geometry_msgs
