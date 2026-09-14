@@ -96,50 +96,34 @@ def test_rpp_allows_reversing_and_uses_measured_speed_limits():
 
 def test_planner_reserves_curvature_headroom_for_path_tracking():
     """Smac plans below the physical limit so RPP can correct tracking."""
-    planners = _params()['planner_server']['ros__parameters']
+    planner = _params()['planner_server']['ros__parameters']['GridBased']
 
-    for planner_id in ('ForwardGridBased', 'ReverseGridBased'):
-        planner = planners[planner_id]
-        assert planner['minimum_turning_radius'] == 0.60
-        planned_curvature = 1.0 / planner['minimum_turning_radius']
-        physical_curvature = 2.1236
-        assert planned_curvature == pytest.approx(1.6667, abs=0.0001)
-        assert planned_curvature / physical_curvature < 0.79
+    assert planner['minimum_turning_radius'] == 0.60
+    planned_curvature = 1.0 / planner['minimum_turning_radius']
+    physical_curvature = 2.1236
+    assert planned_curvature == pytest.approx(1.6667, abs=0.0001)
+    assert planned_curvature / physical_curvature < 0.79
 
 
 def test_smac_smoothing_is_disabled_to_preserve_feasible_curvature():
     """The returned path retains the search path's curvature constraint."""
-    planners = _params()['planner_server']['ros__parameters']
+    planner = _params()['planner_server']['ros__parameters']['GridBased']
 
-    for planner_id in ('ForwardGridBased', 'ReverseGridBased'):
-        assert planners[planner_id]['smooth_path'] is False
-        assert 'smoother' not in planners[planner_id]
+    assert planner['smooth_path'] is False
+    assert 'smoother' not in planner
 
 
-def test_planner_policy_is_explicit_forward_first_then_reverse_fallback():
-    """One planner server owns matched Dubins and Reeds-Shepp generators."""
+def test_planner_is_one_reverse_capable_hybrid_astar():
+    """Smac directly returns both forward-only and reversing routes."""
     planner = _params()['planner_server']['ros__parameters']
 
-    assert planner['planner_plugins'] == [
-        'ForwardGridBased', 'ReverseGridBased',
-    ]
-    assert planner['ForwardGridBased']['motion_model_for_search'] == 'DUBIN'
-    assert (
-        planner['ReverseGridBased']['motion_model_for_search']
-        == 'REEDS_SHEPP'
+    assert planner['planner_plugins'] == ['GridBased']
+    assert planner['GridBased']['plugin'] == (
+        'nav2_smac_planner::SmacPlannerHybrid'
     )
-    preserved = (
-        'tolerance', 'downsample_costmap', 'downsampling_factor',
-        'allow_unknown', 'max_iterations', 'max_on_approach_iterations',
-        'max_planning_time', 'reverse_penalty', 'change_penalty',
-        'angle_quantization_bins', 'lookup_table_size',
-        'analytic_expansion_ratio', 'analytic_expansion_max_length',
-        'minimum_turning_radius', 'smooth_path',
-    )
-    for key in preserved:
-        assert planner['ForwardGridBased'][key] == (
-            planner['ReverseGridBased'][key]
-        )
+    assert planner['GridBased']['motion_model_for_search'] == 'REEDS_SHEPP'
+    assert planner['GridBased']['reverse_penalty'] == 8.0
+    assert planner['GridBased']['change_penalty'] == 20.0
 
 
 def test_goal_checker_requires_position_and_loose_final_heading():
@@ -331,17 +315,15 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     candidate = fallback.find(
         "./Sequence[@name='GenerateValidateAndCommitCandidate']"
     )
-    planner = candidate.find(
-        ".//ComputePathToPose[@planner_id='ForwardGridBased']"
-    )
+    planner = candidate.find('./ComputePathToPose')
     clear = recovery.find('./ClearEntireCostmap')
     follow = pipeline.find('./FollowPath')
 
-    assert tags.count('ComputePathToPose') == 2
+    assert tags.count('ComputePathToPose') == 1
     assert tags.count('IsPathValid') == 0
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('Fallback') == 8
+    assert tags.count('Fallback') == 3
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
@@ -350,9 +332,9 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     assert tags.count('UnsetBlackboard') == 2
     assert tags.count('PersistentPathValid') == 1
     assert tags.count('CandidatePathValid') == 1
-    assert tags.count('CertifyCandidatePath') == 2
+    assert tags.count('CertifyCandidatePath') == 0
     assert tags.count('PathExists') == 1
-    assert tags.count('ReportPathCommitment') == 10
+    assert tags.count('ReportPathCommitment') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
         'UnsetBlackboard', 'SetBlackboard', 'RecoveryNode',
@@ -419,7 +401,7 @@ def test_behavior_tree_clears_global_costmap_once_on_planning_failure():
     assert planner.attrib == {
         'goal': '{goal}',
         'path': '{candidate_path}',
-        'planner_id': 'ForwardGridBased',
+        'planner_id': 'GridBased',
         'error_code_id': '{compute_path_error_code}',
     }
     assert follow.attrib == {
@@ -461,18 +443,16 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     replan = fallback.find(
         "./Sequence[@name='GenerateValidateAndCommitCandidate']"
     )
-    planner = replan.find(
-        ".//ComputePathThroughPoses[@planner_id='ForwardGridBased']"
-    )
+    planner = replan.find('./ComputePathThroughPoses')
     clear = recovery.find('./ClearEntireCostmap')
     follow = pipeline.find('./FollowPath')
 
-    assert tags.count('ComputePathThroughPoses') == 2
+    assert tags.count('ComputePathThroughPoses') == 1
     assert tags.count('IsPathValid') == 0
     assert tags.count('RemovePassedGoals') == 1
     assert tags.count('FollowPath') == 1
     assert tags.count('PipelineSequence') == 1
-    assert tags.count('Fallback') == 8
+    assert tags.count('Fallback') == 3
     assert tags.count('ReactiveFallback') == 0
     assert tags.count('GlobalUpdatedGoal') == 1
     assert tags.count('RateController') == 1
@@ -481,9 +461,9 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     assert tags.count('UnsetBlackboard') == 2
     assert tags.count('PersistentPathValid') == 1
     assert tags.count('CandidatePathValid') == 1
-    assert tags.count('CertifyCandidatePath') == 2
+    assert tags.count('CertifyCandidatePath') == 0
     assert tags.count('PathExists') == 1
-    assert tags.count('ReportPathCommitment') == 10
+    assert tags.count('ReportPathCommitment') == 2
     assert startup.attrib == {'name': 'StartWithFreshPath'}
     assert [child.tag for child in startup] == [
         'UnsetBlackboard', 'SetBlackboard', 'RecoveryNode',
@@ -539,13 +519,13 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
     ).attrib['output_key'] == 'replan_reason'
     assert [child.tag for child in replan] == [
         'RemovePassedGoals',
-        'Fallback',
+        'ComputePathThroughPoses',
         'Fallback',
     ]
     assert planner.attrib == {
         'goals': '{goals}',
         'path': '{candidate_path}',
-        'planner_id': 'ForwardGridBased',
+        'planner_id': 'GridBased',
         'error_code_id': '{compute_path_error_code}',
     }
     assert follow.attrib == {
@@ -575,75 +555,19 @@ def test_route_behavior_tree_clears_global_costmap_once_on_plan_failure():
 
 
 @pytest.mark.parametrize('tree_path', (BT_PATH, ROUTE_BT_PATH))
-def test_candidate_selection_is_forward_first_certified_and_bounded(
-    tree_path,
-):
-    """Forward success wins; failure alone reaches the certified fallback."""
-    root = ET.parse(tree_path).getroot()
-    candidate = root.find(
-        ".//Sequence[@name='GenerateValidateAndCommitCandidate']"
-    )
-    selector = candidate.find(
-        "./Fallback[@name='SelectCertifiedCandidateForwardFirst']"
-    )
-    forward, reverse, exhausted = selector.findall('./Sequence')
-    planner_tag = (
-        'ComputePathToPose'
-        if tree_path == BT_PATH else 'ComputePathThroughPoses'
-    )
-
-    assert forward.attrib == {'name': 'TryForwardCandidate'}
-    assert reverse.attrib == {'name': 'TryReverseFallbackCandidate'}
-    assert forward.find(
-        f".//{planner_tag}[@planner_id='ForwardGridBased']"
-    ) is not None
-    assert reverse.find(
-        f".//{planner_tag}[@planner_id='ReverseGridBased']"
-    ) is not None
-    assert reverse.find('./ReportPathCommitment').attrib == {
-        'event': 'reverse_fallback_attempted',
-        'reason': 'forward_no_certified_candidate',
-    }
-    assert exhausted.find('./ReportPathCommitment').attrib == {
-        'event': 'planning_exhausted',
-        'reason': 'no_certified_candidate',
-    }
-    assert exhausted.find('./AlwaysFailure') is not None
-
-    for branch in (forward, reverse):
-        certification = branch.find('.//CertifyCandidatePath')
-        assert certification.attrib == {
-            'path': '{candidate_path}',
-            'physical_curvature_limit': '2.1236',
-            'curvature_margin': '0.95',
-            'curvature_window': '0.15',
-            'minimum_reversal_segment': '0.10',
-            'minimum_pose_step': '0.01',
-            'direction_projection_threshold': '0.5',
-            'certification_reason': '{candidate_certification_reason}',
-        }
-
-    # Selection branches can only produce candidate_path. The sole committed
-    # path write remains after selection and Stage-C freshness validation.
-    assert selector.find(".//SetBlackboard[@output_key='path']") is None
-    children = list(candidate)
-    selector_index = children.index(selector)
-    assert children[selector_index + 1].attrib == {
-        'name': 'ValidateCandidateAgainstCurrentGlobalCostmap',
-    }
-
-
-@pytest.mark.parametrize('tree_path', (BT_PATH, ROUTE_BT_PATH))
 def test_candidate_is_validated_before_it_can_replace_committed_path(
     tree_path,
 ):
     """A stale candidate fails closed; only a current-valid candidate commits."""
     root = ET.parse(tree_path).getroot()
+    tags = [element.tag for element in root.iter()]
     validation = root.find(
         ".//Fallback[@name='ValidateCandidateAgainstCurrentGlobalCostmap']"
     )
     accept, reject = validation.findall('./Sequence')
 
+    assert tags.count('CandidatePathValid') == 1
+    assert 'CertifyCandidatePath' not in tags
     assert [child.tag for child in accept] == [
         'CandidatePathValid', 'SetBlackboard', 'ReportPathCommitment',
     ]

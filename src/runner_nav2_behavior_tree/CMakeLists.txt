@@ -14,7 +14,6 @@ find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
 add_library(runner_nav2_behavior_tree_nodes SHARED
-  src/candidate_path_certification.cpp
   src/commitment_nodes.cpp)
 target_include_directories(runner_nav2_behavior_tree_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -46,11 +45,6 @@ install(DIRECTORY include/ DESTINATION include)
 if(BUILD_TESTING)
   ament_add_gtest(test_blockage_persistence test/test_blockage_persistence.cpp)
   target_include_directories(test_blockage_persistence PRIVATE include)
-  ament_add_gtest(test_candidate_path_certification
-    test/test_candidate_path_certification.cpp
-    src/candidate_path_certification.cpp)
-  target_include_directories(test_candidate_path_certification PRIVATE include)
-  ament_target_dependencies(test_candidate_path_certification nav_msgs)
 endif()
 
 ament_export_include_directories(include)

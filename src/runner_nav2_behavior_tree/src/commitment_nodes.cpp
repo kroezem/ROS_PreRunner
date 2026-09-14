@@ -59,71 +59,6 @@ CandidatePathValidCondition::CandidatePathValidCondition(
     config.blackboard->get<std::chrono::milliseconds>("server_timeout");
 }
 
-CertifyCandidatePathCondition::CertifyCandidatePathCondition(
-  const std::string & name, const BT::NodeConfiguration & config)
-: BT::ConditionNode(name, config)
-{
-  node_ = config.blackboard->get<rclcpp::Node::SharedPtr>("node");
-  client_ = node_->create_client<nav2_msgs::srv::IsPathValid>("is_path_valid");
-  server_timeout_ =
-    config.blackboard->get<std::chrono::milliseconds>("server_timeout");
-}
-
-BT::PortsList CertifyCandidatePathCondition::providedPorts()
-{
-  BT::RegisterJsonDefinition<nav_msgs::msg::Path>();
-  BT::RegisterJsonDefinition<std::chrono::milliseconds>();
-  return {
-    BT::InputPort<nav_msgs::msg::Path>("path", "Smac candidate path"),
-    BT::InputPort<double>("physical_curvature_limit", 2.1236, "Physical curvature limit in 1/m"),
-    BT::InputPort<double>("curvature_margin", 0.95, "Fraction of physical curvature limit"),
-    BT::InputPort<double>("curvature_window", 0.15, "Curvature measurement window in metres"),
-    BT::InputPort<double>("minimum_reversal_segment", 0.10, "Minimum useful segment at a cusp"),
-    BT::InputPort<double>("minimum_pose_step", 0.01, "Ignored pose-noise distance in metres"),
-    BT::InputPort<double>("direction_projection_threshold", 0.5, "Direction classification cosine"),
-    BT::InputPort<std::chrono::milliseconds>("server_timeout"),
-    BT::OutputPort<std::string>("certification_reason", "Certification result reason")
-  };
-}
-
-BT::NodeStatus CertifyCandidatePathCondition::tick()
-{
-  nav_msgs::msg::Path path;
-  CandidatePathCertificationConfig config;
-  getInput("path", path);
-  getInput("physical_curvature_limit", config.physical_curvature_limit);
-  getInput("curvature_margin", config.curvature_margin);
-  getInput("curvature_window", config.curvature_window);
-  getInput("minimum_reversal_segment", config.minimum_reversal_segment);
-  getInput("minimum_pose_step", config.minimum_pose_step);
-  getInput("direction_projection_threshold", config.direction_projection_threshold);
-  getInput("server_timeout", server_timeout_);
-
-  const auto geometry = certifyCandidateGeometry(path, config);
-  setOutput("certification_reason", geometry.reason);
-  if (!geometry.accepted) {
-    return BT::NodeStatus::FAILURE;
-  }
-
-  // This is the certification footprint sweep in the planner server's global
-  // planning representation. CandidatePathValid deliberately repeats the
-  // query afterward as Stage C's current-live-costmap freshness boundary.
-  auto request = std::make_shared<nav2_msgs::srv::IsPathValid::Request>();
-  request->path = path;
-  auto future = client_->async_send_request(request);
-  if (rclcpp::spin_until_future_complete(node_, future, server_timeout_) !=
-    rclcpp::FutureReturnCode::SUCCESS)
-  {
-    setOutput("certification_reason", std::string("certification_footprint_check_unavailable"));
-    return BT::NodeStatus::FAILURE;
-  }
-  if (!future.get()->is_valid) {
-    setOutput("certification_reason", std::string("footprint_sweep_lethal"));
-    return BT::NodeStatus::FAILURE;
-  }
-  return BT::NodeStatus::SUCCESS;
-}
-
 BT::PortsList CandidatePathValidCondition::providedPorts()
 {
   BT::RegisterJsonDefinition<nav_msgs::msg::Path>();
@@ -433,8 +368,6 @@ BT_REGISTER_NODES(factory)
     "PathExists");
   factory.registerNodeType<runner_nav2_behavior_tree::CandidatePathValidCondition>(
     "CandidatePathValid");
-  factory.registerNodeType<runner_nav2_behavior_tree::CertifyCandidatePathCondition>(
-    "CertifyCandidatePath");
   factory.registerNodeType<runner_nav2_behavior_tree::PersistentPathValidCondition>(
     "PersistentPathValid");
   factory.registerNodeType<runner_nav2_behavior_tree::ReportPathCommitment>(

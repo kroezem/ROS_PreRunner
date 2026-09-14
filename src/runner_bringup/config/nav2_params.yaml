@@ -12,32 +12,8 @@ planner_server:
     expected_planner_frequency: 1.0
     costmap_update_timeout: 1.0
     planner_plugins:
-      - ForwardGridBased
-      - ReverseGridBased
-    # Candidate-B D1: explicit forward-only search first. The BT alone opens
-    # ReverseGridBased after forward planning/certification failure. Both are
-    # plugins in this one server and use the same authoritative global costmap.
-    ForwardGridBased:
-      plugin: nav2_smac_planner::SmacPlannerHybrid
-      tolerance: 0.125
-      downsample_costmap: false
-      downsampling_factor: 1
-      allow_unknown: false
-      max_iterations: 1000000
-      max_on_approach_iterations: 1000
-      max_planning_time: 5.0
-      motion_model_for_search: DUBIN
-      reverse_penalty: 8.0
-      change_penalty: 20.0
-      angle_quantization_bins: 72
-      lookup_table_size: 5.0
-      analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 3.0
-      minimum_turning_radius: 0.60
-      # Jazzy's gradient smoother tightened measured paths beyond this
-      # Ackermann vehicle's curvature limit.
-      smooth_path: false
-    ReverseGridBased:
+      - GridBased
+    GridBased:
       plugin: nav2_smac_planner::SmacPlannerHybrid
       tolerance: 0.125
       downsample_costmap: false
