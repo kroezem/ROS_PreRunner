@@ -100,8 +100,8 @@ TEST(PathSpeedProfile, ClearanceShapesWithoutCreatingNonStopZero)
   appendPose(path, 1.5);
   const auto profile = runner_path_speed_profile::makeProfile(
     path, {1.0, 0.0, 1.0, 1.0}, 1.0, {});
-  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, 0.25);
-  EXPECT_GT(profile.points[0].speed_ceiling_mps, 0.25);
+  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, 0.40);
+  EXPECT_GT(profile.points[0].speed_ceiling_mps, 0.40);
   EXPECT_DOUBLE_EQ(profile.points.back().speed_ceiling_mps, 0.0);
 }
 
@@ -114,8 +114,8 @@ TEST(PathSpeedProfile, SamplesBelowRppNormalFloorAndAtExactZero)
   appendPose(path, 0.4);
   const auto profile = runner_path_speed_profile::makeProfile(
     path, std::vector<double>(3, 0.0), 0.45, {});
-  EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.0), 0.25);
-  EXPECT_LT(runner_path_speed_profile::sampleCeiling(profile, 0.3), 0.30);
+  EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.0), 0.40);
+  EXPECT_LT(runner_path_speed_profile::sampleCeiling(profile, 0.3), 0.45);
   EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.4), 0.0);
 }
 
@@ -166,28 +166,60 @@ TEST(PathSpeedProfile, ClearanceLawDependsOnPresetAndPreservesExactStops)
   EXPECT_DOUBLE_EQ(insane.points.back().speed_ceiling_mps, 0.0);
 }
 
-TEST(PathSpeedProfile, ForwardRecoveryIsFasterThanBackwardBraking)
+TEST(PathSpeedProfile, RecoveryAccelerationIncreasesWithSpeed)
 {
+  runner_path_speed_profile::ProfileConfig config;
+  const auto recovery_after_step = [&](double starting_speed) {
+      nav_msgs::msg::Path path;
+      path.header.frame_id = "map";
+      for (int i = 0; i <= 100; ++i) {
+        appendPose(path, 0.1 * i);
+      }
+      const double preset = 1.5;
+      const double initial_clearance = config.clearance_half_speed *
+        (starting_speed - config.creep_speed) / (preset - starting_speed);
+      std::vector<double> clearance(path.poses.size(), 100.0);
+      clearance.front() = initial_clearance;
+      return runner_path_speed_profile::makeProfile(
+        path, clearance, preset, config).points[1].speed_ceiling_mps;
+    };
+
+  const double low_start = config.creep_speed;
+  const double medium_start = 0.8;
+  const double low_recovered = recovery_after_step(low_start);
+  const double medium_recovered = recovery_after_step(medium_start);
+  const double low_effective_acceleration =
+    (low_recovered * low_recovered - low_start * low_start) / 0.2;
+  const double medium_effective_acceleration =
+    (medium_recovered * medium_recovered - medium_start * medium_start) / 0.2;
+
+  EXPECT_NEAR(
+    config.recovery_acceleration_gain * 0.25 +
+    config.recovery_acceleration_floor, 1.0, 1e-12);
+  EXPECT_GT(medium_effective_acceleration, low_effective_acceleration);
+  EXPECT_GT(medium_effective_acceleration, 1.0);
+}
+
+TEST(PathSpeedProfile, RecoveryNeverExceedsRawCeiling)
+{
+  runner_path_speed_profile::ProfileConfig config;
   nav_msgs::msg::Path path;
   path.header.frame_id = "map";
-  for (int i = 0; i < 6; ++i) {
-    appendPose(path, 0.3 * i);
+  for (int i = 0; i <= 100; ++i) {
+    appendPose(path, 0.1 * i);
   }
-  runner_path_speed_profile::ProfileConfig config;
-  config.recovery_acceleration = 5.0;  // deliberately much faster than braking
-  // Force a full creep zone at the very start (post-constraint recovery)
-  // and a symmetric approach to a stop at the very end (pre-stop braking)
-  // over an equal number of poses/distance, then compare how far the
-  // ceiling has climbed vs. how far it has fallen.
-  const std::vector<double> clearance = {0.0, 1.0, 1.0, 1.0, 1.0, 0.0};
+  const double preset = 1.5;
+  const double raw_target = 0.55;
+  const double target_clearance = config.clearance_half_speed *
+    (raw_target - config.creep_speed) / (preset - raw_target);
+  std::vector<double> clearance(path.poses.size(), 100.0);
+  clearance.front() = 0.0;
+  clearance[1] = target_clearance;
+
   const auto profile = runner_path_speed_profile::makeProfile(
-    path, clearance, 2.0, config);
-  const double recovered_by_pose_2 = profile.points[2].speed_ceiling_mps;
-  const double braked_by_pose_3 = profile.points[3].speed_ceiling_mps;
-  // Recovery from creep_speed at pose 1 should climb faster over the same
-  // 0.3 m step than braking descends approaching the symmetric endpoint.
-  EXPECT_GT(recovered_by_pose_2 - config.creep_speed, 0.0);
-  EXPECT_GT(recovered_by_pose_2, braked_by_pose_3);
+    path, clearance, preset, config);
+  EXPECT_LE(profile.points[1].speed_ceiling_mps, raw_target);
+  EXPECT_NEAR(profile.points[1].speed_ceiling_mps, raw_target, 1e-12);
 }
 
 TEST(PathSpeedProfile, ReactionTimeStartsBackwardRestrictionEarlier)

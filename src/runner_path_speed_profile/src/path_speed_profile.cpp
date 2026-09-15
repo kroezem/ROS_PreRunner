@@ -148,18 +148,40 @@ double reachableSpeed(
 }
 
 // Forward recovery is deliberately not the inverse of reachableSpeed()
-// above: it uses plain constant-acceleration kinematics so release after a
-// constraint can be tuned (recovery_acceleration) independently of the
-// braking model used to approach one.
+// above. Its independently tuned acceleration rises with speed, avoiding a
+// flat high-speed recovery cap without granting authority above the raw
+// clearance/curvature/cusp/goal ceiling supplied by the caller.
 double reachableSpeedByAcceleration(
-  double from_speed, double distance, double ceiling, double acceleration)
+  double from_speed, double distance, double ceiling, double acceleration_gain,
+  double acceleration_floor)
 {
   if (distance <= 0.0) {
     return std::min(from_speed, ceiling);
   }
-  const double reachable = std::sqrt(
-    std::max(0.0, from_speed * from_speed + 2.0 * acceleration * distance));
-  return std::min(reachable, ceiling);
+  // Integrating v dv/ds = gain * v + floor gives distance as a monotonic
+  // function of the reachable speed. Solve it by bisection to retain the
+  // exact raw ceiling as the upper bound.
+  const auto recovery_distance = [&](double speed) {
+      const double from_term = acceleration_gain * from_speed + acceleration_floor;
+      const double speed_term = acceleration_gain * speed + acceleration_floor;
+      return (speed - from_speed) / acceleration_gain -
+             acceleration_floor / (acceleration_gain * acceleration_gain) *
+             std::log(speed_term / from_term);
+    };
+  if (from_speed >= ceiling || recovery_distance(ceiling) <= distance) {
+    return ceiling;
+  }
+  double low = from_speed;
+  double high = ceiling;
+  for (int iteration = 0; iteration < 48; ++iteration) {
+    const double middle = 0.5 * (low + high);
+    if (recovery_distance(middle) <= distance) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
 }
 
 // Per-pose continuous clearance ceiling, before curvature and longitudinal
@@ -189,7 +211,10 @@ bool validConfig(const ProfileConfig & c)
          std::isfinite(c.braking_linear) && c.braking_linear > 0.0 &&
          std::isfinite(c.braking_constant) && c.braking_constant > 0.0 &&
          std::isfinite(c.reaction_time_s) && c.reaction_time_s >= 0.0 &&
-         std::isfinite(c.recovery_acceleration) && c.recovery_acceleration > 0.0 &&
+         std::isfinite(c.recovery_acceleration_gain) &&
+         c.recovery_acceleration_gain > 0.0 &&
+         std::isfinite(c.recovery_acceleration_floor) &&
+         c.recovery_acceleration_floor > 0.0 &&
          std::isfinite(c.minimum_pose_step) && c.minimum_pose_step > 0.0 &&
          std::isfinite(c.direction_projection_threshold) &&
          c.direction_projection_threshold > 0.0 && c.direction_projection_threshold < 1.0;
@@ -388,14 +413,13 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
   }
   ceiling.back() = 0.0;
 
-  // Forward pass: release back toward the ceiling bounded by plain
-  // constant-acceleration kinematics (recovery_acceleration), independent
-  // of the braking model below, so recovery need not be as conservative
-  // as the stop it follows.
+  // Forward pass: release back toward the raw ceiling with the independent
+  // speed-dependent recovery model. std::min preserves that raw authority.
   for (std::size_t i = 1; i < ceiling.size(); ++i) {
     ceiling[i] = std::min(
       ceiling[i], reachableSpeedByAcceleration(
-        ceiling[i - 1u], s[i] - s[i - 1u], preset_ceiling, config.recovery_acceleration));
+        ceiling[i - 1u], s[i] - s[i - 1u], preset_ceiling,
+        config.recovery_acceleration_gain, config.recovery_acceleration_floor));
   }
   // Backward pass: the adopted a(v)=1.6v+0.27 braking model integrated into
   // a stopping-distance potential, plus reaction-time travel. The augmented

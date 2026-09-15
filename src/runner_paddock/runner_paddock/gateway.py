@@ -33,6 +33,8 @@ from enum import IntEnum
 import math
 from typing import Optional
 
+from runner_paddock.autonomy_tuning import PRESETS as AUTONOMY_PRESETS
+
 
 # Mirror of runner_interfaces/PaddockControlEvent event constants.
 class ControlEvent(IntEnum):
@@ -422,7 +424,7 @@ class OperatorGateway:
         preset = str(action.get('preset', '')).strip().lower()
         values = action.get('values', {})
         if preset:
-            if preset not in ('timid', 'confident', 'insane') or values:
+            if preset not in AUTONOMY_PRESETS or values:
                 return self._reject(conn_id, 'invalid autonomy preset request')
         elif not isinstance(values, dict):
             return self._reject(conn_id, 'autonomy tuning values must be an object')

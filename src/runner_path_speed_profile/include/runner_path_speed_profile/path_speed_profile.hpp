@@ -17,10 +17,10 @@ namespace runner_path_speed_profile
 
 struct ProfileConfig
 {
-  double creep_speed{0.25};
+  double creep_speed{0.40};
   // Clearance beyond footprint_radius at which the continuous clearance
   // ceiling is halfway from creep_speed to the active preset ceiling.
-  double clearance_half_speed{0.075};
+  double clearance_half_speed{0.05};
   double curvature_window{0.40};
   double max_lateral_acceleration{0.35};
   double footprint_radius{0.2444};
@@ -30,11 +30,11 @@ struct ProfileConfig
   // steering/vehicle response lag. This augments, rather than recalibrates,
   // the braking model above.
   double reaction_time_s{0.40};
-  // Forward recovery after a constraint is bounded by simple constant-
-  // acceleration kinematics, deliberately independent of the braking
-  // model above, so release back to the ceiling need not be as
-  // conservative as the stop it is bounded by.
-  double recovery_acceleration{1.0};
+  // Forward recovery uses a(v) = gain * v + floor, deliberately independent
+  // of the braking model above. At the former 0.25 m/s creep speed this keeps
+  // the previous 1.0 m/s^2 recovery while releasing faster at higher speed.
+  double recovery_acceleration_gain{1.6};
+  double recovery_acceleration_floor{0.60};
   double minimum_pose_step{1e-4};
   double direction_projection_threshold{0.5};
 };

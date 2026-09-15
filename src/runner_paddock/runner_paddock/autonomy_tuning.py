@@ -101,8 +101,13 @@ PARAMETERS = {
     'reaction_time_s': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.reaction_time_s',
     ),
-    'recovery_acceleration': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.recovery_acceleration',
+    'recovery_acceleration_gain': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.recovery_acceleration_gain',
+    ),
+    'recovery_acceleration_floor': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.recovery_acceleration_floor',
     ),
 }
 
@@ -126,7 +131,8 @@ TIMID = {
     'creep_speed': 0.25,
     'clearance_half_speed': 0.075,
     'reaction_time_s': 0.40,
-    'recovery_acceleration': 1.0,
+    'recovery_acceleration_gain': 1.6,
+    'recovery_acceleration_floor': 0.60,
 }
 
 CONFIDENT = {
@@ -135,6 +141,8 @@ CONFIDENT = {
     'maximum_commanded_speed': 1.00,
     'regulated_linear_scaling_min_speed': 0.40,
     'max_allowed_time_to_collision_up_to_carrot': 0.60,
+    'creep_speed': 0.40,
+    'clearance_half_speed': 0.05,
 }
 
 INSANE = {

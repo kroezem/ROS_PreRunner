@@ -170,6 +170,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-tuning-field="output_max"' in response.text
         assert 'data-tuning-field="clearance_half_speed"' in response.text
         assert 'data-tuning-field="reaction_time_s"' in response.text
+        assert 'data-tuning-field="recovery_acceleration_gain"' in response.text
+        assert 'data-tuning-field="recovery_acceleration_floor"' in response.text
         assert 'data-speed-preset="absurd"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text

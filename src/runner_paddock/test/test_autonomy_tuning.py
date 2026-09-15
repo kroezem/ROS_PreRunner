@@ -60,7 +60,8 @@ def test_timid_exactly_reproduces_committed_conservative_policy():
         'creep_speed': 0.25,
         'clearance_half_speed': 0.075,
         'reaction_time_s': 0.40,
-        'recovery_acceleration': 1.0,
+        'recovery_acceleration_gain': 1.6,
+        'recovery_acceleration_floor': 0.60,
     }
     assert matching_preset(validate_values(dict(TIMID))) == 'timid'
 
@@ -72,6 +73,8 @@ def test_confident_v1_exact_values_and_owner_partition():
         'maximum_commanded_speed': 1.00,
         'regulated_linear_scaling_min_speed': 0.40,
         'max_allowed_time_to_collision_up_to_carrot': 0.60,
+        'creep_speed': 0.40,
+        'clearance_half_speed': 0.05,
     }
     values = validate_values(dict(CONFIDENT))
     assert matching_preset(values) == 'confident'
@@ -90,7 +93,9 @@ def test_confident_v1_exact_values_and_owner_partition():
         spec.parameter_name for spec in PARAMETERS.values()
         if spec.owner == NAVIGATOR_OWNER
     }
-    assert navigator['speed_policy.clearance_half_speed'] == 0.075
+    assert navigator['speed_policy.clearance_half_speed'] == 0.05
+    assert navigator['speed_policy.recovery_acceleration_gain'] == 1.6
+    assert navigator['speed_policy.recovery_acceleration_floor'] == 0.60
     assert navigator['speed_policy.reaction_time_s'] == 0.40
     assert '/speed_limit' not in str(PARAMETERS)
     assert 'cost_scaling_dist' not in PARAMETERS

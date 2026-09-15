@@ -74,7 +74,7 @@ def test_rpp_allows_reversing_and_uses_measured_speed_limits():
         == 'nav2_regulated_pure_pursuit_controller::'
         'RegulatedPurePursuitController'
     )
-    assert rpp['desired_linear_vel'] == 0.45
+    assert rpp['desired_linear_vel'] == 1.00
     assert rpp['min_approach_linear_velocity'] == 0.25
     assert rpp['allow_reversing'] is True
     assert controller['failure_tolerance'] == 2.0
@@ -85,13 +85,13 @@ def test_rpp_allows_reversing_and_uses_measured_speed_limits():
     assert rpp['max_lookahead_dist'] == 0.80
     assert rpp['lookahead_time'] == 1.0
     assert rpp['regulated_linear_scaling_min_radius'] == 0.75
-    assert rpp['regulated_linear_scaling_min_speed'] == 0.30
+    assert rpp['regulated_linear_scaling_min_speed'] == 0.40
     assert rpp['path_speed_profile_fallback'] == 0.25
     assert rpp['use_cost_regulated_linear_velocity_scaling'] is False
     assert rpp['inflation_cost_scaling_factor'] == 10.0
     assert rpp['cost_scaling_dist'] == 0.45
     assert rpp['use_collision_detection'] is True
-    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.15
+    assert rpp['max_allowed_time_to_collision_up_to_carrot'] == 0.60
     assert controller['enable_stamped_cmd_vel'] is False
 
 
@@ -624,15 +624,16 @@ def test_bt_navigator_owns_the_complete_d2_speed_policy():
     """Both BT engines consume one public policy owned by bt_navigator."""
     navigator = _params()['bt_navigator']['ros__parameters']
     expected = {
-        'speed_policy.creep_speed': 0.25,
-        'speed_policy.clearance_half_speed': 0.075,
+        'speed_policy.creep_speed': 0.40,
+        'speed_policy.clearance_half_speed': 0.05,
         'speed_policy.curvature_window': 0.40,
         'speed_policy.max_lateral_acceleration': 0.35,
         'speed_policy.footprint_radius': 0.2444,
         'speed_policy.braking_linear': 1.6,
         'speed_policy.braking_constant': 0.27,
         'speed_policy.reaction_time_s': 0.40,
-        'speed_policy.recovery_acceleration': 1.0,
+        'speed_policy.recovery_acceleration_gain': 1.6,
+        'speed_policy.recovery_acceleration_floor': 0.60,
     }
     assert {name: navigator[name] for name in expected} == expected
 
