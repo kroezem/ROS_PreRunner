@@ -191,6 +191,17 @@ bt_navigator:
     robot_base_frame: base_link
     odom_topic: /odometry/filtered
     transform_tolerance: 0.3
+    speed_policy.creep_speed: 0.25
+    speed_policy.caution_speed: 0.5
+    speed_policy.curvature_window: 0.40
+    speed_policy.max_lateral_acceleration: 0.35
+    speed_policy.passable_clearance: 0.15
+    speed_policy.open_clearance: 0.35
+    speed_policy.min_tier_run_length: 0.30
+    speed_policy.footprint_radius: 0.2444
+    speed_policy.braking_linear: 1.6
+    speed_policy.braking_constant: 0.27
+    speed_policy.recovery_acceleration: 1.0
     plugin_lib_names:
       - runner_nav2_behavior_tree_nodes
     navigators:

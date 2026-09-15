@@ -620,6 +620,32 @@ def test_both_navigators_are_configured_with_explicit_trees():
     ]
 
 
+def test_bt_navigator_owns_the_complete_d2_speed_policy():
+    """Both BT engines consume one public policy owned by bt_navigator."""
+    navigator = _params()['bt_navigator']['ros__parameters']
+    expected = {
+        'speed_policy.creep_speed': 0.25,
+        'speed_policy.caution_speed': 0.5,
+        'speed_policy.curvature_window': 0.40,
+        'speed_policy.max_lateral_acceleration': 0.35,
+        'speed_policy.passable_clearance': 0.15,
+        'speed_policy.open_clearance': 0.35,
+        'speed_policy.min_tier_run_length': 0.30,
+        'speed_policy.footprint_radius': 0.2444,
+        'speed_policy.braking_linear': 1.6,
+        'speed_policy.braking_constant': 0.27,
+        'speed_policy.recovery_acceleration': 1.0,
+    }
+    assert {name: navigator[name] for name in expected} == expected
+
+    source = (
+        PACKAGE.parent / 'runner_nav2_behavior_tree' / 'src'
+        / 'commitment_nodes.cpp'
+    ).read_text()
+    assert '"/bt_navigator/get_parameters"' in source
+    assert 'declare_parameter' not in source
+
+
 def test_stage2_topic_ownership_and_no_collision_monitor_remain():
     """Stage 3 does not bypass the adapter/mux or add Collision Monitor."""
     source_tree = PACKAGE.parent

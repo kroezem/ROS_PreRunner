@@ -33,56 +33,28 @@ rclcpp::QoS eventQos()
   return rclcpp::QoS(rclcpp::KeepLast(10)).reliable().transient_local();
 }
 
-void declareSpeedPolicyParameterIfAbsent(
-  rclcpp::Node & node, const std::string & name, double value)
-{
-  if (!node.has_parameter(name)) {
-    node.declare_parameter(name, value);
-  }
-}
-
-// Declared on the shared bt_navigator node (not as BT ports) so Paddock can
-// change them live via the standard parameter services, with no rebuild and
-// no BT XML edit; a fresh commit picks up whatever is current at tick time.
-void declareSpeedPolicyParameters(rclcpp::Node & node)
-{
-  const runner_path_speed_profile::ProfileConfig defaults;
-  declareSpeedPolicyParameterIfAbsent(node, "speed_policy.creep_speed", defaults.creep_speed);
-  declareSpeedPolicyParameterIfAbsent(node, "speed_policy.caution_speed", defaults.caution_speed);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.curvature_window", defaults.curvature_window);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.max_lateral_acceleration", defaults.max_lateral_acceleration);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.passable_clearance", defaults.passable_clearance);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.open_clearance", defaults.open_clearance);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.min_tier_run_length", defaults.min_tier_run_length);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.footprint_radius", defaults.footprint_radius);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.braking_linear", defaults.braking_linear);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.braking_constant", defaults.braking_constant);
-  declareSpeedPolicyParameterIfAbsent(
-    node, "speed_policy.recovery_acceleration", defaults.recovery_acceleration);
-}
-
-runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(rclcpp::Node & node)
+runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
+  const rcl_interfaces::srv::GetParameters::Response & response)
 {
   runner_path_speed_profile::ProfileConfig config;
-  node.get_parameter("speed_policy.creep_speed", config.creep_speed);
-  node.get_parameter("speed_policy.caution_speed", config.caution_speed);
-  node.get_parameter("speed_policy.curvature_window", config.curvature_window);
-  node.get_parameter("speed_policy.max_lateral_acceleration", config.max_lateral_acceleration);
-  node.get_parameter("speed_policy.passable_clearance", config.passable_clearance);
-  node.get_parameter("speed_policy.open_clearance", config.open_clearance);
-  node.get_parameter("speed_policy.min_tier_run_length", config.min_tier_run_length);
-  node.get_parameter("speed_policy.footprint_radius", config.footprint_radius);
-  node.get_parameter("speed_policy.braking_linear", config.braking_linear);
-  node.get_parameter("speed_policy.braking_constant", config.braking_constant);
-  node.get_parameter("speed_policy.recovery_acceleration", config.recovery_acceleration);
+  if (response.values.size() != 11u || std::any_of(
+      response.values.begin(), response.values.end(), [](const auto & value) {
+        return value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
+      }))
+  {
+    return config;
+  }
+  config.creep_speed = response.values[0].double_value;
+  config.caution_speed = response.values[1].double_value;
+  config.curvature_window = response.values[2].double_value;
+  config.max_lateral_acceleration = response.values[3].double_value;
+  config.passable_clearance = response.values[4].double_value;
+  config.open_clearance = response.values[5].double_value;
+  config.min_tier_run_length = response.values[6].double_value;
+  config.footprint_radius = response.values[7].double_value;
+  config.braking_linear = response.values[8].double_value;
+  config.braking_constant = response.values[9].double_value;
+  config.recovery_acceleration = response.values[10].double_value;
   return config;
 }
 
@@ -369,13 +341,14 @@ GeneratePathSpeedProfile::GeneratePathSpeedProfile(
   server_timeout_ = config.blackboard->get<std::chrono::milliseconds>("server_timeout");
   costmap_subscriber_ = std::make_unique<nav2_costmap_2d::CostmapSubscriber>(
     rclcpp::Node::WeakPtr(node_), "/global_costmap/costmap_raw");
-  parameter_client_ = node_->create_client<rcl_interfaces::srv::GetParameters>(
+  controller_parameter_client_ = node_->create_client<rcl_interfaces::srv::GetParameters>(
     "/controller_server/get_parameters");
+  policy_parameter_client_ = node_->create_client<rcl_interfaces::srv::GetParameters>(
+    "/bt_navigator/get_parameters");
   profile_client_ = node_->create_client<runner_interfaces::srv::SetPathSpeedProfile>(
     "/controller_server/FollowPath/set_path_speed_profile");
   publisher_ = node_->create_publisher<runner_interfaces::msg::PathSpeedProfile>(
     "/navigation/path_speed_profile", eventQos());
-  declareSpeedPolicyParameters(*node_);
 }
 
 BT::PortsList GeneratePathSpeedProfile::providedPorts()
@@ -396,14 +369,33 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
     return BT::NodeStatus::SUCCESS;
   }
 
-  runner_path_speed_profile::ProfileConfig config = readSpeedPolicyParameters(*node_);
   getInput("server_timeout", server_timeout_);
+
+  runner_path_speed_profile::ProfileConfig config;
+  auto policy_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
+  policy_request->names = {
+    "speed_policy.creep_speed", "speed_policy.caution_speed",
+    "speed_policy.curvature_window", "speed_policy.max_lateral_acceleration",
+    "speed_policy.passable_clearance", "speed_policy.open_clearance",
+    "speed_policy.min_tier_run_length", "speed_policy.footprint_radius",
+    "speed_policy.braking_linear", "speed_policy.braking_constant",
+    "speed_policy.recovery_acceleration"};
+  auto policy_future = policy_parameter_client_->async_send_request(policy_request);
+  if (rclcpp::spin_until_future_complete(node_, policy_future, server_timeout_) ==
+    rclcpp::FutureReturnCode::SUCCESS)
+  {
+    config = readSpeedPolicyParameters(*policy_future.get());
+  } else {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Path speed profile policy unavailable from /bt_navigator; using committed defaults");
+  }
 
   double preset_ceiling = config.creep_speed;
   bool preset_available = false;
   auto request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
   request->names.push_back("FollowPath.desired_linear_vel");
-  auto future = parameter_client_->async_send_request(request);
+  auto future = controller_parameter_client_->async_send_request(request);
   if (rclcpp::spin_until_future_complete(node_, future, server_timeout_) ==
     rclcpp::FutureReturnCode::SUCCESS)
   {

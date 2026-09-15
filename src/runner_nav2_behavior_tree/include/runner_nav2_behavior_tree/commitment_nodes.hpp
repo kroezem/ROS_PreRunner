@@ -104,7 +104,8 @@ public:
 private:
   rclcpp::Node::SharedPtr node_;
   std::unique_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_subscriber_;
-  rclcpp::Client<rcl_interfaces::srv::GetParameters>::SharedPtr parameter_client_;
+  rclcpp::Client<rcl_interfaces::srv::GetParameters>::SharedPtr controller_parameter_client_;
+  rclcpp::Client<rcl_interfaces::srv::GetParameters>::SharedPtr policy_parameter_client_;
   rclcpp::Client<runner_interfaces::srv::SetPathSpeedProfile>::SharedPtr profile_client_;
   rclcpp::Publisher<runner_interfaces::msg::PathSpeedProfile>::SharedPtr publisher_;
   std::chrono::milliseconds server_timeout_;

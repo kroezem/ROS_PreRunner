@@ -184,8 +184,9 @@ class _TuningClient:
         self.requests.append(request)
         if self.operation == 'get':
             response = SimpleNamespace(values=[ParameterValue(
-                type=ParameterType.PARAMETER_DOUBLE,
-                double_value=self.state[name],
+                type=(ParameterType.PARAMETER_DOUBLE if self.state[name] is not None
+                      else ParameterType.PARAMETER_NOT_SET),
+                double_value=(self.state[name] or 0.0),
             ) for name in request.names])
         else:
             for parameter in request.parameters:
@@ -879,6 +880,42 @@ def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
         assert len(client.requests[0].parameters) > 1
     for client in node._tuning_get_clients.values():
         assert len(client.requests) == 1
+
+
+def test_tuning_read_keeps_healthy_owner_values_when_one_owner_is_unavailable():
+    node = _tuning_node(TIMID)
+    node._tuning_get_clients[NAVIGATOR_OWNER].service_is_ready = lambda: False
+
+    RosStateNode._start_tuning_read(node)
+
+    state = node._cache.state_snapshot()['autonomy_tuning']
+    unavailable = {
+        field for field, spec in TUNING_PARAMETERS.items()
+        if spec.owner == NAVIGATOR_OWNER
+    }
+    assert state['available'] is False
+    assert state['status'] == 'unavailable'
+    assert set(state['unavailable_fields']) == unavailable
+    assert set(state['values']) == set(TUNING_PARAMETERS) - unavailable
+    assert state['values']['desired_linear_vel'] == TIMID['desired_linear_vel']
+    assert state['values']['output_max'] == TIMID['output_max']
+    assert 'navigator parameter read service unavailable' in state['detail']
+
+
+def test_tuning_read_isolates_one_unavailable_field_within_an_owner():
+    node = _tuning_node(TIMID)
+    missing_field = 'lookahead_time'
+    missing_parameter = TUNING_PARAMETERS[missing_field].parameter_name
+    node._tuning_get_clients[CONTROLLER_OWNER].state[missing_parameter] = None
+
+    RosStateNode._start_tuning_read(node)
+
+    state = node._cache.state_snapshot()['autonomy_tuning']
+    assert state['unavailable_fields'] == [missing_field]
+    assert set(state['values']) == set(TUNING_PARAMETERS) - {missing_field}
+    assert state['values']['desired_linear_vel'] == TIMID['desired_linear_vel']
+    assert state['values']['output_max'] == TIMID['output_max']
+    assert f'{missing_field} is missing or is not double' in state['detail']
 
 
 def test_preflight_invalid_preset_does_not_modify_either_node(monkeypatch):

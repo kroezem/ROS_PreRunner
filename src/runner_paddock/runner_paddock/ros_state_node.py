@@ -1245,20 +1245,28 @@ class RosStateNode(ExplicitQoSEventNode):
     # -- live autonomy tuning --------------------------------------------
 
     @staticmethod
-    def _double_parameters(response, owner: str) -> dict[str, float]:
+    def _double_parameters(
+        response, owner: str
+    ) -> tuple[dict[str, float], list[str]]:
         fields = [
             (field, spec) for field, spec in TUNING_PARAMETERS.items()
             if spec.owner == owner
         ]
         values = getattr(response, 'values', ())
-        if len(values) != len(fields):
-            raise ValueError('get_parameters returned an incomplete result')
         result = {}
-        for (field, _spec), value in zip(fields, values):
+        errors = []
+        for index, (field, _spec) in enumerate(fields):
+            if index >= len(values):
+                errors.append(f'{field} is missing')
+                continue
+            value = values[index]
             if value.type != ParameterType.PARAMETER_DOUBLE:
-                raise ValueError(f'{field} is missing or is not double')
+                errors.append(f'{field} is missing or is not double')
+                continue
             result[field] = float(value.double_value)
-        return result
+        if len(values) > len(fields):
+            errors.append('get_parameters returned unexpected extra values')
+        return result, errors
 
     def _publish_tuning_state(self) -> None:
         with self._tuning_lock:
@@ -1274,12 +1282,23 @@ class RosStateNode(ExplicitQoSEventNode):
             if operation is not None \
                     and time.monotonic() >= operation['deadline']:
                 self._tuning_operation = None
+                read_timeout = operation['kind'] == 'read'
+                values = operation.get('values', {}) if read_timeout else {}
+                unavailable = (
+                    sorted(set(TUNING_PARAMETERS) - set(values))
+                    if read_timeout else []
+                )
                 self._tuning_state.update({
                     'status': 'failed',
-                    'detail': f'{operation["kind"]} timed out',
+                    'detail': (
+                        f'{operation["kind"]} timed out'
+                        + (f'; unavailable fields: {", ".join(unavailable)}'
+                           if unavailable else '')
+                    ),
                     'available': False,
                     'preset': 'custom',
-                    'values': {},
+                    'values': values,
+                    'unavailable_fields': unavailable,
                 })
                 operation = None
         if operation is None:
@@ -1333,7 +1352,12 @@ class RosStateNode(ExplicitQoSEventNode):
         observed = {}
         if not error:
             try:
-                observed = self._double_parameters(future.result(), owner)
+                observed, field_errors = self._double_parameters(
+                    future.result(), owner
+                )
+                if field_errors:
+                    error = f'{owner} parameter read incomplete: ' \
+                        + ', '.join(field_errors)
             except Exception as exception:  # noqa: B902
                 error = f'{owner} parameter read failed: {exception}'
         with self._tuning_lock:
@@ -1353,12 +1377,15 @@ class RosStateNode(ExplicitQoSEventNode):
             values = operation['values']
             verification = operation['verification']
             if errors:
+                unavailable = sorted(set(TUNING_PARAMETERS) - set(values))
                 self._tuning_state.update({
                     'available': False,
                     'preset': 'custom',
-                    'values': {},
+                    'values': values,
+                    'unavailable_fields': unavailable,
                     'status': 'failed' if verification else 'unavailable',
-                    'detail': '; '.join(errors),
+                    'detail': '; '.join(errors) + '; unavailable fields: '
+                    + ', '.join(unavailable),
                     'requested_preset': (
                         '' if verification is None
                         else verification['requested_preset']
@@ -1394,6 +1421,7 @@ class RosStateNode(ExplicitQoSEventNode):
                     'available': True,
                     'preset': matching_preset(values),
                     'values': values,
+                    'unavailable_fields': [],
                     'status': status,
                     'detail': detail,
                     'requested_preset': (
