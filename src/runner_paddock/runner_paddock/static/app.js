@@ -33,10 +33,12 @@ const takeoverButton = $("btn-takeover");
 const mapCanvas = $("map-canvas");
 const mapContext = mapCanvas.getContext("2d");
 const mapGeometry = window.PaddockMapGeometry;
+const mappingCamera = window.PaddockMappingCamera;
 const joystickGeometry = window.PaddockJoystickGeometry;
 const mapViewportStorage = window.PaddockMapViewportStorage;
 const routeVisualization = window.PaddockRouteVisualization;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
+const mappingView = { scale: 50 };
 let mapViewIdentity = null;
 const mapLayers = {
   map: { grid: null, raster: null },
@@ -398,6 +400,10 @@ function render() {
   const sources = (latest.health || {}).sources || {};
   const health = (latest.health || {}).status || "?";
   const pose = latest.pose;
+  const mappingFollow = mode.mode === 1;
+
+  $("mapping-zoom-controls").hidden = !mappingFollow;
+  $("map-manual-view-controls").hidden = mappingFollow;
 
   renderStopControl(stop);
 
@@ -827,21 +833,31 @@ function makeGridRaster(grid, kind) {
 }
 
 function screenFromWorld(x, y) {
-  return mapGeometry.worldToScreen(mapView, mapCanvas.width, mapCanvas.height, x, y);
+  return mapGeometry.worldToScreen(activeMapView(), mapCanvas.width, mapCanvas.height, x, y);
 }
 
 function worldFromScreen(x, y) {
-  return mapGeometry.screenToWorld(mapView, mapCanvas.width, mapCanvas.height, x, y);
+  return mapGeometry.screenToWorld(activeMapView(), mapCanvas.width, mapCanvas.height, x, y);
+}
+
+function mappingFollowActive() {
+  return (latest.mode || {}).mode === 1;
+}
+
+function activeMapView() {
+  if (!mappingFollowActive()) return mapView;
+  return mappingCamera.viewForPose(latest.pose, mappingView.scale, mapGeometry.yawOf) || mapView;
 }
 
 function drawGridLayer(kind) {
   const layer = mapLayers[kind];
   const { grid, raster } = layer;
   if (!grid || !raster || !layerSettings[kind].visible) return;
-  const angle = mapGeometry.yawOf(grid.origin.orientation) + mapView.rotation;
+  const view = activeMapView();
+  const angle = mapGeometry.yawOf(grid.origin.orientation) + view.rotation;
   const topLeft = mapGeometry.gridToWorld(grid, 0, grid.height);
   const screen = screenFromWorld(topLeft.x, topLeft.y);
-  const cellPixels = mapView.scale * grid.resolution;
+  const cellPixels = view.scale * grid.resolution;
   mapContext.save();
   mapContext.globalAlpha = layerSettings[kind].opacity;
   mapContext.imageSmoothingEnabled = false;
@@ -859,7 +875,7 @@ function drawDirectionalPose(pose, color, radiusPixels) {
   const center = screenFromWorld(pose.position.x, pose.position.y);
   const yaw = mapGeometry.yawOf(pose.orientation);
   const lengthPixels = Math.max(radiusPixels * 2.8, 28 * devicePixelRatio);
-  const lengthWorld = lengthPixels / mapView.scale;
+  const lengthWorld = lengthPixels / activeMapView().scale;
   const tip = screenFromWorld(
     pose.position.x + Math.cos(yaw) * lengthWorld,
     pose.position.y + Math.sin(yaw) * lengthWorld,
@@ -971,9 +987,10 @@ function drawPlan() {
 }
 
 function renderMap() {
+  const view = activeMapView();
   mapCanvas.dataset.view = JSON.stringify({
-    x: mapView.x, y: mapView.y, scale: mapView.scale,
-    rotation: mapView.rotation, mode: mapMode,
+    x: view.x, y: view.y, scale: view.scale,
+    rotation: view.rotation, mode: mappingFollowActive() ? "follow" : mapMode,
   });
   mapContext.setTransform(1, 0, 0, 1, 0, 0);
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
@@ -1120,6 +1137,11 @@ function fitMap(save = false) {
 }
 
 function zoomMap(factor, screenX = mapCanvas.width / 2, screenY = mapCanvas.height / 2) {
+  if (mappingFollowActive()) {
+    mappingView.scale = mappingCamera.zoomScale(mappingView.scale, factor);
+    renderMap();
+    return;
+  }
   const before = worldFromScreen(screenX, screenY);
   mapView.scale = Math.min(5000, Math.max(2, mapView.scale * factor));
   const after = worldFromScreen(screenX, screenY);
@@ -1131,6 +1153,7 @@ function zoomMap(factor, screenX = mapCanvas.width / 2, screenY = mapCanvas.heig
 }
 
 function setMapMode(mode) {
+  if (mappingFollowActive() && mode !== "view") return;
   mapMode = mode;
   mapDrag = null;
   goalInteraction.dragging = false;
@@ -1174,6 +1197,7 @@ function pointIsInsideGlobalMap(point) {
 }
 
 mapCanvas.addEventListener("pointerdown", (event) => {
+  if (mappingFollowActive()) return;
   if (mapMode === "view") return;
   if (mapMode === "goal" || mapMode === "initial-pose") {
     const point = pointerWorld(event);
@@ -1253,6 +1277,8 @@ mapCanvas.addEventListener("pointercancel", endMapDrag);
 $("btn-fit-map").addEventListener("click", () => fitMap(true));
 $("btn-zoom-in").addEventListener("click", () => zoomMap(1.25));
 $("btn-zoom-out").addEventListener("click", () => zoomMap(0.8));
+$("btn-mapping-zoom-in").addEventListener("click", () => zoomMap(1.25));
+$("btn-mapping-zoom-out").addEventListener("click", () => zoomMap(0.8));
 document.querySelectorAll("[data-map-mode]").forEach((button) => {
   button.addEventListener("click", () => setMapMode(button.dataset.mapMode));
 });

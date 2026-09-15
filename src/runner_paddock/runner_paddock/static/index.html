@@ -28,6 +28,10 @@
         <div id="banner" class="banner waiting" role="status">Connecting…</div>
         <div id="map-status" class="map-status">Waiting for /map…</div>
         <div class="map-mode-readout">MODE <strong id="map-mode-label">VIEW</strong></div>
+        <div id="mapping-zoom-controls" class="mapping-zoom-controls" aria-label="Mapping zoom" hidden>
+          <button id="btn-mapping-zoom-out" type="button" aria-label="Zoom mapping view out">−</button>
+          <button id="btn-mapping-zoom-in" type="button" aria-label="Zoom mapping view in">+</button>
+        </div>
         <div id="plan-badge" class="plan-badge" hidden>COMMITTED ROUTE RETAINED</div>
         <div id="route-speed-legend" class="route-speed-legend" hidden>
           <span id="route-speed-min">0 m/s</span><i></i><span id="route-speed-max">—</span>
@@ -215,7 +219,7 @@
         </div>
         <div class="setting-group">
           <div class="group-heading"><h3>Map interaction</h3><span>adjust the live preview</span></div>
-          <div class="display-actions"><button type="button" class="view-control display-map-action active" data-map-mode="view">Default view</button><button type="button" class="view-control display-map-action" data-map-mode="pan">Pan</button><button type="button" class="view-control display-map-action" data-map-mode="rotate">Rotate</button><button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">Zoom −</button><button id="btn-fit-map" type="button" class="view-control">Fit map</button><button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">Zoom +</button></div>
+          <div class="display-actions"><span id="map-manual-view-controls"><button type="button" class="view-control display-map-action active" data-map-mode="view">Default view</button><button type="button" class="view-control display-map-action" data-map-mode="pan">Pan</button><button type="button" class="view-control display-map-action" data-map-mode="rotate">Rotate</button><button id="btn-fit-map" type="button" class="view-control">Fit map</button></span><button id="btn-zoom-out" type="button" class="view-control" aria-label="Zoom out">Zoom −</button><button id="btn-zoom-in" type="button" class="view-control" aria-label="Zoom in">Zoom +</button></div>
         </div>
         <div class="setting-group">
           <div class="group-heading"><h3>Layers &amp; appearance</h3><span>saved in this browser</span></div>
@@ -257,6 +261,6 @@
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
   <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
 </main>
-<script src="/static/map_geometry.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/app.js" defer></script>
+<script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/app.js" defer></script>
 </body>
 </html>

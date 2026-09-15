@@ -1,10 +1,11 @@
 // Bump CACHE on every shell asset change: a same-named cache is never
 // refreshed, so a stale precache would outlive a redeploy.
-const CACHE = 'runner-paddock-shell-v13';
+const CACHE = 'runner-paddock-shell-v14';
 const ASSETS = [
   '/',
   '/static/app.js',
   '/static/map_geometry.js',
+  '/static/mapping_camera.js',
   '/static/joystick_geometry.js',
   '/static/style.css',
   '/static/manifest.webmanifest',

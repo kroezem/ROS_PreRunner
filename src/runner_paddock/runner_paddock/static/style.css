@@ -70,6 +70,9 @@ input, select { min-height: 2.55rem; padding: .42rem; border: 1px solid var(--bo
 .map-mode-readout { left: .55rem; }
 .map-mode-readout strong { color: var(--accent); }
 #map-canvas.mode-view + .banner ~ .map-mode-readout { display: none; }
+.mapping-zoom-controls { position: absolute; z-index: 3; right: .55rem; top: .55rem; display: flex; gap: .35rem; }
+.mapping-zoom-controls[hidden] { display: none; }
+.mapping-zoom-controls button { width: 2.75rem; padding: .35rem; font-size: 1.25rem; font-weight: 800; background: rgb(7 13 14 / 86%); }
 .plan-badge { right: .55rem; border-color: #967123; color: #ffc85c; }
 .route-speed-legend { right: .55rem; bottom: 2.35rem; display: flex; align-items: center; gap: .35rem; padding: .3rem .42rem; color: var(--muted); font-size: .58rem; pointer-events: none; }
 .route-speed-legend[hidden] { display: none; }
@@ -139,6 +142,8 @@ button.run.armed small { color: #17383e; }
 .secondary-detail { border-left-color: #55666a; }
 .mode-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
 .mode-actions button { margin: 0; }
+#map-manual-view-controls { display: contents; }
+#map-manual-view-controls[hidden] { display: none; }
 .runtime-actions button { flex: 1 1 8rem; min-height: 3.3rem; font-weight: 900; }
 .mapping-actions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem; align-items: center; }
 .mapping-actions > button, .save-row button { margin: 0; }
