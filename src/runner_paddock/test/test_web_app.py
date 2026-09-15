@@ -96,6 +96,7 @@ def test_frontend_assets_are_packaged_at_runtime_location():
         'app.js',
         'joystick_geometry.js',
         'map_geometry.js',
+        'speed_profile.js',
         'style.css',
         'service-worker.js',
         'telemetry_warning.js',
@@ -194,6 +195,10 @@ def test_static_shell_lifecycle_and_two_clients():
             'Browser manual drive'
         )
         assert 'data-tab="autonomy"' in response.text
+        assert 'data-tab="speed-profile"' in response.text
+        assert 'id="profile-clearance-chart"' in response.text
+        assert 'id="profile-path-chart"' in response.text
+        assert 'never sent to Runner, ROS, Nav2, D2' in response.text
         assert 'id="delete-dialog"' in response.text
         assert 'id="btn-record"' in response.text
         assert 'data-tab="recording"' in response.text

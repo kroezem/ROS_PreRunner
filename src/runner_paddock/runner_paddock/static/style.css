@@ -221,6 +221,25 @@ summary { cursor: pointer; }
 .tuning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; margin: .55rem 0; }
 .tuning-grid label { display: flex; flex-direction: column; gap: .2rem; color: var(--muted); font-size: .64rem; }
 .tuning-grid input { width: 100%; }
+.speed-profile-panel { max-width: 78rem; }
+.speed-profile-layout { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(15rem, .75fr); gap: .75rem; }
+.speed-profile-layout .setting-group { margin-top: 0; }
+.profile-control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1rem; margin-top: .7rem; }
+.profile-control-grid > label { display: flex; flex-direction: column; gap: .32rem; color: var(--muted); font-size: .66rem; }
+.profile-control-grid label > span { display: grid; grid-template-columns: minmax(0, 1fr) 4.8rem; align-items: center; gap: .5rem; }
+.profile-control-grid input[type="range"] { width: 100%; padding: 0; }
+.profile-control-grid select { width: 100%; }
+.profile-control-grid output { color: #edf3f3; font-variant-numeric: tabular-nums; text-align: right; }
+.profile-readout-grid { display: grid; gap: .4rem; margin-top: .7rem; }
+.profile-readout-grid div { display: grid; grid-template-columns: auto 1fr; gap: .1rem .5rem; padding: .45rem .5rem; border-left: 3px solid var(--profile-color); background: #0c1314; font-size: .64rem; }
+.profile-readout-grid strong { grid-row: 1 / 4; align-self: center; min-width: 5.2rem; color: var(--profile-color); font-size: .62rem; }
+.profile-readout-grid span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.profile-chart-card { overflow: hidden; }
+.profile-chart { display: block; width: 100%; height: clamp(14rem, 34vh, 21rem); margin-top: .55rem; border: 1px solid #293639; border-radius: .4rem; background: #0a1011; }
+.profile-line-key { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: .5rem; color: var(--muted); font-size: .62rem; }
+.profile-line-key span { display: flex; align-items: center; gap: .35rem; }
+.profile-line-key i { display: inline-block; width: 1.8rem; border-top: 2px solid #b7c5c8; }
+.profile-line-key i.dashed { border-top-style: dashed; opacity: .55; }
 .recording-form { display: grid; grid-template-columns: minmax(12rem, 1fr) auto auto; align-items: end; gap: .5rem; }
 .recording-form label { display: flex; flex-direction: column; gap: .22rem; color: var(--muted); font-size: .68rem; }
 .recording-form input { width: 100%; }
@@ -291,6 +310,8 @@ dialog h2 { margin-top: 0; font-size: 1rem; }
   .config-panel { padding: .7rem; }
   .obstacle-controls { grid-template-columns: 1fr; }
   .speed-readout, .tuning-grid { grid-template-columns: 1fr 1fr; }
+  .speed-profile-layout, .profile-control-grid { grid-template-columns: 1fr; }
+  .profile-chart { height: 15rem; }
   .panel-heading h2 { font-size: 1rem; }
   .setting-group { padding: .65rem; }
   .display-map-preview { height: clamp(15rem, 42vh, 22rem); }

@@ -1666,6 +1666,7 @@ healthDetails.addEventListener("toggle", healthDebugRender);
 debugDetails.addEventListener("toggle", debugRender);
 window.setInterval(debugRender, 500);
 initializeLayerControls();
+window.PaddockSpeedProfile.initialize();
 setMapMode("view");
 connect();
 if ("serviceWorker" in navigator) {

@@ -113,6 +113,7 @@
       <button class="config-tab active" data-tab="runtime" role="tab" aria-selected="true">RUNTIME</button>
       <button class="config-tab" data-tab="mapping" role="tab" aria-selected="false">MAPPING</button>
       <button class="config-tab" data-tab="autonomy" role="tab" aria-selected="false">AUTONOMY</button>
+      <button class="config-tab" data-tab="speed-profile" role="tab" aria-selected="false">SPEED PROFILE</button>
       <button class="config-tab" data-tab="display" role="tab" aria-selected="false">DISPLAY</button>
       <button class="config-tab" data-tab="recording" role="tab" aria-selected="false">RECORDING</button>
       <button class="config-tab" data-tab="system" role="tab" aria-selected="false">SYSTEM</button>
@@ -214,6 +215,41 @@
         <details class="numeric-goal setting-group"><summary>Numeric goal fallback</summary><div class="inline"><label>x <input id="goal-x" type="number" step="0.05" value="0"></label><label>y <input id="goal-y" type="number" step="0.05" value="0"></label><label>yaw <input id="goal-yaw" type="number" step="0.05" value="0"></label></div><button id="btn-select-goal">Select numeric goal</button></details>
       </section>
 
+      <section id="panel-speed-profile" class="config-panel speed-profile-panel" role="tabpanel" hidden>
+        <div class="panel-heading"><div><span class="section-label">Design sandbox</span><h2>Longitudinal speed profile</h2></div><span class="status-chip">LOCAL ONLY</span></div>
+        <p class="state-detail">This visualizer is non-authoritative. Its settings stay in this browser and are never sent to Runner, ROS, Nav2, D2, or the Paddock backend.</p>
+        <div class="speed-profile-layout">
+          <section class="setting-group speed-profile-controls" aria-label="Speed profile design controls">
+            <div class="group-heading"><h3>Profile controls</h3><span>saved locally</span></div>
+            <div class="profile-control-grid">
+              <label>Minimum traversal speed <span><input id="profile-min-speed" type="range" min="0.10" max="1.00" step="0.01"><output data-profile-output="minSpeed"></output></span></label>
+              <label>Minimum / preset scaling <span><input id="profile-preset-scaling" type="range" min="0" max="100" step="1"><output data-profile-output="presetScaling"></output></span></label>
+              <label>Tight threshold <span><input id="profile-tight-threshold" type="range" min="0" max="1.00" step="0.01"><output data-profile-output="tightThreshold"></output></span></label>
+              <label>Open threshold <span><input id="profile-open-threshold" type="range" min="0.05" max="2.00" step="0.01"><output data-profile-output="openThreshold"></output></span></label>
+              <label>Curve family <select id="profile-curve-family"><option value="linear">Linear</option><option value="power">Power</option><option value="smoothstep">Smoothstep</option></select></label>
+              <label id="profile-shape-label">Curve shape <span><input id="profile-curve-shape" type="range" min="0.25" max="4" step="0.05"><output data-profile-output="curveShape"></output></span></label>
+              <label>Approach time <span><input id="profile-approach-time" type="range" min="0" max="3" step="0.05"><output data-profile-output="approachTime"></output></span></label>
+              <label>Selected clearance <span><input id="profile-selected-clearance" type="range" min="0" max="2" step="0.01"><output data-profile-output="selectedClearance"></output></span></label>
+            </div>
+            <p class="hint">Scaling 0% gives every preset the same constrained-region speed; 100% scales constrained speed up to each preset ceiling. “Approach time” adds a target-speed-dependent settled segment before the pinch.</p>
+          </section>
+          <section class="setting-group speed-profile-readouts">
+            <div class="group-heading"><h3>Selected point</h3><span id="profile-clearance-readout">—</span></div>
+            <div id="profile-readouts" class="profile-readout-grid"></div>
+          </section>
+        </div>
+        <section class="setting-group profile-chart-card">
+          <div class="group-heading"><h3>Clearance → target speed</h3><span>raw geometry ceiling</span></div>
+          <canvas id="profile-clearance-chart" class="profile-chart" role="img" aria-label="Clearance to target speed for all presets"></canvas>
+        </section>
+        <section class="setting-group profile-chart-card">
+          <div class="group-heading"><h3>OPEN → PINCH → OPEN</h3><span>speed over path distance</span></div>
+          <canvas id="profile-path-chart" class="profile-chart" role="img" aria-label="Raw and feasible speed over a synthetic path for all presets"></canvas>
+          <div class="profile-line-key"><span><i class="solid"></i>final approach / feasibility</span><span><i class="dashed"></i>raw geometry ceiling</span></div>
+          <p class="hint">Feasibility uses D2’s current braking potential a(v)=1.6v+0.27, reaction margin, and forward recovery a(v)=1.6v+0.60. This remains a synthetic design preview, not a reproduction of costmap, curvature, cusp, or goal constraints.</p>
+        </section>
+      </section>
+
       <section id="panel-display" class="config-panel" role="tabpanel" hidden>
         <div class="panel-heading"><div><span class="section-label">Display</span><h2>Control visualization</h2></div><span class="status-chip">LOCAL</span></div>
         <div class="setting-group display-preview-group">
@@ -264,6 +300,6 @@
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
   <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
 </main>
-<script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/telemetry_warning.js" defer></script><script src="/static/app.js" defer></script>
+<script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/telemetry_warning.js" defer></script><script src="/static/speed_profile.js" defer></script><script src="/static/app.js" defer></script>
 </body>
 </html>
