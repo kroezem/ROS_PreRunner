@@ -58,8 +58,8 @@
       <p id="control-detail" class="visually-hidden">Waiting for authoritative state…</p>
       <p id="control-inhibit" class="control-message">Controls unavailable until the backend connects.</p>
       <dl class="control-telemetry" aria-label="Live system telemetry">
-        <div><dt>CPU</dt><dd id="control-cpu-load">unavailable</dd></div>
-        <div><dt>Battery</dt><dd id="control-battery-voltage">unavailable</dd></div>
+        <div class="telemetry-pill"><dt>CPU</dt><dd id="control-cpu-load">unavailable</dd></div>
+        <div class="telemetry-pill"><dt>Battery</dt><dd id="control-battery-voltage">unavailable</dd></div>
       </dl>
       <button id="btn-takeover" class="control-takeover" type="button" hidden>TAKE CONTROL</button>
 
@@ -264,6 +264,6 @@
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
   <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
 </main>
-<script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/app.js" defer></script>
+<script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/telemetry_warning.js" defer></script><script src="/static/app.js" defer></script>
 </body>
 </html>

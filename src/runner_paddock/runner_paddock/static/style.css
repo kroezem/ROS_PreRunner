@@ -96,6 +96,20 @@ input, select { min-height: 2.55rem; padding: .42rem; border: 1px solid var(--bo
 .control-telemetry div { display: flex; justify-content: space-between; gap: .35rem; padding: .28rem .4rem; border: 1px solid var(--border); border-radius: .35rem; background: #0c1314; font-size: .62rem; }
 .control-telemetry dt { color: var(--muted); text-transform: uppercase; }
 .control-telemetry dd { margin: 0; color: #edf3f3; text-align: right; }
+.control-telemetry .telemetry-warning {
+  border-color: #ff5b5b;
+  background: #761d1d;
+  animation: telemetry-warning-pulse .85s ease-in-out infinite;
+}
+.control-telemetry .telemetry-warning dt,
+.control-telemetry .telemetry-warning dd { color: #fff; }
+@keyframes telemetry-warning-pulse {
+  50% {
+    border-color: #ffb0b0;
+    background: #b52d2d;
+    box-shadow: 0 0 .65rem rgb(255 64 64 / 75%);
+  }
+}
 .control-takeover { flex: 0 0 auto; width: 100%; min-height: 3.25rem; margin: 0 0 .4rem; border: 2px solid var(--accent); background: #153c43; font-weight: 900; }
 .runtime-control { flex: 1; min-height: 0; }
 

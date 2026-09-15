@@ -98,6 +98,7 @@ def test_frontend_assets_are_packaged_at_runtime_location():
         'map_geometry.js',
         'style.css',
         'service-worker.js',
+        'telemetry_warning.js',
     }
     assert expected <= {
         path.name for path in STATIC_DIRECTORY.iterdir() if path.is_file()

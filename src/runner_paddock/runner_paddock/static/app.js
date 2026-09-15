@@ -384,6 +384,14 @@ function telemetryValue(source, valid, value, suffix, digits) {
   return `STALE — last ${rendered}${age}`;
 }
 
+function renderTelemetryWarning(elementId, source, valid, value, violatesThreshold) {
+  const pill = $(elementId).closest(".telemetry-pill");
+  pill.classList.toggle(
+    "telemetry-warning",
+    PaddockTelemetryWarning.isActive(source, valid, value, violatesThreshold),
+  );
+}
+
 function render() {
   const mode = latest.mode || {};
   const auth = latest.command_authority || {};
@@ -444,6 +452,11 @@ function render() {
     "%",
     1,
   ));
+  renderTelemetryWarning(
+    "control-cpu-load", sources.system_telemetry,
+    systemTelemetry.cpu_valid, systemTelemetry.total_cpu_utilization_percent,
+    (value) => value > 90,
+  );
   text("system-battery-voltage", telemetryValue(
     sources.battery,
     battery.voltage_valid,
@@ -458,6 +471,11 @@ function render() {
     " V",
     2,
   ));
+  renderTelemetryWarning(
+    "control-battery-voltage", sources.battery,
+    battery.voltage_valid, battery.voltage,
+    (value) => value < 310,
+  );
   renderControlState(mode, auth, stop, adapter);
   renderRecording(recording);
   const appliedManualMax = Number.isFinite(config.applied_value)
