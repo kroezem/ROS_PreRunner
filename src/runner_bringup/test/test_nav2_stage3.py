@@ -125,6 +125,8 @@ def test_planner_is_one_reverse_capable_hybrid_astar():
     assert planner['GridBased']['motion_model_for_search'] == 'REEDS_SHEPP'
     assert planner['GridBased']['reverse_penalty'] == 8.0
     assert planner['GridBased']['change_penalty'] == 20.0
+    assert planner['GridBased']['cost_penalty'] == 2.0
+    assert planner['GridBased']['analytic_expansion_max_length'] == 1.0
 
 
 def test_goal_checker_requires_position_and_loose_final_heading():
@@ -236,7 +238,7 @@ def test_costmaps_share_live_evidence_semantics_and_static_authority():
         'observation_persistence': 0.0,
         'inf_is_valid': True,
     }
-    assert inflation['inflation_radius'] == 0.30
+    assert inflation['inflation_radius'] == 0.50
     assert inflation['cost_scaling_factor'] == 10.0
 
     semantic_fields = (
