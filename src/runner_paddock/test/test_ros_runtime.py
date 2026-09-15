@@ -33,6 +33,7 @@ from runner_interfaces.msg import PathSpeedProfilePoint
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.autonomy_tuning import (
+    ABSURD,
     ADAPTER_OWNER,
     CONFIDENT,
     CONTROLLER_OWNER,
@@ -195,6 +196,12 @@ class _TuningClient:
                 successful=True, reason='',
             ))
         return _ResponseFuture(response)
+
+
+class _DeferredTuningClient(_TuningClient):
+    def call_async(self, request):
+        self.requests.append(request)
+        return SimpleNamespace(add_done_callback=lambda _callback: None)
 
 
 def _tuning_node(values):
@@ -819,7 +826,7 @@ def test_incorrect_tf_pose_does_not_confirm_and_uses_existing_timeout():
     assert node._local_clear_client.calls == 0
 
 
-def test_timid_confident_insane_and_custom_are_classified_from_live_readback():
+def test_timid_confident_insane_absurd_and_custom_are_classified_from_live_readback():
     node = _tuning_node(TIMID)
     RosStateNode._start_tuning_read(node)
     timid = node._cache.state_snapshot()['autonomy_tuning']
@@ -849,6 +856,18 @@ def test_timid_confident_insane_and_custom_are_classified_from_live_readback():
     assert insane['values']['output_max'] == 0.22
 
     result = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='absurd'), 'controller'
+    )
+    absurd = node._cache.state_snapshot()['autonomy_tuning']
+    assert result.accepted
+    assert absurd['status'] == 'applied'
+    assert absurd['preset'] == 'absurd'
+    assert absurd['values'] == ABSURD
+    assert absurd['values']['desired_linear_vel'] == 2.00
+    assert absurd['values']['maximum_commanded_speed'] == 2.00
+    assert absurd['values']['output_max'] == 0.28
+
+    result = RosStateNode._request_autonomy_tuning(
         node, AutonomyTuningIntent(preset='confident'), 'controller'
     )
     restored = node._cache.state_snapshot()['autonomy_tuning']
@@ -866,7 +885,7 @@ def test_timid_confident_insane_and_custom_are_classified_from_live_readback():
     assert custom['values']['lookahead_time'] == 1.01
 
 
-@pytest.mark.parametrize('preset', ['confident', 'insane'])
+@pytest.mark.parametrize('preset', ['confident', 'insane', 'absurd'])
 def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
     node = _tuning_node(TIMID)
 
@@ -880,6 +899,33 @@ def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
         assert len(client.requests[0].parameters) > 1
     for client in node._tuning_get_clients.values():
         assert len(client.requests) == 1
+
+
+def test_operator_apply_supersedes_read_but_never_an_in_flight_write():
+    node = _tuning_node(TIMID)
+    node._tuning_operation = {
+        'kind': 'read', 'request_id': 1, 'pending': {CONTROLLER_OWNER},
+    }
+    node._tuning_request_id = 1
+    node._tuning_set_clients = {
+        owner: _DeferredTuningClient(owner, client.state, 'set')
+        for owner, client in node._tuning_set_clients.items()
+    }
+
+    accepted = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='absurd'), 'controller'
+    )
+
+    assert accepted.accepted
+    applying = node._cache.state_snapshot()['autonomy_tuning']
+    assert applying['status'] == 'applying'
+    assert applying['preset'] == 'absurd'
+    assert applying['values'] == ABSURD
+    rejected = RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='confident'), 'controller'
+    )
+    assert not rejected.accepted
+    assert 'already in progress' in rejected.reason
 
 
 def test_tuning_read_keeps_healthy_owner_values_when_one_owner_is_unavailable():

@@ -120,19 +120,25 @@ double stoppingPotential(double speed, const ProfileConfig & config)
   return speed / k - c / (k * k) * std::log((k * speed + c) / c);
 }
 
+double brakingReachabilityPotential(double speed, const ProfileConfig & config)
+{
+  return stoppingPotential(speed, config) + config.reaction_time_s * speed;
+}
+
 double reachableSpeed(
   double from_speed, double distance, double ceiling,
   const ProfileConfig & config)
 {
-  const double target = stoppingPotential(from_speed, config) + std::max(0.0, distance);
-  if (stoppingPotential(ceiling, config) <= target) {
+  const double target = brakingReachabilityPotential(from_speed, config) +
+    std::max(0.0, distance);
+  if (brakingReachabilityPotential(ceiling, config) <= target) {
     return ceiling;
   }
   double low = 0.0;
   double high = ceiling;
   for (int iteration = 0; iteration < 48; ++iteration) {
     const double middle = 0.5 * (low + high);
-    if (stoppingPotential(middle, config) <= target) {
+    if (brakingReachabilityPotential(middle, config) <= target) {
       low = middle;
     } else {
       high = middle;
@@ -182,6 +188,7 @@ bool validConfig(const ProfileConfig & c)
          std::isfinite(c.footprint_radius) && c.footprint_radius >= 0.0 &&
          std::isfinite(c.braking_linear) && c.braking_linear > 0.0 &&
          std::isfinite(c.braking_constant) && c.braking_constant > 0.0 &&
+         std::isfinite(c.reaction_time_s) && c.reaction_time_s >= 0.0 &&
          std::isfinite(c.recovery_acceleration) && c.recovery_acceleration > 0.0 &&
          std::isfinite(c.minimum_pose_step) && c.minimum_pose_step > 0.0 &&
          std::isfinite(c.direction_projection_threshold) &&
@@ -391,8 +398,9 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
         ceiling[i - 1u], s[i] - s[i - 1u], preset_ceiling, config.recovery_acceleration));
   }
   // Backward pass: the adopted a(v)=1.6v+0.27 braking model integrated into
-  // a stopping-distance potential, ensuring the vehicle can always brake in
-  // time for a downstream constraint.
+  // a stopping-distance potential, plus reaction-time travel. The augmented
+  // potential remains transitive across poses and starts each downstream
+  // speed reduction earlier without changing the braking calibration.
   for (std::size_t i = ceiling.size() - 1u; i > 0u; --i) {
     ceiling[i - 1u] = std::min(
       ceiling[i - 1u], reachableSpeed(ceiling[i], s[i] - s[i - 1u],

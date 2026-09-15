@@ -98,6 +98,9 @@ PARAMETERS = {
         NAVIGATOR_OWNER, '/bt_navigator',
         'speed_policy.clearance_half_speed',
     ),
+    'reaction_time_s': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.reaction_time_s',
+    ),
     'recovery_acceleration': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.recovery_acceleration',
     ),
@@ -121,7 +124,8 @@ TIMID = {
     # presets scale the preset ceiling and reaction distances; the
     # clearance and recovery shape stay put.
     'creep_speed': 0.25,
-    'clearance_half_speed': 0.15,
+    'clearance_half_speed': 0.075,
+    'reaction_time_s': 0.40,
     'recovery_acceleration': 1.0,
 }
 
@@ -140,7 +144,17 @@ INSANE = {
     'output_max': 0.22,
 }
 
-PRESETS = {'timid': TIMID, 'confident': CONFIDENT, 'insane': INSANE}
+ABSURD = {
+    **CONFIDENT,
+    'desired_linear_vel': 2.00,
+    'maximum_commanded_speed': 2.00,
+    'output_max': 0.28,
+}
+
+PRESETS = {
+    'timid': TIMID, 'confident': CONFIDENT, 'insane': INSANE,
+    'absurd': ABSURD,
+}
 
 
 def values_for_owner(values: dict[str, float], owner: str) -> dict[str, float]:
@@ -167,13 +181,15 @@ def validate_values(values: dict) -> dict[str, float]:
             raise ValueError(f'{name} must be a finite number')
 
     positive = set(PARAMETERS) - {
-        'integral_gain', 'feedforward_effort_intercept',
+        'integral_gain', 'feedforward_effort_intercept', 'reaction_time_s',
     }
     for name in positive:
         if normalized[name] <= 0.0:
             raise ValueError(f'{name} must be greater than zero')
     if normalized['integral_gain'] < 0.0:
         raise ValueError('integral_gain must be nonnegative')
+    if normalized['reaction_time_s'] < 0.0:
+        raise ValueError('reaction_time_s must be nonnegative')
     if normalized['regulated_linear_scaling_min_speed'] > normalized[
         'desired_linear_vel'
     ]:

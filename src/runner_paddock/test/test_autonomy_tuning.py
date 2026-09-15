@@ -19,6 +19,7 @@ import pytest
 from runner_interfaces.msg import AutonomyTuningPolicy
 from runner_paddock.autonomy_tuning import (
     ABSOLUTE_BOUNDS,
+    ABSURD,
     ADAPTER_OWNER,
     CONFIDENT,
     CONTROLLER_OWNER,
@@ -57,7 +58,8 @@ def test_timid_exactly_reproduces_committed_conservative_policy():
         'feedforward_effort_intercept': 0.0174,
         'output_max': 0.14,
         'creep_speed': 0.25,
-        'clearance_half_speed': 0.15,
+        'clearance_half_speed': 0.075,
+        'reaction_time_s': 0.40,
         'recovery_acceleration': 1.0,
     }
     assert matching_preset(validate_values(dict(TIMID))) == 'timid'
@@ -88,7 +90,8 @@ def test_confident_v1_exact_values_and_owner_partition():
         spec.parameter_name for spec in PARAMETERS.values()
         if spec.owner == NAVIGATOR_OWNER
     }
-    assert navigator['speed_policy.clearance_half_speed'] == 0.15
+    assert navigator['speed_policy.clearance_half_speed'] == 0.075
+    assert navigator['speed_policy.reaction_time_s'] == 0.40
     assert '/speed_limit' not in str(PARAMETERS)
     assert 'cost_scaling_dist' not in PARAMETERS
     assert 'cost_scaling_gain' not in PARAMETERS
@@ -111,6 +114,21 @@ def test_insane_exactly_copies_confident_except_experimental_limits():
     assert adapter['output_max'] == 0.22
 
 
+def test_absurd_exactly_copies_confident_except_authorized_limits():
+    assert ABSURD == {
+        **CONFIDENT,
+        'desired_linear_vel': 2.00,
+        'maximum_commanded_speed': 2.00,
+        'output_max': 0.28,
+    }
+    values = validate_values(dict(ABSURD))
+    assert matching_preset(values) == 'absurd'
+    assert values['maximum_commanded_speed'] == ABSOLUTE_BOUNDS[
+        'maximum_commanded_speed'
+    ]
+    assert values['output_max'] < ABSOLUTE_BOUNDS['output_max']
+
+
 def test_manual_edit_classifies_live_values_as_custom():
     values = dict(CONFIDENT)
     values['lookahead_time'] = 1.01
@@ -124,6 +142,7 @@ def test_manual_edit_classifies_live_values_as_custom():
         {'regulated_linear_scaling_min_speed': 1.01},
         {'min_lookahead_dist': 0.81},
         {'clearance_half_speed': 0.0},
+        {'reaction_time_s': -0.01},
         {'output_max': 0.13},
     ],
 )

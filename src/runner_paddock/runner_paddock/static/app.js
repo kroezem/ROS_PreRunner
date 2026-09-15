@@ -332,8 +332,11 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
   const preset = available ? String(tuning.preset || "custom") : "custom";
   const failed = tuning.status === "failed";
   const requestedPreset = String(tuning.requested_preset || "custom");
+  const applying = tuning.status === "applying";
   const presetChip = $("autonomy-preset");
-  text("autonomy-preset", failed
+  text("autonomy-preset", applying
+    ? `APPLYING: ${requestedPreset.toUpperCase()}`
+    : failed
     ? `APPLY FAILED: ${requestedPreset.toUpperCase()}`
     : (available ? preset.toUpperCase() : "UNAVAILABLE"));
   presetChip.dataset.state = failed ? "failed" : String(tuning.status || "unavailable");

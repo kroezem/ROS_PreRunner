@@ -37,7 +37,7 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
   const rcl_interfaces::srv::GetParameters::Response & response)
 {
   runner_path_speed_profile::ProfileConfig config;
-  if (response.values.size() != 8u || std::any_of(
+  if (response.values.size() != 9u || std::any_of(
       response.values.begin(), response.values.end(), [](const auto & value) {
         return value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
       }))
@@ -51,7 +51,8 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
   config.footprint_radius = response.values[4].double_value;
   config.braking_linear = response.values[5].double_value;
   config.braking_constant = response.values[6].double_value;
-  config.recovery_acceleration = response.values[7].double_value;
+  config.reaction_time_s = response.values[7].double_value;
+  config.recovery_acceleration = response.values[8].double_value;
   return config;
 }
 
@@ -375,6 +376,7 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
     "speed_policy.curvature_window", "speed_policy.max_lateral_acceleration",
     "speed_policy.footprint_radius",
     "speed_policy.braking_linear", "speed_policy.braking_constant",
+    "speed_policy.reaction_time_s",
     "speed_policy.recovery_acceleration"};
   auto policy_future = policy_parameter_client_->async_send_request(policy_request);
   if (rclcpp::spin_until_future_complete(node_, policy_future, server_timeout_) ==

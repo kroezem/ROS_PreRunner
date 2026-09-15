@@ -20,12 +20,16 @@ struct ProfileConfig
   double creep_speed{0.25};
   // Clearance beyond footprint_radius at which the continuous clearance
   // ceiling is halfway from creep_speed to the active preset ceiling.
-  double clearance_half_speed{0.15};
+  double clearance_half_speed{0.075};
   double curvature_window{0.40};
   double max_lateral_acceleration{0.35};
   double footprint_radius{0.2444};
   double braking_linear{1.6};
   double braking_constant{0.27};
+  // Anticipatory distance added to backward braking reachability for
+  // steering/vehicle response lag. This augments, rather than recalibrates,
+  // the braking model above.
+  double reaction_time_s{0.40};
   // Forward recovery after a constraint is bounded by simple constant-
   // acceleration kinematics, deliberately independent of the braking
   // model above, so release back to the ceiling need not be as

@@ -1479,11 +1479,15 @@ class RosStateNode(ExplicitQoSEventNode):
                 False, detail, (), role,
             )
         with self._tuning_lock:
-            if self._tuning_operation is not None:
+            if self._tuning_operation is not None \
+                    and self._tuning_operation['kind'] == 'set':
                 return GatewayResult(
                     False, 'autonomy tuning operation already in progress',
                     (), role,
                 )
+            # Operator writes take priority over periodic reads. Invalidating
+            # the read request id makes its eventual callbacks harmless; an
+            # in-flight write is never interrupted.
             self._tuning_request_id += 1
             request_id = self._tuning_request_id
             owners = set(self._tuning_set_clients)
@@ -1501,6 +1505,10 @@ class RosStateNode(ExplicitQoSEventNode):
                 'detail': f'applying {intent.preset or "custom"} atomically',
                 'request_id': request_id,
                 'requested_preset': intent.preset or 'custom',
+                'preset': intent.preset or 'custom',
+                'values': requested,
+                'available': True,
+                'unavailable_fields': [],
             })
         self._publish_tuning_state()
         for owner, client in self._tuning_set_clients.items():

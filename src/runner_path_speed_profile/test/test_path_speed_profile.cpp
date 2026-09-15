@@ -190,6 +190,30 @@ TEST(PathSpeedProfile, ForwardRecoveryIsFasterThanBackwardBraking)
   EXPECT_GT(recovered_by_pose_2, braked_by_pose_3);
 }
 
+TEST(PathSpeedProfile, ReactionTimeStartsBackwardRestrictionEarlier)
+{
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  for (int i = 0; i <= 20; ++i) {
+    appendPose(path, 0.1 * i);
+  }
+  runner_path_speed_profile::ProfileConfig instantaneous;
+  instantaneous.reaction_time_s = 0.0;
+  runner_path_speed_profile::ProfileConfig anticipated = instantaneous;
+  anticipated.reaction_time_s = 0.40;
+  const std::vector<double> clearance(path.poses.size(), 100.0);
+  const auto without_margin = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, instantaneous);
+  const auto with_margin = runner_path_speed_profile::makeProfile(
+    path, clearance, 2.0, anticipated);
+
+  EXPECT_LT(
+    with_margin.points[10].speed_ceiling_mps,
+    without_margin.points[10].speed_ceiling_mps);
+  EXPECT_DOUBLE_EQ(with_margin.points.back().speed_ceiling_mps, 0.0);
+  EXPECT_GE(with_margin.points[10].speed_ceiling_mps, anticipated.creep_speed);
+}
+
 TEST(PathSpeedProfile, ReadsLiveCostmapClearance)
 {
   nav2_costmap_2d::Costmap2D costmap(20, 20, 0.1, 0.0, 0.0, 0);

@@ -172,6 +172,7 @@
             <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
             <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
             <button type="button" class="speed-preset" data-speed-preset="insane">INSANE</button>
+            <button type="button" class="speed-preset" data-speed-preset="absurd">ABSURD</button>
           </div>
           <div class="tuning-grid">
             <label>Nominal speed (preset ceiling) <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
@@ -191,6 +192,7 @@
           <div class="tuning-grid">
             <label>Creep speed <input data-tuning-field="creep_speed" type="number" min="0.01" step="0.01"> m/s</label>
             <label>Clearance half-speed <input data-tuning-field="clearance_half_speed" type="number" min="0.01" step="0.01"> m</label>
+            <label>Reaction time <input data-tuning-field="reaction_time_s" type="number" min="0" step="0.01"> s</label>
             <label>Recovery acceleration <input data-tuning-field="recovery_acceleration" type="number" min="0.01" step="0.01"> m/s²</label>
           </div>
           <button id="btn-apply-speed-law" type="button">APPLY SPEED POLICY</button>
