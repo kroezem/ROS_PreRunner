@@ -15,10 +15,10 @@ test("CPU warns only above 90", () => {
   assert.equal(warning.isActive(availableFresh, true, 90.1, cpuWarning), true);
 });
 
-test("battery warns only below 310", () => {
-  const batteryWarning = (value) => value < 310;
-  assert.equal(warning.isActive(availableFresh, true, 310, batteryWarning), false);
-  assert.equal(warning.isActive(availableFresh, true, 309.9, batteryWarning), true);
+test("battery warns only below 3.20", () => {
+  const batteryWarning = (value) => value < 3.20;
+  assert.equal(warning.isActive(availableFresh, true, 3.20, batteryWarning), false);
+  assert.equal(warning.isActive(availableFresh, true, 3.19, batteryWarning), true);
 });
 
 test("missing, invalid, stale, and non-finite telemetry never warns", () => {

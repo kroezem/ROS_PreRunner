@@ -474,7 +474,7 @@ function render() {
   renderTelemetryWarning(
     "control-battery-voltage", sources.battery,
     battery.voltage_valid, battery.voltage,
-    (value) => value < 310,
+    (value) => value < 3.20,
   );
   renderControlState(mode, auth, stop, adapter);
   renderRecording(recording);
