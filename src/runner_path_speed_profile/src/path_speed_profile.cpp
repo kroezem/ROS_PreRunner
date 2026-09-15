@@ -156,69 +156,29 @@ double reachableSpeedByAcceleration(
   return std::min(reachable, ceiling);
 }
 
-// Per-pose clearance tier speed, before curvature and hysteresis. Returns
-// +inf for the open tier so a plain std::min() combines it with anything.
-std::vector<double> clearanceTierSpeeds(
+// Per-pose continuous clearance ceiling, before curvature and longitudinal
+// passes. Invalid or missing clearance fails conservatively to zero clearance.
+std::vector<double> clearanceSpeeds(
   const std::vector<double> & clearance, std::size_t pose_count,
-  const ProfileConfig & config)
+  double preset_ceiling, const ProfileConfig & config)
 {
-  std::vector<double> tier(pose_count);
+  std::vector<double> speeds(pose_count);
   for (std::size_t i = 0; i < pose_count; ++i) {
-    const double clear = clearance.size() == pose_count ? clearance[i] : 0.0;
-    if (!std::isfinite(clear) || clear < config.passable_clearance) {
-      tier[i] = config.creep_speed;
-    } else if (clear < config.open_clearance) {
-      tier[i] = config.caution_speed;
-    } else {
-      tier[i] = std::numeric_limits<double>::infinity();
-    }
+    const double measured = clearance.size() == pose_count ? clearance[i] : 0.0;
+    const double clear = std::isfinite(measured) ? std::max(0.0, measured) : 0.0;
+    speeds[i] = config.creep_speed +
+      (preset_ceiling - config.creep_speed) * clear /
+      (clear + config.clearance_half_speed);
   }
-  return tier;
-}
-
-// Merge interior tier runs shorter than min_tier_run_length into the most
-// restrictive (lowest-speed) of the run and its two neighbouring runs, so a
-// single noisy grid cell cannot flip the tier for one pose, and a brief
-// higher-speed reading sandwiched between two more restrictive runs cannot
-// leak through either. Runs touching either end of the path are untouched.
-void applyTierHysteresis(
-  std::vector<double> & tier, const std::vector<double> & s, double min_run_length)
-{
-  if (tier.size() < 3u) {
-    return;
-  }
-  std::size_t i = 0;
-  while (i < tier.size()) {
-    std::size_t end = i;
-    while (end + 1u < tier.size() && tier[end + 1u] == tier[i]) {
-      ++end;
-    }
-    const bool interior = i > 0u && end + 1u < tier.size();
-    // A run's arclength coverage extends halfway to each neighbouring pose,
-    // not just between its own first and last pose — a single pose run at
-    // wide spacing legitimately covers a wide stretch of path.
-    const double left_half = interior ? 0.5 * (s[i] - s[i - 1u]) : 0.0;
-    const double right_half = interior ? 0.5 * (s[end + 1u] - s[end]) : 0.0;
-    const double span = (s[end] - s[i]) + left_half + right_half;
-    if (interior && span < min_run_length) {
-      const double restrictive = std::min(tier[i], std::min(tier[i - 1u], tier[end + 1u]));
-      for (std::size_t k = i; k <= end; ++k) {
-        tier[k] = restrictive;
-      }
-    }
-    i = end + 1u;
-  }
+  return speeds;
 }
 
 bool validConfig(const ProfileConfig & c)
 {
   return std::isfinite(c.creep_speed) && c.creep_speed > 0.0 &&
-         std::isfinite(c.caution_speed) && c.caution_speed > c.creep_speed &&
+         std::isfinite(c.clearance_half_speed) && c.clearance_half_speed > 0.0 &&
          std::isfinite(c.curvature_window) && c.curvature_window > 0.0 &&
          std::isfinite(c.max_lateral_acceleration) && c.max_lateral_acceleration > 0.0 &&
-         std::isfinite(c.passable_clearance) && c.passable_clearance >= 0.0 &&
-         std::isfinite(c.open_clearance) && c.open_clearance > c.passable_clearance &&
-         std::isfinite(c.min_tier_run_length) && c.min_tier_run_length >= 0.0 &&
          std::isfinite(c.footprint_radius) && c.footprint_radius >= 0.0 &&
          std::isfinite(c.braking_linear) && c.braking_linear > 0.0 &&
          std::isfinite(c.braking_constant) && c.braking_constant > 0.0 &&
@@ -371,10 +331,10 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
     }
   }
 
-  auto clearance_tier = clearanceTierSpeeds(clearance, path.poses.size(), config);
-  applyTierHysteresis(clearance_tier, s, config.min_tier_run_length);
+  const auto clearance_speed = clearanceSpeeds(
+    clearance, path.poses.size(), preset_ceiling, config);
   for (std::size_t i = 0; i < path.poses.size(); ++i) {
-    ceiling[i] = std::min(ceiling[i], clearance_tier[i]);
+    ceiling[i] = std::min(ceiling[i], clearance_speed[i]);
     ceiling[i] = std::clamp(ceiling[i], config.creep_speed, preset_ceiling);
   }
 

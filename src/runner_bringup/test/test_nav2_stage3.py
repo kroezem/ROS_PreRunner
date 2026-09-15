@@ -625,12 +625,9 @@ def test_bt_navigator_owns_the_complete_d2_speed_policy():
     navigator = _params()['bt_navigator']['ros__parameters']
     expected = {
         'speed_policy.creep_speed': 0.25,
-        'speed_policy.caution_speed': 0.5,
+        'speed_policy.clearance_half_speed': 0.15,
         'speed_policy.curvature_window': 0.40,
         'speed_policy.max_lateral_acceleration': 0.35,
-        'speed_policy.passable_clearance': 0.15,
-        'speed_policy.open_clearance': 0.35,
-        'speed_policy.min_tier_run_length': 0.30,
         'speed_policy.footprint_radius': 0.2444,
         'speed_policy.braking_linear': 1.6,
         'speed_policy.braking_constant': 0.27,

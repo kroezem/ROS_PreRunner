@@ -119,68 +119,51 @@ TEST(PathSpeedProfile, SamplesBelowRppNormalFloorAndAtExactZero)
   EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.4), 0.0);
 }
 
-TEST(PathSpeedProfile, ClearanceStepsBetweenExactTiersWithNoRamp)
+TEST(PathSpeedProfile, ClearanceLawIsContinuousMonotonicAndBounded)
 {
+  runner_path_speed_profile::ProfileConfig config;
   nav_msgs::msg::Path path;
   path.header.frame_id = "map";
-  // Spaced far enough apart that braking/recovery kinematics do not bind,
-  // isolating the clearance tiering itself.
-  for (int i = 0; i < 5; ++i) {
-    appendPose(path, 2.0 * i);
-  }
-  runner_path_speed_profile::ProfileConfig config;
-  // clearances: fully tight, just below open, fully open, just above tight
-  const std::vector<double> clearance = {
-    0.0, config.open_clearance - 0.01, 1.0, config.passable_clearance + 0.01, 1.0};
-  const auto profile = runner_path_speed_profile::makeProfile(
-    path, clearance, 2.0, config);
-  EXPECT_DOUBLE_EQ(profile.points[0].speed_ceiling_mps, config.creep_speed);
-  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, config.caution_speed);
-  EXPECT_DOUBLE_EQ(profile.points[3].speed_ceiling_mps, config.caution_speed);
-  // No intermediate value between creep and caution, or caution and open,
-  // is ever produced by clearance alone.
-  for (const auto & point : profile.points) {
-    const double v = point.speed_ceiling_mps;
-    EXPECT_TRUE(
-      v == 0.0 || v == config.creep_speed || v == config.caution_speed ||
-      v > config.caution_speed);
-  }
+  appendPose(path, 0.0);
+  appendPose(path, 100.0);  // Keep goal braking from binding at pose zero.
+
+  const double preset = 1.5;
+  const auto speed_at = [&](double clearance) {
+      return runner_path_speed_profile::makeProfile(
+        path, {clearance, clearance}, preset, config).points.front().speed_ceiling_mps;
+    };
+  EXPECT_DOUBLE_EQ(speed_at(0.0), config.creep_speed);
+  EXPECT_DOUBLE_EQ(
+    speed_at(config.clearance_half_speed),
+    0.5 * (config.creep_speed + preset));
+  EXPECT_LT(speed_at(0.01), speed_at(0.10));
+  EXPECT_LT(speed_at(0.10), speed_at(1.0));
+  EXPECT_LT(speed_at(1.0), preset);
+  EXPECT_GE(speed_at(1.0), config.creep_speed);
+
+  const double below = speed_at(config.clearance_half_speed - 1e-6);
+  const double above = speed_at(config.clearance_half_speed + 1e-6);
+  EXPECT_GT(above, below);
+  EXPECT_LT(above - below, 1e-4);
 }
 
-TEST(PathSpeedProfile, HysteresisAbsorbsAShortOpenSpikeInsideACautionCorridor)
+TEST(PathSpeedProfile, ClearanceLawDependsOnPresetAndPreservesExactStops)
 {
-  // Reproduces the bag-observed sawtooth precursor: a single noisy pose
-  // reading "open" surrounded on both (equal) sides by "caution" must not
-  // leak through as a momentary speed-up. Poses are spaced well clear of
-  // the goal so end-of-path braking cannot also explain a lower reading.
   nav_msgs::msg::Path path;
   path.header.frame_id = "map";
-  for (int i = 0; i < 7; ++i) {
-    appendPose(path, 0.2 * i);  // spike span (0.2 m) still < min_tier_run_length
-  }
+  appendPose(path, 0.0);
+  appendPose(path, 100.0);
   runner_path_speed_profile::ProfileConfig config;
-  const std::vector<double> clearance = {
-    0.20, 0.20, 1.0, 0.20, 0.20, 0.20, 0.20};
-  const auto profile = runner_path_speed_profile::makeProfile(
-    path, clearance, 2.0, config);
-  EXPECT_DOUBLE_EQ(profile.points[2].speed_ceiling_mps, config.caution_speed);
-}
-
-TEST(PathSpeedProfile, HysteresisNeverErasesAGenuineIsolatedCreepHazard)
-{
-  // A real single-pose clearance drop inside an otherwise open corridor
-  // must survive hysteresis exactly, even though it is a short run: only
-  // less-restrictive short runs get smoothed away, never the reverse.
-  nav_msgs::msg::Path path;
-  path.header.frame_id = "map";
-  for (int i = 0; i < 5; ++i) {
-    appendPose(path, 0.5 * i);
-  }
-  runner_path_speed_profile::ProfileConfig config;
-  const std::vector<double> clearance = {1.0, 1.0, 0.0, 1.0, 1.0};
-  const auto profile = runner_path_speed_profile::makeProfile(
-    path, clearance, 2.0, config);
-  EXPECT_DOUBLE_EQ(profile.points[2].speed_ceiling_mps, config.creep_speed);
+  const std::vector<double> clearance(2, config.clearance_half_speed);
+  const auto timid = runner_path_speed_profile::makeProfile(path, clearance, 0.45, config);
+  const auto insane = runner_path_speed_profile::makeProfile(path, clearance, 1.5, config);
+  EXPECT_DOUBLE_EQ(
+    timid.points.front().speed_ceiling_mps, 0.5 * (config.creep_speed + 0.45));
+  EXPECT_DOUBLE_EQ(
+    insane.points.front().speed_ceiling_mps, 0.5 * (config.creep_speed + 1.5));
+  EXPECT_GT(insane.points.front().speed_ceiling_mps, timid.points.front().speed_ceiling_mps);
+  EXPECT_DOUBLE_EQ(timid.points.back().speed_ceiling_mps, 0.0);
+  EXPECT_DOUBLE_EQ(insane.points.back().speed_ceiling_mps, 0.0);
 }
 
 TEST(PathSpeedProfile, ForwardRecoveryIsFasterThanBackwardBraking)

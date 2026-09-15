@@ -18,19 +18,11 @@ namespace runner_path_speed_profile
 struct ProfileConfig
 {
   double creep_speed{0.25};
-  double caution_speed{0.5};
+  // Clearance beyond footprint_radius at which the continuous clearance
+  // ceiling is halfway from creep_speed to the active preset ceiling.
+  double clearance_half_speed{0.15};
   double curvature_window{0.40};
   double max_lateral_acceleration{0.35};
-  // Clearance tiers (beyond footprint_radius): below passable_clearance the
-  // path is creep-only; from passable_clearance up to open_clearance it is
-  // a fixed caution_speed plateau; at/above open_clearance clearance no
-  // longer constrains speed at all.
-  double passable_clearance{0.15};
-  double open_clearance{0.35};
-  // Interior clearance-tier runs shorter than this (in arclength) are
-  // merged into the most restrictive of themselves and their neighbours,
-  // so single-cell grid noise cannot toggle the tier pose-to-pose.
-  double min_tier_run_length{0.30};
   double footprint_radius{0.2444};
   double braking_linear{1.6};
   double braking_constant{0.27};

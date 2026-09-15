@@ -183,12 +183,10 @@
         </details>
         <details class="setting-group tuning-section" open>
           <summary>D2 committed-path speed law</summary>
-          <p class="hint">Clearance tiers applied to the committed path, beyond the vehicle footprint. Below passable clearance the path is creep-only; from passable up to open clearance it holds a fixed caution speed; at/above open clearance, clearance no longer constrains speed. Recovery acceleration bounds how fast speed releases back up after a constraint, independent of braking.</p>
+          <p class="hint">Continuous clearance ceiling applied to the committed path, beyond the vehicle footprint. Zero clearance gives creep speed; clearance half-speed is where the ceiling is halfway from creep to the active preset, which it approaches continuously as clearance grows. Recovery acceleration bounds how fast speed releases back up after a constraint, independent of braking.</p>
           <div class="tuning-grid">
             <label>Creep speed <input data-tuning-field="creep_speed" type="number" min="0.01" step="0.01"> m/s</label>
-            <label>Caution speed <input data-tuning-field="caution_speed" type="number" min="0.01" step="0.01"> m/s</label>
-            <label>Passable clearance <input data-tuning-field="passable_clearance" type="number" min="0" step="0.01"> m</label>
-            <label>Open clearance <input data-tuning-field="open_clearance" type="number" min="0.01" step="0.01"> m</label>
+            <label>Clearance half-speed <input data-tuning-field="clearance_half_speed" type="number" min="0.01" step="0.01"> m</label>
             <label>Recovery acceleration <input data-tuning-field="recovery_acceleration" type="number" min="0.01" step="0.01"> m/s²</label>
           </div>
           <button id="btn-apply-speed-law" type="button">APPLY SPEED POLICY</button>

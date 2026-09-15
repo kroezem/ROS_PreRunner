@@ -57,9 +57,7 @@ def test_timid_exactly_reproduces_committed_conservative_policy():
         'feedforward_effort_intercept': 0.0174,
         'output_max': 0.14,
         'creep_speed': 0.25,
-        'caution_speed': 0.5,
-        'passable_clearance': 0.15,
-        'open_clearance': 0.35,
+        'clearance_half_speed': 0.15,
         'recovery_acceleration': 1.0,
     }
     assert matching_preset(validate_values(dict(TIMID))) == 'timid'
@@ -90,7 +88,7 @@ def test_confident_v1_exact_values_and_owner_partition():
         spec.parameter_name for spec in PARAMETERS.values()
         if spec.owner == NAVIGATOR_OWNER
     }
-    assert navigator['speed_policy.caution_speed'] == 0.5
+    assert navigator['speed_policy.clearance_half_speed'] == 0.15
     assert '/speed_limit' not in str(PARAMETERS)
     assert 'cost_scaling_dist' not in PARAMETERS
     assert 'cost_scaling_gain' not in PARAMETERS
@@ -125,8 +123,7 @@ def test_manual_edit_classifies_live_values_as_custom():
         {'desired_linear_vel': 1.01},
         {'regulated_linear_scaling_min_speed': 1.01},
         {'min_lookahead_dist': 0.81},
-        {'caution_speed': 0.2},
-        {'open_clearance': 0.1},
+        {'clearance_half_speed': 0.0},
         {'output_max': 0.13},
     ],
 )

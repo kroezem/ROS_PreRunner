@@ -90,18 +90,13 @@ PARAMETERS = {
     # (see runner_nav2_behavior_tree::GeneratePathSpeedProfile); a fresh
     # commit picks up whatever value is current at that moment, no rebuild
     # or BT edit needed. desired_linear_vel (above) remains the authoritative
-    # preset ceiling these tiers are clamped beneath.
+    # preset ceiling approached by the continuous clearance law.
     'creep_speed': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.creep_speed',
     ),
-    'caution_speed': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.caution_speed',
-    ),
-    'passable_clearance': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.passable_clearance',
-    ),
-    'open_clearance': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.open_clearance',
+    'clearance_half_speed': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.clearance_half_speed',
     ),
     'recovery_acceleration': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.recovery_acceleration',
@@ -124,11 +119,9 @@ TIMID = {
     'output_max': 0.14,
     # D2 speed law: unchanged across driving-aggressiveness presets. The
     # presets scale the preset ceiling and reaction distances; the
-    # clearance-tier and recovery shape stay put.
+    # clearance and recovery shape stay put.
     'creep_speed': 0.25,
-    'caution_speed': 0.5,
-    'passable_clearance': 0.15,
-    'open_clearance': 0.35,
+    'clearance_half_speed': 0.15,
     'recovery_acceleration': 1.0,
 }
 
@@ -174,19 +167,13 @@ def validate_values(values: dict) -> dict[str, float]:
             raise ValueError(f'{name} must be a finite number')
 
     positive = set(PARAMETERS) - {
-        'integral_gain', 'feedforward_effort_intercept', 'passable_clearance',
+        'integral_gain', 'feedforward_effort_intercept',
     }
     for name in positive:
         if normalized[name] <= 0.0:
             raise ValueError(f'{name} must be greater than zero')
     if normalized['integral_gain'] < 0.0:
         raise ValueError('integral_gain must be nonnegative')
-    if normalized['passable_clearance'] < 0.0:
-        raise ValueError('passable_clearance must be nonnegative')
-    if normalized['open_clearance'] <= normalized['passable_clearance']:
-        raise ValueError('open_clearance must exceed passable_clearance')
-    if normalized['caution_speed'] <= normalized['creep_speed']:
-        raise ValueError('caution_speed must exceed creep_speed')
     if normalized['regulated_linear_scaling_min_speed'] > normalized[
         'desired_linear_vel'
     ]:

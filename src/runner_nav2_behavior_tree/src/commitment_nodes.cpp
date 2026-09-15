@@ -37,7 +37,7 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
   const rcl_interfaces::srv::GetParameters::Response & response)
 {
   runner_path_speed_profile::ProfileConfig config;
-  if (response.values.size() != 11u || std::any_of(
+  if (response.values.size() != 8u || std::any_of(
       response.values.begin(), response.values.end(), [](const auto & value) {
         return value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
       }))
@@ -45,16 +45,13 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
     return config;
   }
   config.creep_speed = response.values[0].double_value;
-  config.caution_speed = response.values[1].double_value;
+  config.clearance_half_speed = response.values[1].double_value;
   config.curvature_window = response.values[2].double_value;
   config.max_lateral_acceleration = response.values[3].double_value;
-  config.passable_clearance = response.values[4].double_value;
-  config.open_clearance = response.values[5].double_value;
-  config.min_tier_run_length = response.values[6].double_value;
-  config.footprint_radius = response.values[7].double_value;
-  config.braking_linear = response.values[8].double_value;
-  config.braking_constant = response.values[9].double_value;
-  config.recovery_acceleration = response.values[10].double_value;
+  config.footprint_radius = response.values[4].double_value;
+  config.braking_linear = response.values[5].double_value;
+  config.braking_constant = response.values[6].double_value;
+  config.recovery_acceleration = response.values[7].double_value;
   return config;
 }
 
@@ -374,10 +371,9 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
   runner_path_speed_profile::ProfileConfig config;
   auto policy_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
   policy_request->names = {
-    "speed_policy.creep_speed", "speed_policy.caution_speed",
+    "speed_policy.creep_speed", "speed_policy.clearance_half_speed",
     "speed_policy.curvature_window", "speed_policy.max_lateral_acceleration",
-    "speed_policy.passable_clearance", "speed_policy.open_clearance",
-    "speed_policy.min_tier_run_length", "speed_policy.footprint_radius",
+    "speed_policy.footprint_radius",
     "speed_policy.braking_linear", "speed_policy.braking_constant",
     "speed_policy.recovery_acceleration"};
   auto policy_future = policy_parameter_client_->async_send_request(policy_request);
