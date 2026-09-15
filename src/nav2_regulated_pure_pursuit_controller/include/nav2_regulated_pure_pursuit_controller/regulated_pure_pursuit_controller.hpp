@@ -22,6 +22,7 @@
 #include <memory>
 #include <algorithm>
 #include <mutex>
+#include <chrono>
 
 #include "nav2_core/controller.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -30,6 +31,8 @@
 #include "geometry_msgs/msg/pose2_d.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "runner_interfaces/msg/path_speed_profile.hpp"
+#include "runner_interfaces/msg/path_execution_state.hpp"
+#include "runner_interfaces/msg/encoder_state.hpp"
 #include "runner_interfaces/srv/set_path_speed_profile.hpp"
 #include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_regulated_pure_pursuit_controller/collision_checker.hpp"
@@ -213,6 +216,9 @@ protected:
   void receivePathSpeedProfile(
     const runner_interfaces::msg::PathSpeedProfile & profile);
   bool matchCachedPathSpeedProfileLocked(std::string & reason);
+  void configureExecutionSegmentsLocked();
+  bool updateCuspExecution();
+  void publishExecutionState();
 
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -242,14 +248,23 @@ protected:
   std::unique_ptr<nav2_regulated_pure_pursuit_controller::CollisionChecker> collision_checker_;
   rclcpp::Subscription<runner_interfaces::msg::PathSpeedProfile>::SharedPtr
     path_speed_profile_sub_;
+  rclcpp::Subscription<runner_interfaces::msg::EncoderState>::SharedPtr encoder_state_sub_;
   rclcpp::Service<runner_interfaces::srv::SetPathSpeedProfile>::SharedPtr
     path_speed_profile_service_;
   std::deque<runner_interfaces::msg::PathSpeedProfile> path_speed_profile_cache_;
   runner_interfaces::msg::PathSpeedProfile active_path_speed_profile_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<
+      runner_interfaces::msg::PathExecutionState>> path_execution_state_pub_;
   nav_msgs::msg::Path current_profile_path_;
   std::mutex path_speed_profile_mutex_;
   double path_speed_profile_fallback_{0.25};
   bool path_speed_profile_matched_{false};
+  std::mutex encoder_state_mutex_;
+  std::chrono::steady_clock::time_point encoder_state_received_at_{};
+  uint64_t encoder_sample_sequence_{0u};
+  uint64_t cusp_wait_start_sequence_{0u};
+  bool encoder_stationary_{false};
+  bool waiting_for_cusp_stationary_{false};
 };
 
 }  // namespace nav2_regulated_pure_pursuit_controller

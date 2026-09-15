@@ -92,6 +92,34 @@ public:
     return active_path_speed_profile_.path_hash;
   }
 
+  void primeAtCusp()
+  {
+    nav_msgs::msg::Path path;
+    path.header.frame_id = costmap_ros_->getBaseFrameID();
+    path.poses.resize(2);
+    for (auto & pose : path.poses) {
+      pose.header.frame_id = path.header.frame_id;
+    }
+    path.poses[1].pose.position.x = -1.0;
+    path_handler_->setPlan(path);
+    path_handler_->setSegmentTerminalIndices({0u, 1u});
+    path_speed_profile_matched_ = true;
+    geometry_msgs::msg::PoseStamped robot;
+    robot.header.frame_id = path.header.frame_id;
+    path_handler_->transformGlobalPlan(robot, 10.0);
+  }
+
+  bool updateCuspExecutionWrapper() {return updateCuspExecution();}
+  std::size_t currentSegment() const {return path_handler_->getCurrentSegment();}
+
+  void setEncoderStationary(bool stationary)
+  {
+    std::lock_guard<std::mutex> lock(encoder_state_mutex_);
+    encoder_stationary_ = stationary;
+    encoder_state_received_at_ = std::chrono::steady_clock::now();
+    ++encoder_sample_sequence_;
+  }
+
   std::string profileServiceName() const
   {
     return path_speed_profile_service_->get_service_name();
@@ -239,6 +267,73 @@ TEST(RegulatedPurePursuitTest, ProfileOverridesNormalFloorAndMismatchFallsBack)
   EXPECT_FALSE(ctrl->profileMatched());
   ctrl->applyConstraintsWrapper(0.0, speed, 0.0, path, linear_velocity, sign);
   EXPECT_DOUBLE_EQ(linear_velocity, 0.17);
+}
+
+TEST(RegulatedPurePursuitTest, ActiveSegmentStopsPruningAtCloserLaterGeometry)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testSegmentPathHandler");
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("segment_costmap");
+  costmap->set_parameter(rclcpp::Parameter("robot_base_frame", "map"));
+  costmap->on_configure(rclcpp_lifecycle::State());
+  nav2_regulated_pure_pursuit_controller::PathHandler handler(
+    tf2::durationFromSec(0.1), tf, costmap);
+
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses.resize(6);
+  for (auto & pose : path.poses) {
+    pose.header.frame_id = "map";
+  }
+  path.poses[0].pose.position.x = 0.0;
+  path.poses[1].pose.position.x = 1.0;  // first cusp
+  path.poses[2].pose.position.x = 0.91;  // geometrically closer later segment
+  path.poses[3].pose.position.x = 0.5;  // second cusp
+  path.poses[4].pose.position.x = 0.6;
+  path.poses[5].pose.position.x = 0.7;
+  handler.setPlan(path);
+  handler.setSegmentTerminalIndices({1u, 3u, 5u});
+
+  geometry_msgs::msg::PoseStamped robot;
+  robot.header.frame_id = "map";
+  robot.pose.position.x = 0.91;
+  const auto transformed = handler.transformGlobalPlan(robot, 10.0);
+
+  EXPECT_EQ(handler.getGlobalPathIndex(), 1u);
+  EXPECT_EQ(handler.getCurrentSegment(), 0u);
+  EXPECT_TRUE(handler.atSegmentTerminal());
+  ASSERT_EQ(transformed.poses.size(), 2u);
+  EXPECT_DOUBLE_EQ(transformed.poses[0].pose.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(transformed.poses[1].pose.position.x, 1.0);
+
+  EXPECT_TRUE(handler.advanceSegment());
+  EXPECT_EQ(handler.getCurrentSegment(), 1u);
+  EXPECT_GT(handler.getPathOffset(), 1.0);
+}
+
+TEST(RegulatedPurePursuitTest, CuspAdvancesOnlyAfterPostWaitStationaryEvidence)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testCuspStationary");
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("cusp_stationary_costmap");
+  costmap->on_configure(rclcpp_lifecycle::State());
+  auto ctrl = std::make_shared<BasicAPIRPP>();
+  ctrl->configure(node, "PathFollower", tf, costmap);
+  ctrl->setEncoderStationary(true);  // Pre-cusp evidence must not qualify.
+  ctrl->primeAtCusp();
+
+  EXPECT_FALSE(ctrl->updateCuspExecutionWrapper());
+  EXPECT_EQ(ctrl->currentSegment(), 0u);
+  EXPECT_FALSE(ctrl->updateCuspExecutionWrapper());
+  EXPECT_EQ(ctrl->currentSegment(), 0u);
+
+  ctrl->setEncoderStationary(false);
+  EXPECT_FALSE(ctrl->updateCuspExecutionWrapper());
+  EXPECT_EQ(ctrl->currentSegment(), 0u);
+
+  ctrl->setEncoderStationary(true);
+  EXPECT_TRUE(ctrl->updateCuspExecutionWrapper());
+  EXPECT_EQ(ctrl->currentSegment(), 1u);
 }
 
 TEST(RegulatedPurePursuitTest, ProfileAndPathAssociateInEitherArrivalOrder)

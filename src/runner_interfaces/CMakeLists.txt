@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PaddockControlLease.msg"
   "msg/PathSpeedProfile.msg"
   "msg/PathSpeedProfilePoint.msg"
+  "msg/PathExecutionState.msg"
   "msg/RecordingEntry.msg"
   "msg/RecordingRequest.msg"
   "msg/RecordingState.msg"

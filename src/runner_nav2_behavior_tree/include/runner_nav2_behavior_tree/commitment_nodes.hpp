@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory>
 #include <string>
+#include <mutex>
 
 #include "behaviortree_cpp/action_node.h"
 #include "behaviortree_cpp/condition_node.h"
@@ -16,6 +17,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rcl_interfaces/srv/get_parameters.hpp"
 #include "runner_interfaces/msg/path_speed_profile.hpp"
+#include "runner_interfaces/msg/path_execution_state.hpp"
 #include "runner_interfaces/srv/set_path_speed_profile.hpp"
 #include "runner_path_speed_profile/path_speed_profile.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -64,18 +66,21 @@ public:
 private:
   bool makeForwardCorridor(
     const nav_msgs::msg::Path & path, double corridor_length,
-    double max_progress_search_distance, const std::string & robot_frame,
-    double transform_tolerance, nav_msgs::msg::Path & corridor);
+    nav_msgs::msg::Path & corridor);
   void publish(const std::string & event, const std::string & reason);
 
   rclcpp::Node::SharedPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   rclcpp::Client<nav2_msgs::srv::IsPathValid>::SharedPtr client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+  rclcpp::Subscription<runner_interfaces::msg::PathExecutionState>::SharedPtr
+    execution_state_sub_;
   std::chrono::milliseconds server_timeout_;
   BlockagePersistence persistence_;
   nav_msgs::msg::Path committed_path_;
-  std::size_t closest_index_{0};
+  std::mutex execution_state_mutex_;
+  runner_interfaces::msg::PathExecutionState execution_state_;
+  bool have_execution_state_{false};
   bool validation_unavailable_reported_{false};
 };
 

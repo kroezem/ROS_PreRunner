@@ -147,6 +147,14 @@ PersistentPathValidCondition::PersistentPathValidCondition(
   client_ = node_->create_client<nav2_msgs::srv::IsPathValid>("is_path_valid");
   publisher_ = node_->create_publisher<std_msgs::msg::String>(
     "/navigation/path_commitment_state", eventQos());
+  execution_state_sub_ =
+    node_->create_subscription<runner_interfaces::msg::PathExecutionState>(
+    "/navigation/path_execution_state", eventQos(),
+    [this](const runner_interfaces::msg::PathExecutionState::SharedPtr message) {
+      std::lock_guard<std::mutex> lock(execution_state_mutex_);
+      execution_state_ = *message;
+      have_execution_state_ = true;
+    });
   server_timeout_ =
     config.blackboard->get<std::chrono::milliseconds>("server_timeout");
 }
@@ -176,34 +184,25 @@ BT::NodeStatus PersistentPathValidCondition::tick()
   getInput("path", path);
   if (path.poses.empty()) {
     committed_path_ = path;
-    closest_index_ = 0;
     persistence_.reset();
     return BT::NodeStatus::FAILURE;
   }
 
   if (path != committed_path_) {
     committed_path_ = path;
-    closest_index_ = 0;
     persistence_.reset();
     validation_unavailable_reported_ = false;
   }
 
   double corridor_length;
-  double max_progress_search_distance;
-  double transform_tolerance;
-  std::string robot_frame;
   unsigned int required_observations;
   getInput("corridor_length", corridor_length);
-  getInput("max_progress_search_distance", max_progress_search_distance);
-  getInput("transform_tolerance", transform_tolerance);
-  getInput("robot_frame", robot_frame);
   getInput("required_observations", required_observations);
   getInput("server_timeout", server_timeout_);
 
   nav_msgs::msg::Path corridor;
   if (!makeForwardCorridor(
-      path, corridor_length, max_progress_search_distance, robot_frame,
-      transform_tolerance, corridor))
+      path, corridor_length, corridor))
   {
     if (!validation_unavailable_reported_) {
       publish("committed_path_retained", "progress_pose_unavailable");
@@ -253,34 +252,27 @@ BT::NodeStatus PersistentPathValidCondition::tick()
 
 bool PersistentPathValidCondition::makeForwardCorridor(
   const nav_msgs::msg::Path & path, const double corridor_length,
-  const double max_progress_search_distance, const std::string & robot_frame,
-  const double transform_tolerance, nav_msgs::msg::Path & corridor)
+  nav_msgs::msg::Path & corridor)
 {
-  geometry_msgs::msg::PoseStamped robot_pose;
-  if (!nav2_util::getCurrentPose(
-      robot_pose, *tf_buffer_, path.header.frame_id, robot_frame, transform_tolerance))
+  runner_interfaces::msg::PathExecutionState execution;
+  {
+    std::lock_guard<std::mutex> lock(execution_state_mutex_);
+    if (!have_execution_state_) {
+      return false;
+    }
+    execution = execution_state_;
+  }
+  if (execution.pose_count != path.poses.size() ||
+    execution.path_hash != runner_path_speed_profile::pathIdentity(path) ||
+    execution.committed_path_stamp.sec != path.header.stamp.sec ||
+    execution.committed_path_stamp.nanosec != path.header.stamp.nanosec ||
+    execution.global_path_index >= path.poses.size())
   {
     return false;
   }
 
   const auto & poses = path.poses;
-  std::size_t search_end = closest_index_ + 1;
-  double searched = 0.0;
-  while (search_end < poses.size() && searched < max_progress_search_distance) {
-    searched += distance(poses[search_end - 1], poses[search_end]);
-    ++search_end;
-  }
-
-  auto closest = closest_index_;
-  auto closest_distance = distance(robot_pose, poses[closest]);
-  for (std::size_t index = closest_index_ + 1; index < search_end; ++index) {
-    const auto candidate_distance = distance(robot_pose, poses[index]);
-    if (candidate_distance < closest_distance) {
-      closest = index;
-      closest_distance = candidate_distance;
-    }
-  }
-  closest_index_ = closest;
+  const auto closest = static_cast<std::size_t>(execution.global_path_index);
 
   std::size_t corridor_end = closest + 1;
   double corridor_distance = 0.0;

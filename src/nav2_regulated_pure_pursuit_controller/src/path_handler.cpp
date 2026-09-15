@@ -18,6 +18,7 @@
 #include <memory>
 #include <vector>
 #include <utility>
+#include <cmath>
 
 #include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_core/controller_exceptions.hpp"
@@ -45,6 +46,40 @@ double PathHandler::getCostmapMaxExtent() const
   return max_costmap_dim_meters / 2.0;
 }
 
+void PathHandler::setPlan(const nav_msgs::msg::Path & path)
+{
+  global_plan_ = path;
+  path_offset_ = 0.0;
+  global_path_index_ = 0u;
+  current_segment_ = 0u;
+  segment_terminal_indices_.clear();
+}
+
+void PathHandler::setSegmentTerminalIndices(
+  const std::vector<std::size_t> & terminal_indices)
+{
+  segment_terminal_indices_ = terminal_indices;
+  current_segment_ = 0u;
+}
+
+bool PathHandler::atSegmentTerminal() const
+{
+  return current_segment_ < segment_terminal_indices_.size() &&
+         global_path_index_ >= segment_terminal_indices_[current_segment_];
+}
+
+bool PathHandler::advanceSegment()
+{
+  if (!atSegmentTerminal() || current_segment_ + 1u >= segment_terminal_indices_.size()) {
+    return false;
+  }
+  // The cusp belongs to both adjacent segments. Move the scalar progress just
+  // beyond its exact-zero sample while retaining the cusp pose for geometry.
+  path_offset_ = std::nextafter(path_offset_, std::numeric_limits<double>::infinity());
+  ++current_segment_;
+  return true;
+}
+
 nav_msgs::msg::Path PathHandler::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose,
   double max_robot_pose_search_dist,
@@ -68,6 +103,16 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
     nav2_util::geometry_utils::first_after_integrated_distance(
     global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist);
 
+  const bool has_active_cusp =
+    current_segment_ + 1u < segment_terminal_indices_.size();
+  if (has_active_cusp) {
+    const auto remaining_to_terminal =
+      segment_terminal_indices_[current_segment_] - global_path_index_;
+    const auto segment_upper_bound = global_plan_.poses.begin() +
+      std::min(global_plan_.poses.size(), remaining_to_terminal + 1u);
+    closest_pose_upper_bound = std::min(closest_pose_upper_bound, segment_upper_bound);
+  }
+
   // First find the closest pose on the path to the robot
   // bounded by when the path turns around (if it does) so we don't get a pose from a later
   // portion of the path
@@ -81,7 +126,8 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
   // Make sure we always have at least 2 points on the transformed plan and that we don't prune
   // the global plan below 2 points in order to have always enough point to interpolate the
   // end of path direction
-  if (global_plan_.poses.begin() != closest_pose_upper_bound && global_plan_.poses.size() > 1 &&
+  if (!has_active_cusp && global_plan_.poses.begin() != closest_pose_upper_bound &&
+    global_plan_.poses.size() > 1 &&
     transformation_begin == std::prev(closest_pose_upper_bound))
   {
     transformation_begin = std::prev(std::prev(closest_pose_upper_bound));
@@ -89,8 +135,15 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
 
   // We'll discard points on the plan that are outside the local costmap
   const double max_costmap_extent = getCostmapMaxExtent();
+  auto eligible_end = global_plan_.poses.end();
+  if (has_active_cusp) {
+    const auto remaining_to_terminal =
+      segment_terminal_indices_[current_segment_] - global_path_index_;
+    eligible_end = global_plan_.poses.begin() +
+      std::min(global_plan_.poses.size(), remaining_to_terminal + 1u);
+  }
   auto transformation_end = std::find_if(
-    transformation_begin, global_plan_.poses.end(),
+    transformation_begin, eligible_end,
     [&](const auto & global_plan_pose) {
       return euclidean_distance(global_plan_pose, robot_pose) > max_costmap_extent;
     });
@@ -114,6 +167,9 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
     transformation_begin, transformation_end,
     std::back_inserter(transformed_plan.poses),
     transformGlobalPoseToLocal);
+  if (transformed_plan.poses.size() == 1u && has_active_cusp) {
+    transformed_plan.poses.push_back(transformed_plan.poses.front());
+  }
   transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
   transformed_plan.header.stamp = robot_pose.header.stamp;
 
@@ -125,6 +181,8 @@ nav_msgs::msg::Path PathHandler::transformGlobalPlan(
       path_offset_ += euclidean_distance(*iterator, *next);
     }
   }
+  global_path_index_ += static_cast<std::size_t>(
+    std::distance(global_plan_.poses.begin(), transformation_begin));
   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
 
   if (transformed_plan.poses.empty()) {

@@ -110,6 +110,17 @@ void RegulatedPurePursuitController::configure(
       response->accepted = true;
       response->reason = "accepted";
     });
+  encoder_state_sub_ = node->create_subscription<runner_interfaces::msg::EncoderState>(
+    "/wheel/encoder_state", rclcpp::QoS(10),
+    [this](const runner_interfaces::msg::EncoderState::SharedPtr message) {
+      std::lock_guard<std::mutex> lock(encoder_state_mutex_);
+      encoder_stationary_ = message->stationary;
+      encoder_state_received_at_ = std::chrono::steady_clock::now();
+      ++encoder_sample_sequence_;
+    });
+  path_execution_state_pub_ =
+    node->create_publisher<runner_interfaces::msg::PathExecutionState>(
+    "/navigation/path_execution_state", rclcpp::QoS(10).reliable().transient_local());
 
   global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
   carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>("lookahead_point", 1);
@@ -132,6 +143,8 @@ void RegulatedPurePursuitController::cleanup()
   is_rotating_to_heading_pub_.reset();
   path_speed_profile_sub_.reset();
   path_speed_profile_service_.reset();
+  encoder_state_sub_.reset();
+  path_execution_state_pub_.reset();
 }
 
 void RegulatedPurePursuitController::activate()
@@ -145,6 +158,7 @@ void RegulatedPurePursuitController::activate()
   carrot_pub_->on_activate();
   curvature_carrot_pub_->on_activate();
   is_rotating_to_heading_pub_->on_activate();
+  path_execution_state_pub_->on_activate();
 }
 
 void RegulatedPurePursuitController::deactivate()
@@ -158,6 +172,7 @@ void RegulatedPurePursuitController::deactivate()
   carrot_pub_->on_deactivate();
   curvature_carrot_pub_->on_deactivate();
   is_rotating_to_heading_pub_->on_deactivate();
+  path_execution_state_pub_->on_deactivate();
 }
 
 std::unique_ptr<geometry_msgs::msg::PointStamped> RegulatedPurePursuitController::createCarrotMsg(
@@ -224,6 +239,11 @@ geometry_msgs::msg::TwistStamped RegulatedPurePursuitController::computeVelocity
   // Transform path to robot base frame
   auto transformed_plan = path_handler_->transformGlobalPlan(
     pose, params_->max_robot_pose_search_dist, params_->interpolate_curvature_after_goal);
+  if (updateCuspExecution()) {
+    transformed_plan = path_handler_->transformGlobalPlan(
+      pose, params_->max_robot_pose_search_dist, params_->interpolate_curvature_after_goal);
+  }
+  publishExecutionState();
   global_path_pub_->publish(transformed_plan);
 
   // Find look ahead distance and point on path and publish
@@ -543,6 +563,7 @@ void RegulatedPurePursuitController::setPlan(const nav_msgs::msg::Path & path)
 {
   has_reached_xy_tolerance_ = false;
   path_handler_->setPlan(path);
+  waiting_for_cusp_stationary_ = false;
   std::lock_guard<std::mutex> lock(path_speed_profile_mutex_);
   current_profile_path_ = path;
   std::string reason;
@@ -583,6 +604,8 @@ void RegulatedPurePursuitController::receivePathSpeedProfile(
       return;
     }
     path_speed_profile_matched_ = false;
+    path_handler_->setSegmentTerminalIndices({});
+    waiting_for_cusp_stationary_ = false;
     if (valid_for_current) {
       reason = "profile_changed_for_active_path";
     }
@@ -604,6 +627,8 @@ void RegulatedPurePursuitController::receivePathSpeedProfile(
 bool RegulatedPurePursuitController::matchCachedPathSpeedProfileLocked(std::string & reason)
 {
   path_speed_profile_matched_ = false;
+  path_handler_->setSegmentTerminalIndices({});
+  waiting_for_cusp_stationary_ = false;
   reason = "profile_unavailable";
   const auto path_hash = runner_path_speed_profile::pathIdentity(current_profile_path_);
   for (auto profile = path_speed_profile_cache_.rbegin();
@@ -629,9 +654,78 @@ bool RegulatedPurePursuitController::matchCachedPathSpeedProfileLocked(std::stri
     }
     active_path_speed_profile_ = *profile;
     path_speed_profile_matched_ = true;
+    configureExecutionSegmentsLocked();
     return true;
   }
   return false;
+}
+
+void RegulatedPurePursuitController::configureExecutionSegmentsLocked()
+{
+  std::vector<std::size_t> terminals;
+  for (std::size_t i = 0; i < active_path_speed_profile_.points.size(); ++i) {
+    if (active_path_speed_profile_.points[i].cusp_state ==
+      runner_interfaces::msg::PathSpeedProfilePoint::CUSP_STOP)
+    {
+      terminals.push_back(i);
+    }
+  }
+  if (!active_path_speed_profile_.points.empty()) {
+    terminals.push_back(active_path_speed_profile_.points.size() - 1u);
+  }
+  path_handler_->setSegmentTerminalIndices(terminals);
+  waiting_for_cusp_stationary_ = false;
+}
+
+bool RegulatedPurePursuitController::updateCuspExecution()
+{
+  if (!path_speed_profile_matched_ || !path_handler_->atSegmentTerminal()) {
+    waiting_for_cusp_stationary_ = false;
+    return false;
+  }
+  const bool final_segment =
+    path_handler_->getCurrentSegment() + 1u >= path_handler_->getSegmentCount();
+  if (final_segment) {
+    return false;
+  }
+
+  std::lock_guard<std::mutex> lock(encoder_state_mutex_);
+  if (!waiting_for_cusp_stationary_) {
+    waiting_for_cusp_stationary_ = true;
+    cusp_wait_start_sequence_ = encoder_sample_sequence_;
+    return false;
+  }
+  const bool fresh = encoder_sample_sequence_ > cusp_wait_start_sequence_ &&
+    std::chrono::steady_clock::now() - encoder_state_received_at_ <=
+    std::chrono::milliseconds(250);
+  if (fresh && encoder_stationary_ && path_handler_->advanceSegment()) {
+    waiting_for_cusp_stationary_ = false;
+    return true;
+  }
+  return false;
+}
+
+void RegulatedPurePursuitController::publishExecutionState()
+{
+  if (!path_speed_profile_matched_ || !path_execution_state_pub_->is_activated()) {
+    return;
+  }
+  runner_interfaces::msg::PathExecutionState state;
+  state.header.stamp = node_.lock()->get_clock()->now();
+  state.header.frame_id = active_path_speed_profile_.header.frame_id;
+  state.committed_path_stamp = active_path_speed_profile_.committed_path_stamp;
+  state.path_hash = active_path_speed_profile_.path_hash;
+  state.pose_count = active_path_speed_profile_.pose_count;
+  state.current_segment = static_cast<uint32_t>(path_handler_->getCurrentSegment());
+  state.global_path_index = static_cast<uint32_t>(path_handler_->getGlobalPathIndex());
+  state.global_path_offset_m = path_handler_->getPathOffset();
+  state.execution_state = path_handler_->atSegmentTerminal() &&
+    path_handler_->getCurrentSegment() + 1u >= path_handler_->getSegmentCount() ?
+    runner_interfaces::msg::PathExecutionState::EXECUTION_COMPLETE :
+    (waiting_for_cusp_stationary_ ?
+    runner_interfaces::msg::PathExecutionState::EXECUTION_WAITING_FOR_STATIONARY :
+    runner_interfaces::msg::PathExecutionState::EXECUTION_TRACKING);
+  path_execution_state_pub_->publish(state);
 }
 
 void RegulatedPurePursuitController::setSpeedLimit(

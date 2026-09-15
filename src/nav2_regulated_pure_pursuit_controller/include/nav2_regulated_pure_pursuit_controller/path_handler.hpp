@@ -77,10 +77,16 @@ public:
     const geometry_msgs::msg::PoseStamped & in_pose,
     geometry_msgs::msg::PoseStamped & out_pose) const;
 
-  void setPlan(const nav_msgs::msg::Path & path) {global_plan_ = path; path_offset_ = 0.0;}
+  void setPlan(const nav_msgs::msg::Path & path);
+  void setSegmentTerminalIndices(const std::vector<std::size_t> & terminal_indices);
+  bool atSegmentTerminal() const;
+  bool advanceSegment();
 
   nav_msgs::msg::Path getPlan() {return global_plan_;}
   double getPathOffset() const {return path_offset_;}
+  std::size_t getGlobalPathIndex() const {return global_path_index_;}
+  std::size_t getCurrentSegment() const {return current_segment_;}
+  std::size_t getSegmentCount() const {return segment_terminal_indices_.size();}
 
 protected:
   /**
@@ -95,6 +101,9 @@ protected:
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav_msgs::msg::Path global_plan_;
   double path_offset_{0.0};
+  std::size_t global_path_index_{0u};
+  std::size_t current_segment_{0u};
+  std::vector<std::size_t> segment_terminal_indices_;
 };
 
 }  // namespace nav2_regulated_pure_pursuit_controller
