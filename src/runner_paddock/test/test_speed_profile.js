@@ -2,32 +2,45 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const profile = require("../runner_paddock/static/speed_profile.js");
 
-test("default geometry spans constrained to preset speed", () => {
-  const settings = profile.sanitize(profile.DEFAULTS);
-  assert.equal(settings.minSpeed, 0.50);
-  assert.equal(profile.geometrySpeed(settings.tightThreshold, profile.PRESETS[1], settings), 0.50);
-  assert.equal(profile.geometrySpeed(settings.openThreshold, profile.PRESETS[1], settings), 1.00);
-  const linear = { ...settings, curveFamily: "linear" };
-  assert.ok(Math.abs(profile.curveProgress(0.4, linear) - 0.5) < 1e-12);
+const settings = {
+  minimum_traversal_speed: 0.25, constrained_speed_scaling: 0.2,
+  scaling_reference_speed: 2, tight_clearance: 0.05, open_clearance: 0.7,
+  clearance_curve_family: 2, clearance_curve_shape: 1,
+};
+const closeTo = (actual, expected, tolerance = 1e-9) => assert.ok(
+  Math.abs(actual - expected) < tolerance,
+  `expected ${actual} to be within ${tolerance} of ${expected}`,
+);
+
+test("curve endpoints match tight and open policy", () => {
+  const preset = profile.PRESETS[1];
+  assert.equal(profile.geometrySpeed(settings.open_clearance, preset, settings), 1);
+  assert.equal(profile.geometrySpeed(settings.tight_clearance, preset, settings), profile.constrainedSpeed(preset, settings));
 });
 
-test("scaling ranges from shared to preset-dependent constrained speed", () => {
-  const settings = profile.sanitize(profile.DEFAULTS);
-  const shared = { ...settings, presetScaling: 0 };
-  assert.equal(profile.constrainedSpeed(profile.PRESETS[1], shared), 0.50);
-  assert.equal(profile.constrainedSpeed(profile.PRESETS[3], shared), 0.50);
-  const scaled = { ...settings, presetScaling: 100 };
-  assert.equal(profile.constrainedSpeed(profile.PRESETS[1], scaled), 1.00);
-  assert.equal(profile.constrainedSpeed(profile.PRESETS[3], scaled), 2.00);
-});
-
-test("synthetic path uses settled distance and never exceeds raw ceiling", () => {
-  const settings = profile.sanitize(profile.DEFAULTS);
+test("fully scaled bottom remains below each preset maximum", () => {
+  const scaled = { ...settings, constrained_speed_scaling: 1 };
   for (const preset of profile.PRESETS) {
-    const result = profile.pathProfile(preset, settings);
-    assert.equal(result.points.length, 301);
-    assert.ok(Math.abs(result.settledDistance - result.target * settings.approachTime) < 1e-12);
-    assert.ok(result.points.every((point) => point.final <= point.raw + 1e-9));
-    assert.ok(result.points.every((point) => point.final <= preset.maxSpeed + 1e-9));
+    closeTo(
+      profile.constrainedSpeed(preset, scaled),
+      scaled.minimum_traversal_speed * preset.maxSpeed / scaled.scaling_reference_speed,
+    );
+    assert.ok(profile.constrainedSpeed(preset, scaled) < preset.maxSpeed);
   }
+});
+
+test("fully scaled bottom follows an explicit scaling reference, not a hardcoded one", () => {
+  const scaled = { ...settings, constrained_speed_scaling: 1, scaling_reference_speed: 4 };
+  const preset = profile.PRESETS[1];
+  closeTo(
+    profile.constrainedSpeed(preset, scaled),
+    scaled.minimum_traversal_speed * preset.maxSpeed / 4,
+  );
+});
+
+test("power and smoothstep shapes are selectable", () => {
+  const clearance = (settings.tight_clearance + settings.open_clearance) / 2;
+  closeTo(profile.curveProgress(clearance, { ...settings, clearance_curve_family: 0 }), 0.5);
+  closeTo(profile.curveProgress(clearance, { ...settings, clearance_curve_family: 1, clearance_curve_shape: 2 }), 0.25);
+  closeTo(profile.curveProgress(clearance, { ...settings, clearance_curve_family: 2 }), 0.5);
 });

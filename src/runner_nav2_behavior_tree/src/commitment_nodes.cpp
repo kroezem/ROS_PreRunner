@@ -37,23 +37,31 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
   const rcl_interfaces::srv::GetParameters::Response & response)
 {
   runner_path_speed_profile::ProfileConfig config;
-  if (response.values.size() != 10u || std::any_of(
+  if (response.values.size() != 18u || std::any_of(
       response.values.begin(), response.values.end(), [](const auto & value) {
         return value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
       }))
   {
     return config;
   }
-  config.creep_speed = response.values[0].double_value;
-  config.clearance_half_speed = response.values[1].double_value;
-  config.curvature_window = response.values[2].double_value;
-  config.max_lateral_acceleration = response.values[3].double_value;
-  config.footprint_radius = response.values[4].double_value;
-  config.braking_linear = response.values[5].double_value;
-  config.braking_constant = response.values[6].double_value;
-  config.reaction_time_s = response.values[7].double_value;
-  config.recovery_acceleration_gain = response.values[8].double_value;
-  config.recovery_acceleration_floor = response.values[9].double_value;
+  config.minimum_traversal_speed = response.values[0].double_value;
+  config.constrained_speed_scaling = response.values[1].double_value;
+  config.tight_clearance = response.values[2].double_value;
+  config.open_clearance = response.values[3].double_value;
+  config.clearance_curve_family = response.values[4].double_value;
+  config.clearance_curve_shape = response.values[5].double_value;
+  config.approach_time_s = response.values[6].double_value;
+  config.curvature_window = response.values[7].double_value;
+  config.max_lateral_acceleration = response.values[8].double_value;
+  config.footprint_front = response.values[9].double_value;
+  config.footprint_rear = response.values[10].double_value;
+  config.footprint_half_width = response.values[11].double_value;
+  config.braking_linear = response.values[12].double_value;
+  config.braking_constant = response.values[13].double_value;
+  config.reaction_time_s = response.values[14].double_value;
+  config.recovery_acceleration_gain = response.values[15].double_value;
+  config.recovery_acceleration_floor = response.values[16].double_value;
+  config.scaling_reference_speed = response.values[17].double_value;
   return config;
 }
 
@@ -365,13 +373,18 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
   runner_path_speed_profile::ProfileConfig config;
   auto policy_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
   policy_request->names = {
-    "speed_policy.creep_speed", "speed_policy.clearance_half_speed",
+    "speed_policy.minimum_traversal_speed", "speed_policy.constrained_speed_scaling",
+    "speed_policy.tight_clearance", "speed_policy.open_clearance",
+    "speed_policy.clearance_curve_family", "speed_policy.clearance_curve_shape",
+    "speed_policy.approach_time_s",
     "speed_policy.curvature_window", "speed_policy.max_lateral_acceleration",
-    "speed_policy.footprint_radius",
+    "speed_policy.footprint_front", "speed_policy.footprint_rear",
+    "speed_policy.footprint_half_width",
     "speed_policy.braking_linear", "speed_policy.braking_constant",
     "speed_policy.reaction_time_s",
     "speed_policy.recovery_acceleration_gain",
-    "speed_policy.recovery_acceleration_floor"};
+    "speed_policy.recovery_acceleration_floor",
+    "speed_policy.scaling_reference_speed"};
   auto policy_future = policy_parameter_client_->async_send_request(policy_request);
   if (rclcpp::spin_until_future_complete(node_, policy_future, server_timeout_) ==
     rclcpp::FutureReturnCode::SUCCESS)
@@ -383,7 +396,7 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
       "Path speed profile policy unavailable from /bt_navigator; using committed defaults");
   }
 
-  double preset_ceiling = config.creep_speed;
+  double preset_ceiling = config.minimum_traversal_speed;
   bool preset_available = false;
   auto request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
   request->names.push_back("FollowPath.desired_linear_vel");
@@ -396,7 +409,8 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
       response->values.front().type == rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE)
     {
       preset_ceiling = response->values.front().double_value;
-      preset_available = std::isfinite(preset_ceiling) && preset_ceiling >= config.creep_speed;
+      preset_available = std::isfinite(preset_ceiling) &&
+        preset_ceiling >= config.minimum_traversal_speed;
     }
   }
 
@@ -406,7 +420,8 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
     const auto costmap = costmap_subscriber_->getCostmap();
     if (costmap) {
       clearance = runner_path_speed_profile::costmapClearance(
-        path, *costmap, config.footprint_radius);
+        path, *costmap, config.footprint_front, config.footprint_rear,
+        config.footprint_half_width);
       costmap_available = clearance.size() == path.poses.size();
     }
   } catch (const std::exception & error) {

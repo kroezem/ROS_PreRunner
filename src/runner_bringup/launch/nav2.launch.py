@@ -79,6 +79,11 @@ def generate_launch_description():
     launch_dir = os.path.join(package_share, 'launch')
     include_dir = os.path.join(launch_dir, 'include')
     nav2_params = os.path.join(package_share, 'config', 'nav2_params.yaml')
+    runtime_override = os.environ.get(
+        'PADDOCK_SPEED_POLICY_OVERRIDE',
+        '/home/matti/.config/runner/speed_profile_overrides.yaml',
+    )
+    runtime_parameters = [runtime_override] if os.path.isfile(runtime_override) else []
     speed_envelope = os.path.join(
         get_package_share_directory('runner_drive_adapter'),
         'config',
@@ -134,7 +139,7 @@ def generate_launch_description():
             executable='planner_server',
             name='planner_server',
             output='screen',
-            parameters=[nav2_params],
+            parameters=[nav2_params, *runtime_parameters],
         ),
         Node(
             package='nav2_controller',
@@ -151,6 +156,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 nav2_params,
+                *runtime_parameters,
                 {
                     'default_nav_to_pose_bt_xml': navigation_bt,
                     'default_nav_through_poses_bt_xml': route_bt,

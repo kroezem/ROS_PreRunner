@@ -349,6 +349,7 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
     const value = values[input.dataset.tuningField];
     if (document.activeElement !== input) input.value = Number.isFinite(value) ? String(value) : "";
   });
+  window.dispatchEvent(new CustomEvent("paddock-tuning", { detail: values }));
   Object.entries(bounds).forEach(([field, value]) => {
     const input = document.querySelector(`[data-tuning-field="${field}"]`);
     if (input && Number.isFinite(value)) input.max = String(value);
@@ -1473,6 +1474,16 @@ function applyTuningForm() {
 $("btn-apply-speed-policy").addEventListener("click", applyTuningForm);
 $("btn-apply-speed-law").addEventListener("click", applyTuningForm);
 $("btn-apply-engineering").addEventListener("click", applyTuningForm);
+$("btn-apply-profile").addEventListener("click", applyTuningForm);
+$("btn-save-profile").addEventListener("click", () => {
+  const tuning = latest.autonomy_tuning || {};
+  if (!tuning.available) return;
+  const values = { ...(tuning.values || {}) };
+  document.querySelectorAll("[data-tuning-field]").forEach((input) => {
+    values[input.dataset.tuningField] = Number(input.value);
+  });
+  send({ action: "save_autonomy_tuning", values });
+});
 ["global", "local"].forEach((costmap) => {
   [true, false].forEach((enabled) => {
     $(`btn-${costmap}-obstacles-${enabled ? "on" : "off"}`).addEventListener("click", () => send({

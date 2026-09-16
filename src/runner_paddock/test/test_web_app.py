@@ -170,7 +170,7 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-tuning-field="desired_linear_vel"' in response.text
         assert 'data-tuning-field="maximum_commanded_speed"' in response.text
         assert 'data-tuning-field="output_max"' in response.text
-        assert 'data-tuning-field="clearance_half_speed"' in response.text
+        assert 'id="profile-policy-controls"' in response.text
         assert 'data-tuning-field="reaction_time_s"' in response.text
         assert 'data-tuning-field="recovery_acceleration_gain"' in response.text
         assert 'data-tuning-field="recovery_acceleration_floor"' in response.text
@@ -197,8 +197,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-tab="autonomy"' in response.text
         assert 'data-tab="speed-profile"' in response.text
         assert 'id="profile-clearance-chart"' in response.text
-        assert 'id="profile-path-chart"' in response.text
-        assert 'never sent to Runner, ROS, Nav2, D2' in response.text
+        assert 'id="profile-path-chart"' not in response.text
+        assert 'edit previews · Apply is live · Save persists' in response.text
         assert 'id="delete-dialog"' in response.text
         assert 'id="btn-record"' in response.text
         assert 'data-tab="recording"' in response.text

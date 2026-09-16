@@ -137,6 +137,7 @@ class AutonomyTuningIntent:
 
     preset: str = ''
     values: dict = field(default_factory=dict)
+    save: bool = False
 
 
 @dataclass(frozen=True)
@@ -433,6 +434,20 @@ class OperatorGateway:
             f'autonomy tuning {preset or "custom"} requested',
             (AutonomyTuningIntent(preset=preset, values=values),),
             'controller',
+        )
+
+    def _do_save_autonomy_tuning(
+        self, conn_id: str, action: dict
+    ) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        values = action.get('values', {})
+        if not isinstance(values, dict):
+            return self._reject(conn_id, 'autonomy tuning values must be an object')
+        return GatewayResult(
+            True, 'autonomy tuning override save requested',
+            (AutonomyTuningIntent(values=values, save=True),), 'controller',
         )
 
     def _do_set_config(self, conn_id: str, action: dict) -> GatewayResult:

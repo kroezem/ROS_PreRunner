@@ -193,21 +193,29 @@ std::vector<double> clearanceSpeeds(
   std::vector<double> speeds(pose_count);
   for (std::size_t i = 0; i < pose_count; ++i) {
     const double measured = clearance.size() == pose_count ? clearance[i] : 0.0;
-    const double clear = std::isfinite(measured) ? std::max(0.0, measured) : 0.0;
-    speeds[i] = config.creep_speed +
-      (preset_ceiling - config.creep_speed) * clear /
-      (clear + config.clearance_half_speed);
+    speeds[i] = clearanceSpeed(measured, preset_ceiling, config);
   }
   return speeds;
 }
 
-bool validConfig(const ProfileConfig & c)
+bool validConfigImpl(const ProfileConfig & c)
 {
-  return std::isfinite(c.creep_speed) && c.creep_speed > 0.0 &&
-         std::isfinite(c.clearance_half_speed) && c.clearance_half_speed > 0.0 &&
+  return std::isfinite(c.minimum_traversal_speed) && c.minimum_traversal_speed > 0.0 &&
+         std::isfinite(c.constrained_speed_scaling) &&
+         c.constrained_speed_scaling >= 0.0 && c.constrained_speed_scaling <= 1.0 &&
+         std::isfinite(c.scaling_reference_speed) && c.scaling_reference_speed > 0.0 &&
+         std::isfinite(c.tight_clearance) && c.tight_clearance >= 0.0 &&
+         std::isfinite(c.open_clearance) && c.open_clearance > c.tight_clearance &&
+         std::isfinite(c.clearance_curve_family) && c.clearance_curve_family >= 0.0 &&
+         c.clearance_curve_family <= 2.0 &&
+         std::floor(c.clearance_curve_family) == c.clearance_curve_family &&
+         std::isfinite(c.clearance_curve_shape) && c.clearance_curve_shape > 0.0 &&
+         std::isfinite(c.approach_time_s) && c.approach_time_s >= 0.0 &&
          std::isfinite(c.curvature_window) && c.curvature_window > 0.0 &&
          std::isfinite(c.max_lateral_acceleration) && c.max_lateral_acceleration > 0.0 &&
-         std::isfinite(c.footprint_radius) && c.footprint_radius >= 0.0 &&
+         std::isfinite(c.footprint_front) && c.footprint_front > 0.0 &&
+         std::isfinite(c.footprint_rear) && c.footprint_rear >= 0.0 &&
+         std::isfinite(c.footprint_half_width) && c.footprint_half_width > 0.0 &&
          std::isfinite(c.braking_linear) && c.braking_linear > 0.0 &&
          std::isfinite(c.braking_constant) && c.braking_constant > 0.0 &&
          std::isfinite(c.reaction_time_s) && c.reaction_time_s >= 0.0 &&
@@ -248,12 +256,14 @@ uint64_t pathIdentity(const nav_msgs::msg::Path & path)
 std::vector<double> costmapClearance(
   const nav_msgs::msg::Path & path,
   nav2_costmap_2d::Costmap2D & costmap,
-  double footprint_radius)
+  double footprint_front, double footprint_rear, double footprint_half_width)
 {
   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap.getMutex());
   const unsigned int width = costmap.getSizeInCellsX();
   const unsigned int height = costmap.getSizeInCellsY();
-  if (width == 0u || height == 0u || !std::isfinite(footprint_radius)) {
+  if (width == 0u || height == 0u || !std::isfinite(footprint_front) ||
+    !std::isfinite(footprint_rear) || !std::isfinite(footprint_half_width))
+  {
     return {};
   }
   const double far = static_cast<double>(width + height) * (width + height);
@@ -293,18 +303,63 @@ std::vector<double> costmapClearance(
   std::vector<double> clearance(path.poses.size(), 0.0);
   const double resolution = costmap.getResolution();
   const double cell_radius = resolution * std::sqrt(0.5);
+  const std::vector<std::pair<double, double>> boundary = {
+    {footprint_front, footprint_half_width}, {footprint_front, 0.0},
+    {footprint_front, -footprint_half_width}, {0.5 * (footprint_front - footprint_rear), -footprint_half_width},
+    {-footprint_rear, -footprint_half_width}, {-footprint_rear, 0.0},
+    {-footprint_rear, footprint_half_width}, {0.5 * (footprint_front - footprint_rear), footprint_half_width}};
   for (std::size_t i = 0; i < path.poses.size(); ++i) {
-    unsigned int mx = 0;
-    unsigned int my = 0;
     const auto & p = path.poses[i].pose.position;
-    if (!costmap.worldToMap(p.x, p.y, mx, my)) {
-      clearance[i] = 0.0;
-      continue;
+    const double heading = yaw(path.poses[i].pose.orientation);
+    const double cos_heading = std::cos(heading);
+    const double sin_heading = std::sin(heading);
+    double margin = std::numeric_limits<double>::infinity();
+    for (const auto & sample : boundary) {
+      const double wx = p.x + cos_heading * sample.first - sin_heading * sample.second;
+      const double wy = p.y + sin_heading * sample.first + cos_heading * sample.second;
+      unsigned int mx = 0;
+      unsigned int my = 0;
+      if (!costmap.worldToMap(wx, wy, mx, my)) {
+        margin = 0.0;
+        break;
+      }
+      margin = std::min(margin, std::sqrt(grid[my * width + mx]) * resolution);
     }
-    const double centre_distance = std::sqrt(grid[my * width + mx]) * resolution;
-    clearance[i] = std::max(0.0, centre_distance - footprint_radius - cell_radius);
+    clearance[i] = std::max(0.0, margin - cell_radius);
   }
   return clearance;
+}
+
+bool validConfig(const ProfileConfig & config)
+{
+  return validConfigImpl(config);
+}
+
+double clearanceSpeed(
+  double clearance, double preset_ceiling, const ProfileConfig & config)
+{
+  const double preset = std::max(preset_ceiling, config.minimum_traversal_speed);
+  // scaling_reference_speed is the single authoritative ceiling (today,
+  // ABSURD's) fully-scaled bottoms are normalized against, so they retain
+  // the same fraction of that reference bottom at every preset.
+  const double scaled_bottom =
+    config.minimum_traversal_speed * preset / config.scaling_reference_speed;
+  const double bottom = std::clamp(
+    config.minimum_traversal_speed * (1.0 - config.constrained_speed_scaling) +
+    scaled_bottom * config.constrained_speed_scaling,
+    0.0, preset);
+  const double measured = std::isfinite(clearance) ? clearance : 0.0;
+  const double x = std::clamp(
+    (measured - config.tight_clearance) /
+    (config.open_clearance - config.tight_clearance), 0.0, 1.0);
+  double shaped = x;
+  if (config.clearance_curve_family >= 1.0) {
+    shaped = std::pow(x, config.clearance_curve_shape);
+  }
+  if (config.clearance_curve_family == 2.0) {
+    shaped = shaped * shaped * (3.0 - 2.0 * shaped);
+  }
+  return bottom + (preset - bottom) * shaped;
 }
 
 runner_interfaces::msg::PathSpeedProfile makeProfile(
@@ -312,9 +367,9 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
   double preset_ceiling, const ProfileConfig & requested_config)
 {
   using Point = runner_interfaces::msg::PathSpeedProfilePoint;
-  ProfileConfig config = validConfig(requested_config) ? requested_config : ProfileConfig{};
-  if (!std::isfinite(preset_ceiling) || preset_ceiling < config.creep_speed) {
-    preset_ceiling = config.creep_speed;
+  ProfileConfig config = validConfigImpl(requested_config) ? requested_config : ProfileConfig{};
+  if (!std::isfinite(preset_ceiling) || preset_ceiling < config.minimum_traversal_speed) {
+    preset_ceiling = config.minimum_traversal_speed;
   }
 
   runner_interfaces::msg::PathSpeedProfile profile;
@@ -323,7 +378,7 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
   profile.path_hash = pathIdentity(path);
   profile.pose_count = static_cast<uint32_t>(path.poses.size());
   profile.preset_ceiling_mps = preset_ceiling;
-  profile.creep_speed_mps = config.creep_speed;
+  profile.creep_speed_mps = clearanceSpeed(0.0, preset_ceiling, config);
   if (path.poses.empty()) {
     return profile;
   }
@@ -367,7 +422,7 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
     clearance, path.poses.size(), preset_ceiling, config);
   for (std::size_t i = 0; i < path.poses.size(); ++i) {
     ceiling[i] = std::min(ceiling[i], clearance_speed[i]);
-    ceiling[i] = std::clamp(ceiling[i], config.creep_speed, preset_ceiling);
+    ceiling[i] = std::clamp(ceiling[i], profile.creep_speed_mps, preset_ceiling);
   }
 
   std::vector<int> direction(path.poses.size() > 1u ? path.poses.size() - 1u : 0u, 0);
@@ -413,6 +468,30 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
   }
   ceiling.back() = 0.0;
 
+  // One backwards O(n) anticipation pass. A decreasing future raw target
+  // becomes active for target*approach_time_s metres before its entry.
+  if (config.approach_time_s > 0.0) {
+    double target = preset_ceiling;
+    double remaining = 0.0;
+    for (std::size_t i = ceiling.size() - 1u; i > 0u; --i) {
+      if (ceiling[i] < target) {
+        target = ceiling[i];
+        remaining = std::max(remaining, target * config.approach_time_s);
+      }
+      if (remaining > 0.0 && target > 0.0) {
+        ceiling[i - 1u] = std::min(ceiling[i - 1u], target);
+        remaining -= s[i] - s[i - 1u];
+      }
+      if (remaining <= 0.0) {
+        // No active plateau: return to the open-corridor baseline so the
+        // next pose's raw ceiling is compared against an unconstrained
+        // reference, not pre-synced to itself (which would silently
+        // defeat the trigger above for every following pose).
+        target = preset_ceiling;
+      }
+    }
+  }
+
   // Forward pass: release back toward the raw ceiling with the independent
   // speed-dependent recovery model. std::min preserves that raw authority.
   for (std::size_t i = 1; i < ceiling.size(); ++i) {
@@ -433,7 +512,7 @@ runner_interfaces::msg::PathSpeedProfile makeProfile(
 
   for (std::size_t i = 0; i < ceiling.size(); ++i) {
     if (ceiling[i] > 0.0) {
-      ceiling[i] = std::max(ceiling[i], config.creep_speed);
+      ceiling[i] = std::max(ceiling[i], profile.creep_speed_mps);
     }
     profile.points[i].arclength_m = s[i];
     profile.points[i].speed_ceiling_mps = ceiling[i];

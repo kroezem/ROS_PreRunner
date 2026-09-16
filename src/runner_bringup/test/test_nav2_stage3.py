@@ -624,16 +624,24 @@ def test_bt_navigator_owns_the_complete_d2_speed_policy():
     """Both BT engines consume one public policy owned by bt_navigator."""
     navigator = _params()['bt_navigator']['ros__parameters']
     expected = {
-        'speed_policy.creep_speed': 0.40,
-        'speed_policy.clearance_half_speed': 0.05,
+        'speed_policy.minimum_traversal_speed': 0.25,
+        'speed_policy.constrained_speed_scaling': 0.20,
+        'speed_policy.tight_clearance': 0.05,
+        'speed_policy.open_clearance': 0.70,
+        'speed_policy.clearance_curve_family': 2.0,
+        'speed_policy.clearance_curve_shape': 1.0,
+        'speed_policy.approach_time_s': 0.0,
         'speed_policy.curvature_window': 0.40,
         'speed_policy.max_lateral_acceleration': 0.35,
-        'speed_policy.footprint_radius': 0.2444,
+        'speed_policy.footprint_front': 0.230,
+        'speed_policy.footprint_rear': 0.060,
+        'speed_policy.footprint_half_width': 0.0825,
         'speed_policy.braking_linear': 1.6,
         'speed_policy.braking_constant': 0.27,
         'speed_policy.reaction_time_s': 0.40,
         'speed_policy.recovery_acceleration_gain': 1.6,
         'speed_policy.recovery_acceleration_floor': 0.60,
+        'speed_policy.scaling_reference_speed': 2.0,
     }
     assert {name: navigator[name] for name in expected} == expected
 

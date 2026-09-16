@@ -16,18 +16,26 @@
 
 from dataclasses import dataclass
 import math
+import os
+from pathlib import Path
+import tempfile
 
 from runner_interfaces.msg import AutonomyTuningPolicy
 
 CONTROLLER_OWNER = 'controller'
 ADAPTER_OWNER = 'adapter'
 NAVIGATOR_OWNER = 'navigator'
+PLANNER_OWNER = 'planner'
 ABSOLUTE_BOUNDS = {
     'maximum_commanded_speed': (
         AutonomyTuningPolicy.MAXIMUM_COMMANDED_SPEED
     ),
     'output_max': AutonomyTuningPolicy.MAXIMUM_OUTPUT_AUTHORITY,
 }
+OVERRIDE_PATH = Path(os.environ.get(
+    'PADDOCK_SPEED_POLICY_OVERRIDE',
+    '/home/matti/.config/runner/speed_profile_overrides.yaml',
+))
 
 
 @dataclass(frozen=True)
@@ -91,12 +99,61 @@ PARAMETERS = {
     # commit picks up whatever value is current at that moment, no rebuild
     # or BT edit needed. desired_linear_vel (above) remains the authoritative
     # preset ceiling approached by the continuous clearance law.
-    'creep_speed': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.creep_speed',
-    ),
-    'clearance_half_speed': TuningParameter(
+    'minimum_traversal_speed': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator',
-        'speed_policy.clearance_half_speed',
+        'speed_policy.minimum_traversal_speed',
+    ),
+    'constrained_speed_scaling': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.constrained_speed_scaling',
+    ),
+    # The single authoritative reference ceiling constrained_speed_scaling
+    # normalizes fully-scaled bottoms against (today, ABSURD's maximum).
+    # Explicit so C++ and this preset table cannot silently desynchronize
+    # from a future change to that preset ceiling.
+    'scaling_reference_speed': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.scaling_reference_speed',
+    ),
+    'tight_clearance': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.tight_clearance',
+    ),
+    'open_clearance': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.open_clearance',
+    ),
+    'clearance_curve_family': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.clearance_curve_family',
+    ),
+    'clearance_curve_shape': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.clearance_curve_shape',
+    ),
+    'approach_time_s': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.approach_time_s',
+    ),
+    'curvature_window': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.curvature_window',
+    ),
+    'max_lateral_acceleration': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.max_lateral_acceleration',
+    ),
+    'footprint_front': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.footprint_front',
+    ),
+    'footprint_rear': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.footprint_rear',
+    ),
+    'footprint_half_width': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator',
+        'speed_policy.footprint_half_width',
+    ),
+    'braking_linear': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.braking_linear',
+    ),
+    'braking_constant': TuningParameter(
+        NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.braking_constant',
     ),
     'reaction_time_s': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.reaction_time_s',
@@ -109,7 +166,16 @@ PARAMETERS = {
         NAVIGATOR_OWNER, '/bt_navigator',
         'speed_policy.recovery_acceleration_floor',
     ),
+    'cost_penalty': TuningParameter(
+        PLANNER_OWNER, '/planner_server', 'GridBased.cost_penalty',
+    ),
 }
+
+# The one authoritative ABSURD ceiling. Both ABSURD's own
+# desired_linear_vel and every preset's scaling_reference_speed (D2's
+# fully-scaled-bottom normalization point) derive from this single
+# constant, so changing it cannot silently desynchronize the two.
+ABSURD_MAXIMUM_SPEED_MPS = 2.00
 
 TIMID = {
     'desired_linear_vel': 0.45,
@@ -128,11 +194,25 @@ TIMID = {
     # D2 speed law: unchanged across driving-aggressiveness presets. The
     # presets scale the preset ceiling and reaction distances; the
     # clearance and recovery shape stay put.
-    'creep_speed': 0.25,
-    'clearance_half_speed': 0.075,
+    'minimum_traversal_speed': 0.25,
+    'constrained_speed_scaling': 0.20,
+    'scaling_reference_speed': ABSURD_MAXIMUM_SPEED_MPS,
+    'tight_clearance': 0.05,
+    'open_clearance': 0.70,
+    'clearance_curve_family': 2.0,
+    'clearance_curve_shape': 1.0,
+    'approach_time_s': 0.0,
+    'curvature_window': 0.40,
+    'max_lateral_acceleration': 0.35,
+    'footprint_front': 0.230,
+    'footprint_rear': 0.060,
+    'footprint_half_width': 0.0825,
+    'braking_linear': 1.6,
+    'braking_constant': 0.27,
     'reaction_time_s': 0.40,
     'recovery_acceleration_gain': 1.6,
     'recovery_acceleration_floor': 0.60,
+    'cost_penalty': 2.0,
 }
 
 CONFIDENT = {
@@ -141,8 +221,6 @@ CONFIDENT = {
     'maximum_commanded_speed': 1.00,
     'regulated_linear_scaling_min_speed': 0.40,
     'max_allowed_time_to_collision_up_to_carrot': 0.60,
-    'creep_speed': 0.40,
-    'clearance_half_speed': 0.05,
 }
 
 INSANE = {
@@ -154,8 +232,8 @@ INSANE = {
 
 ABSURD = {
     **CONFIDENT,
-    'desired_linear_vel': 2.00,
-    'maximum_commanded_speed': 2.00,
+    'desired_linear_vel': ABSURD_MAXIMUM_SPEED_MPS,
+    'maximum_commanded_speed': ABSURD_MAXIMUM_SPEED_MPS,
     'output_max': 0.28,
 }
 
@@ -174,6 +252,31 @@ def values_for_owner(values: dict[str, float], owner: str) -> dict[str, float]:
     }
 
 
+def persist_override(values: dict, path: Path = OVERRIDE_PATH) -> Path:
+    """Atomically persist only D2 and planner-owned validated parameters."""
+    normalized = validate_values(values)
+    sections = (
+        ('planner_server', values_for_owner(normalized, PLANNER_OWNER)),
+        ('bt_navigator', values_for_owner(normalized, NAVIGATOR_OWNER)),
+    )
+    lines = []
+    for node, parameters in sections:
+        lines.extend((f'{node}:', '  ros__parameters:'))
+        for name, value in parameters.items():
+            lines.append(f'    {name}: {value:.12g}')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode='w', encoding='utf-8', dir=path.parent,
+        prefix=f'.{path.name}.', delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+        stream.write('\n'.join(lines) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return path
+
+
 def validate_values(values: dict) -> dict[str, float]:
     """Validate a complete browser tuning snapshot and cross-field bounds."""
     if set(values) != set(PARAMETERS):
@@ -190,14 +293,23 @@ def validate_values(values: dict) -> dict[str, float]:
 
     positive = set(PARAMETERS) - {
         'integral_gain', 'feedforward_effort_intercept', 'reaction_time_s',
+        'approach_time_s', 'constrained_speed_scaling',
+        'clearance_curve_family', 'tight_clearance', 'footprint_rear',
     }
     for name in positive:
         if normalized[name] <= 0.0:
             raise ValueError(f'{name} must be greater than zero')
     if normalized['integral_gain'] < 0.0:
         raise ValueError('integral_gain must be nonnegative')
-    if normalized['reaction_time_s'] < 0.0:
-        raise ValueError('reaction_time_s must be nonnegative')
+    for name in ('reaction_time_s', 'approach_time_s', 'tight_clearance', 'footprint_rear'):
+        if normalized[name] < 0.0:
+            raise ValueError(f'{name} must be nonnegative')
+    if not 0.0 <= normalized['constrained_speed_scaling'] <= 1.0:
+        raise ValueError('constrained_speed_scaling must be between zero and one')
+    if normalized['clearance_curve_family'] not in (0.0, 1.0, 2.0):
+        raise ValueError('clearance_curve_family must be linear, power, or smoothstep')
+    if normalized['open_clearance'] <= normalized['tight_clearance']:
+        raise ValueError('open_clearance must exceed tight_clearance')
     if normalized['regulated_linear_scaling_min_speed'] > normalized[
         'desired_linear_vel'
     ]:

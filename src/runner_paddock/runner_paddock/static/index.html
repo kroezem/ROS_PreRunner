@@ -191,8 +191,6 @@
           <summary>D2 committed-path speed law</summary>
           <p class="hint">Continuous clearance ceiling applied to the committed path, beyond the vehicle footprint. Zero clearance gives creep speed; clearance half-speed is where the ceiling is halfway from creep to the active preset, which it approaches continuously as clearance grows. Recovery acceleration bounds how fast speed releases back up after a constraint, independent of braking.</p>
           <div class="tuning-grid">
-            <label>Creep speed <input data-tuning-field="creep_speed" type="number" min="0.01" step="0.01"> m/s</label>
-            <label>Clearance half-speed <input data-tuning-field="clearance_half_speed" type="number" min="0.01" step="0.01"> m</label>
             <label>Reaction time <input data-tuning-field="reaction_time_s" type="number" min="0" step="0.01"> s</label>
             <label>Recovery acceleration gain <input data-tuning-field="recovery_acceleration_gain" type="number" min="0.01" step="0.01"> 1/s</label>
             <label>Recovery acceleration floor <input data-tuning-field="recovery_acceleration_floor" type="number" min="0.01" step="0.01"> m/s²</label>
@@ -216,37 +214,23 @@
       </section>
 
       <section id="panel-speed-profile" class="config-panel speed-profile-panel" role="tabpanel" hidden>
-        <div class="panel-heading"><div><span class="section-label">Design sandbox</span><h2>Longitudinal speed profile</h2></div><span class="status-chip">LOCAL ONLY</span></div>
-        <p class="state-detail">This visualizer is non-authoritative. Its settings stay in this browser and are never sent to Runner, ROS, Nav2, D2, or the Paddock backend.</p>
-        <div class="speed-profile-layout">
-          <section class="setting-group speed-profile-controls" aria-label="Speed profile design controls">
-            <div class="group-heading"><h3>Profile controls</h3><span>saved locally</span></div>
-            <div class="profile-control-grid">
-              <label>Minimum traversal speed <span><input id="profile-min-speed" type="range" min="0.10" max="1.00" step="0.01"><output data-profile-output="minSpeed"></output></span></label>
-              <label>Minimum / preset scaling <span><input id="profile-preset-scaling" type="range" min="0" max="100" step="1"><output data-profile-output="presetScaling"></output></span></label>
-              <label>Tight threshold <span><input id="profile-tight-threshold" type="range" min="0" max="1.00" step="0.01"><output data-profile-output="tightThreshold"></output></span></label>
-              <label>Open threshold <span><input id="profile-open-threshold" type="range" min="0.05" max="2.00" step="0.01"><output data-profile-output="openThreshold"></output></span></label>
-              <label>Curve family <select id="profile-curve-family"><option value="linear">Linear</option><option value="power">Power</option><option value="smoothstep">Smoothstep</option></select></label>
-              <label id="profile-shape-label">Curve shape <span><input id="profile-curve-shape" type="range" min="0.25" max="4" step="0.05"><output data-profile-output="curveShape"></output></span></label>
-              <label>Approach time <span><input id="profile-approach-time" type="range" min="0" max="3" step="0.05"><output data-profile-output="approachTime"></output></span></label>
-              <label>Selected clearance <span><input id="profile-selected-clearance" type="range" min="0" max="2" step="0.01"><output data-profile-output="selectedClearance"></output></span></label>
-            </div>
-            <p class="hint">Scaling 0% gives every preset the same constrained-region speed; 100% scales constrained speed up to each preset ceiling. “Approach time” adds a target-speed-dependent settled segment before the pinch.</p>
-          </section>
-          <section class="setting-group speed-profile-readouts">
-            <div class="group-heading"><h3>Selected point</h3><span id="profile-clearance-readout">—</span></div>
-            <div id="profile-readouts" class="profile-readout-grid"></div>
-          </section>
-        </div>
+        <div class="panel-heading"><div><span class="section-label">Live D2 policy</span><h2>Longitudinal speed profile</h2></div><span class="status-chip">ROS</span></div>
         <section class="setting-group profile-chart-card">
           <div class="group-heading"><h3>Clearance → target speed</h3><span>raw geometry ceiling</span></div>
           <canvas id="profile-clearance-chart" class="profile-chart" role="img" aria-label="Clearance to target speed for all presets"></canvas>
+          <div id="profile-readouts" class="profile-readout-grid"></div>
         </section>
-        <section class="setting-group profile-chart-card">
-          <div class="group-heading"><h3>OPEN → PINCH → OPEN</h3><span>speed over path distance</span></div>
-          <canvas id="profile-path-chart" class="profile-chart" role="img" aria-label="Raw and feasible speed over a synthetic path for all presets"></canvas>
-          <div class="profile-line-key"><span><i class="solid"></i>final approach / feasibility</span><span><i class="dashed"></i>raw geometry ceiling</span></div>
-          <p class="hint">Feasibility uses D2’s current braking potential a(v)=1.6v+0.27, reaction margin, and forward recovery a(v)=1.6v+0.60. This remains a synthetic design preview, not a reproduction of costmap, curvature, cusp, or goal constraints.</p>
+        <section class="setting-group speed-profile-controls">
+          <div class="group-heading"><h3>Speed policy</h3><span>edit previews · Apply is live · Save persists</span></div>
+          <div class="profile-control-grid" id="profile-policy-controls"></div>
+          <label>Curve family <select data-tuning-field="clearance_curve_family"><option value="0">Linear</option><option value="1">Power</option><option value="2">Smoothstep</option></select></label>
+          <div class="mapping-actions"><button id="btn-apply-profile" type="button">APPLY LIVE</button><button id="btn-save-profile" type="button">SAVE OVERRIDE</button></div>
+          <p class="hint">The oriented footprint is sampled from the existing distance transform once per committed path. Approach time adds anticipation before constrained regions; braking and recovery feasibility still apply.</p>
+        </section>
+        <section class="setting-group speed-profile-controls">
+          <div class="group-heading"><h3>Planning route preference</h3><span>not a speed control</span></div>
+          <div class="profile-control-grid" id="profile-planner-controls"></div>
+          <p class="hint">GridBased.cost_penalty changes Smac route preference on the next plan. No value is implied or ratified by this page.</p>
         </section>
       </section>
 

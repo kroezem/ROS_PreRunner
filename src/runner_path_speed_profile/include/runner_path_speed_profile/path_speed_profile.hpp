@@ -17,13 +17,24 @@ namespace runner_path_speed_profile
 
 struct ProfileConfig
 {
-  double creep_speed{0.40};
-  // Clearance beyond footprint_radius at which the continuous clearance
-  // ceiling is halfway from creep_speed to the active preset ceiling.
-  double clearance_half_speed{0.05};
+  double minimum_traversal_speed{0.25};
+  double constrained_speed_scaling{0.20};
+  // The single authoritative reference ceiling constrained-speed scaling
+  // normalizes against (today, ABSURD's preset maximum). Explicit and
+  // tunable so a future change to that preset's ceiling cannot silently
+  // desynchronize this law from it.
+  double scaling_reference_speed{2.0};
+  double tight_clearance{0.05};
+  double open_clearance{0.70};
+  // 0 = linear, 1 = power, 2 = smoothstep(power(x, shape)).
+  double clearance_curve_family{2.0};
+  double clearance_curve_shape{1.0};
+  double approach_time_s{0.0};
   double curvature_window{0.40};
   double max_lateral_acceleration{0.35};
-  double footprint_radius{0.2444};
+  double footprint_front{0.230};
+  double footprint_rear{0.060};
+  double footprint_half_width{0.0825};
   double braking_linear{1.6};
   double braking_constant{0.27};
   // Anticipatory distance added to backward braking reachability for
@@ -44,7 +55,12 @@ uint64_t pathIdentity(const nav_msgs::msg::Path & path);
 std::vector<double> costmapClearance(
   const nav_msgs::msg::Path & path,
   nav2_costmap_2d::Costmap2D & costmap,
-  double footprint_radius);
+  double footprint_front, double footprint_rear, double footprint_half_width);
+
+double clearanceSpeed(
+  double clearance, double preset_ceiling, const ProfileConfig & config);
+
+bool validConfig(const ProfileConfig & config);
 
 runner_interfaces::msg::PathSpeedProfile makeProfile(
   const nav_msgs::msg::Path & path, const std::vector<double> & clearance,

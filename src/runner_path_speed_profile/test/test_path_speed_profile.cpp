@@ -53,7 +53,7 @@ TEST(PathSpeedProfile, CoversPathAndBrakesIntoCuspAndGoal)
   }
   for (const auto & point : profile.points) {
     EXPECT_TRUE(point.speed_ceiling_mps == 0.0 ||
-      point.speed_ceiling_mps >= config.creep_speed);
+      point.speed_ceiling_mps >= profile.creep_speed_mps);
   }
 
   const auto cusp = std::find_if(
@@ -100,8 +100,8 @@ TEST(PathSpeedProfile, ClearanceShapesWithoutCreatingNonStopZero)
   appendPose(path, 1.5);
   const auto profile = runner_path_speed_profile::makeProfile(
     path, {1.0, 0.0, 1.0, 1.0}, 1.0, {});
-  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, 0.40);
-  EXPECT_GT(profile.points[0].speed_ceiling_mps, 0.40);
+  EXPECT_DOUBLE_EQ(profile.points[1].speed_ceiling_mps, profile.creep_speed_mps);
+  EXPECT_GT(profile.points[0].speed_ceiling_mps, profile.creep_speed_mps);
   EXPECT_DOUBLE_EQ(profile.points.back().speed_ceiling_mps, 0.0);
 }
 
@@ -114,7 +114,8 @@ TEST(PathSpeedProfile, SamplesBelowRppNormalFloorAndAtExactZero)
   appendPose(path, 0.4);
   const auto profile = runner_path_speed_profile::makeProfile(
     path, std::vector<double>(3, 0.0), 0.45, {});
-  EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.0), 0.40);
+  EXPECT_DOUBLE_EQ(
+    runner_path_speed_profile::sampleCeiling(profile, 0.0), profile.creep_speed_mps);
   EXPECT_LT(runner_path_speed_profile::sampleCeiling(profile, 0.3), 0.45);
   EXPECT_DOUBLE_EQ(runner_path_speed_profile::sampleCeiling(profile, 0.4), 0.0);
 }
@@ -132,19 +133,12 @@ TEST(PathSpeedProfile, ClearanceLawIsContinuousMonotonicAndBounded)
       return runner_path_speed_profile::makeProfile(
         path, {clearance, clearance}, preset, config).points.front().speed_ceiling_mps;
     };
-  EXPECT_DOUBLE_EQ(speed_at(0.0), config.creep_speed);
-  EXPECT_DOUBLE_EQ(
-    speed_at(config.clearance_half_speed),
-    0.5 * (config.creep_speed + preset));
-  EXPECT_LT(speed_at(0.01), speed_at(0.10));
-  EXPECT_LT(speed_at(0.10), speed_at(1.0));
-  EXPECT_LT(speed_at(1.0), preset);
-  EXPECT_GE(speed_at(1.0), config.creep_speed);
-
-  const double below = speed_at(config.clearance_half_speed - 1e-6);
-  const double above = speed_at(config.clearance_half_speed + 1e-6);
-  EXPECT_GT(above, below);
-  EXPECT_LT(above - below, 1e-4);
+  const double bottom = runner_path_speed_profile::clearanceSpeed(0.0, preset, config);
+  EXPECT_DOUBLE_EQ(speed_at(config.tight_clearance), bottom);
+  EXPECT_DOUBLE_EQ(speed_at(config.open_clearance), preset);
+  EXPECT_LT(speed_at(0.10), speed_at(0.30));
+  EXPECT_LT(speed_at(0.30), speed_at(0.60));
+  EXPECT_LE(speed_at(0.60), preset);
 }
 
 TEST(PathSpeedProfile, ClearanceLawDependsOnPresetAndPreservesExactStops)
@@ -154,13 +148,11 @@ TEST(PathSpeedProfile, ClearanceLawDependsOnPresetAndPreservesExactStops)
   appendPose(path, 0.0);
   appendPose(path, 100.0);
   runner_path_speed_profile::ProfileConfig config;
-  const std::vector<double> clearance(2, config.clearance_half_speed);
+  const std::vector<double> clearance(2, config.open_clearance);
   const auto timid = runner_path_speed_profile::makeProfile(path, clearance, 0.45, config);
   const auto insane = runner_path_speed_profile::makeProfile(path, clearance, 1.5, config);
-  EXPECT_DOUBLE_EQ(
-    timid.points.front().speed_ceiling_mps, 0.5 * (config.creep_speed + 0.45));
-  EXPECT_DOUBLE_EQ(
-    insane.points.front().speed_ceiling_mps, 0.5 * (config.creep_speed + 1.5));
+  EXPECT_DOUBLE_EQ(timid.points.front().speed_ceiling_mps, 0.45);
+  EXPECT_DOUBLE_EQ(insane.points.front().speed_ceiling_mps, 1.5);
   EXPECT_GT(insane.points.front().speed_ceiling_mps, timid.points.front().speed_ceiling_mps);
   EXPECT_DOUBLE_EQ(timid.points.back().speed_ceiling_mps, 0.0);
   EXPECT_DOUBLE_EQ(insane.points.back().speed_ceiling_mps, 0.0);
@@ -176,15 +168,18 @@ TEST(PathSpeedProfile, RecoveryAccelerationIncreasesWithSpeed)
         appendPose(path, 0.1 * i);
       }
       const double preset = 1.5;
-      const double initial_clearance = config.clearance_half_speed *
-        (starting_speed - config.creep_speed) / (preset - starting_speed);
+      config.clearance_curve_family = 0.0;
+      const double bottom = runner_path_speed_profile::clearanceSpeed(0.0, preset, config);
+      const double initial_clearance = config.tight_clearance +
+        (config.open_clearance - config.tight_clearance) *
+        (starting_speed - bottom) / (preset - bottom);
       std::vector<double> clearance(path.poses.size(), 100.0);
       clearance.front() = initial_clearance;
       return runner_path_speed_profile::makeProfile(
         path, clearance, preset, config).points[1].speed_ceiling_mps;
     };
 
-  const double low_start = config.creep_speed;
+  const double low_start = runner_path_speed_profile::clearanceSpeed(0.0, 1.5, config);
   const double medium_start = 0.8;
   const double low_recovered = recovery_after_step(low_start);
   const double medium_recovered = recovery_after_step(medium_start);
@@ -210,8 +205,11 @@ TEST(PathSpeedProfile, RecoveryNeverExceedsRawCeiling)
   }
   const double preset = 1.5;
   const double raw_target = 0.55;
-  const double target_clearance = config.clearance_half_speed *
-    (raw_target - config.creep_speed) / (preset - raw_target);
+  config.clearance_curve_family = 0.0;
+  const double bottom = runner_path_speed_profile::clearanceSpeed(0.0, preset, config);
+  const double target_clearance = config.tight_clearance +
+    (config.open_clearance - config.tight_clearance) *
+    (raw_target - bottom) / (preset - bottom);
   std::vector<double> clearance(path.poses.size(), 100.0);
   clearance.front() = 0.0;
   clearance[1] = target_clearance;
@@ -243,7 +241,7 @@ TEST(PathSpeedProfile, ReactionTimeStartsBackwardRestrictionEarlier)
     with_margin.points[10].speed_ceiling_mps,
     without_margin.points[10].speed_ceiling_mps);
   EXPECT_DOUBLE_EQ(with_margin.points.back().speed_ceiling_mps, 0.0);
-  EXPECT_GE(with_margin.points[10].speed_ceiling_mps, anticipated.creep_speed);
+  EXPECT_GE(with_margin.points[10].speed_ceiling_mps, with_margin.creep_speed_mps);
 }
 
 TEST(PathSpeedProfile, ReadsLiveCostmapClearance)
@@ -255,8 +253,123 @@ TEST(PathSpeedProfile, ReadsLiveCostmapClearance)
   path.poses.back().pose.position.y = 1.05;
   appendPose(path, 0.05);
   path.poses.back().pose.position.y = 0.05;
-  const auto clearance = runner_path_speed_profile::costmapClearance(path, costmap, 0.0);
+  const auto clearance = runner_path_speed_profile::costmapClearance(
+    path, costmap, 0.01, 0.0, 0.01);
   ASSERT_EQ(clearance.size(), 2u);
   EXPECT_DOUBLE_EQ(clearance.front(), 0.0);
   EXPECT_GT(clearance.back(), 1.0);
+}
+
+TEST(PathSpeedProfile, CurveFamiliesEndpointsShapesAndScaling)
+{
+  runner_path_speed_profile::ProfileConfig config;
+  const double preset = 1.0;
+  for (double family : {0.0, 1.0, 2.0}) {
+    config.clearance_curve_family = family;
+    EXPECT_DOUBLE_EQ(
+      runner_path_speed_profile::clearanceSpeed(config.open_clearance, preset, config),
+      preset);
+  }
+  config.clearance_curve_family = 1.0;
+  config.clearance_curve_shape = 2.0;
+  const double midpoint = 0.5 * (config.tight_clearance + config.open_clearance);
+  EXPECT_LT(
+    runner_path_speed_profile::clearanceSpeed(midpoint, preset, config),
+    runner_path_speed_profile::clearanceSpeed(
+      midpoint, preset, runner_path_speed_profile::ProfileConfig{}));
+  config.constrained_speed_scaling = 0.0;
+  EXPECT_DOUBLE_EQ(
+    runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
+    config.minimum_traversal_speed);
+  config.constrained_speed_scaling = 1.0;
+  EXPECT_NEAR(
+    runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
+    config.minimum_traversal_speed * 0.45 / config.scaling_reference_speed, 1e-12);
+  EXPECT_LT(runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config), 0.45);
+
+  // The reference is an explicit, named field, not a hardcoded literal: a
+  // different reference speed changes the fully-scaled bottom.
+  config.scaling_reference_speed = 4.0;
+  EXPECT_NEAR(
+    runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
+    config.minimum_traversal_speed * 0.45 / 4.0, 1e-12);
+}
+
+TEST(PathSpeedProfile, RejectsInvalidThresholds)
+{
+  runner_path_speed_profile::ProfileConfig config;
+  config.open_clearance = config.tight_clearance;
+  EXPECT_FALSE(runner_path_speed_profile::validConfig(config));
+  config.open_clearance = 0.7;
+  config.clearance_curve_family = 3.0;
+  EXPECT_FALSE(runner_path_speed_profile::validConfig(config));
+}
+
+TEST(PathSpeedProfile, ApproachTimeZeroIsNoOpButNonzeroPlateausEarlier)
+{
+  // Long and flat enough that goal-approach braking (from the forced
+  // zero at the last pose) has fully recovered well before the mid-path
+  // clearance dip, isolating the anticipation pass under test.
+  nav_msgs::msg::Path path;
+  for (int i = 0; i < 200; ++i) appendPose(path, 0.1 * i);
+  std::vector<double> clearance(path.poses.size(), 1.0);
+  clearance[100] = 0.0;
+
+  runner_path_speed_profile::ProfileConfig zero;
+  zero.approach_time_s = 0.0;
+  runner_path_speed_profile::ProfileConfig zero_again = zero;
+
+  // Two independently-built zero-approach-time configs must match exactly:
+  // the anticipation pass is skipped entirely by its own guard.
+  EXPECT_EQ(
+    runner_path_speed_profile::makeProfile(path, clearance, 1.0, zero),
+    runner_path_speed_profile::makeProfile(path, clearance, 1.0, zero_again));
+
+  // A meaningfully nonzero approach time must actually change the profile:
+  // the constrained target must become active earlier than physical
+  // braking alone requires.
+  runner_path_speed_profile::ProfileConfig anticipated = zero;
+  // Large enough that its required lead distance exceeds what physical
+  // braking alone needs to decelerate into the dip (~0.7-0.8 m here), so
+  // the anticipation pass is the one actually doing the extra work.
+  anticipated.approach_time_s = 5.0;
+  const auto zero_profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 1.0, zero);
+  const auto anticipated_profile = runner_path_speed_profile::makeProfile(
+    path, clearance, 1.0, anticipated);
+  bool differs = false;
+  for (std::size_t i = 0; i < zero_profile.points.size(); ++i) {
+    if (std::abs(
+        zero_profile.points[i].speed_ceiling_mps -
+        anticipated_profile.points[i].speed_ceiling_mps) > 1e-9)
+    {
+      differs = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(differs) <<
+    "nonzero approach_time_s must plateau the ceiling earlier than the "
+    "zero-approach-time profile somewhere along the path";
+  for (std::size_t i = 0; i < zero_profile.points.size(); ++i) {
+    EXPECT_LE(
+      anticipated_profile.points[i].speed_ceiling_mps,
+      zero_profile.points[i].speed_ceiling_mps + 1e-9) <<
+      "approach-time anticipation must never raise the ceiling above the "
+      "zero-approach-time (purely physical) profile at index " << i;
+  }
+}
+
+TEST(PathSpeedProfile, OrientedFootprintChangesBoundaryMargin)
+{
+  nav2_costmap_2d::Costmap2D costmap(40, 40, 0.05, 0.0, 0.0, 0);
+  costmap.setCost(25, 20, nav2_costmap_2d::LETHAL_OBSTACLE);
+  nav_msgs::msg::Path path;
+  appendPose(path, 1.0, 0.0);
+  path.poses.back().pose.position.y = 1.0;
+  appendPose(path, 1.0, M_PI_2);
+  path.poses.back().pose.position.y = 1.0;
+  const auto clearance = runner_path_speed_profile::costmapClearance(
+    path, costmap, 0.25, 0.05, 0.08);
+  ASSERT_EQ(clearance.size(), 2u);
+  EXPECT_LT(clearance[0], clearance[1]);
 }

@@ -60,6 +60,8 @@ from runner_paddock.autonomy_tuning import (
     matching_preset,
     NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
+    PLANNER_OWNER,
+    persist_override,
     PRESETS as TUNING_PRESETS,
     validate_values as validate_tuning_values,
     values_for_owner,
@@ -429,7 +431,9 @@ class RosStateNode(ExplicitQoSEventNode):
                 spec.node_name for spec in TUNING_PARAMETERS.values()
                 if spec.owner == owner
             )
-            for owner in (CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER)
+            for owner in (
+                CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER, PLANNER_OWNER,
+            )
         }
         self._tuning_get_clients = {
             owner: self.create_client(
@@ -1463,9 +1467,17 @@ class RosStateNode(ExplicitQoSEventNode):
                 label, f'{label} tuning rejected before RPC: {error}'
             )
             return GatewayResult(False, str(error), (), role)
+        # A named speed preset (TIMID/CONFIDENT/INSANE/ABSURD) is speed
+        # policy only; GridBased.cost_penalty is independent planning
+        # preference and must never be reset by selecting one. A custom
+        # values apply (the shared tuning form, including the dedicated
+        # planner-preference control) still reaches every owner.
+        write_owners = set(self._tuning_set_clients)
+        if intent.preset:
+            write_owners -= {PLANNER_OWNER}
         unavailable = [
-            owner for owner, client in self._tuning_set_clients.items()
-            if not client.service_is_ready()
+            owner for owner in write_owners
+            if not self._tuning_set_clients[owner].service_is_ready()
         ]
         if unavailable:
             detail = (
@@ -1490,7 +1502,7 @@ class RosStateNode(ExplicitQoSEventNode):
             # in-flight write is never interrupted.
             self._tuning_request_id += 1
             request_id = self._tuning_request_id
-            owners = set(self._tuning_set_clients)
+            owners = set(write_owners)
             self._tuning_operation = {
                 'kind': 'set',
                 'request_id': request_id,
@@ -1512,6 +1524,8 @@ class RosStateNode(ExplicitQoSEventNode):
             })
         self._publish_tuning_state()
         for owner, client in self._tuning_set_clients.items():
+            if owner not in write_owners:
+                continue
             request = SetParametersAtomically.Request()
             request.parameters = [
                 Parameter(
@@ -1608,9 +1622,22 @@ class RosStateNode(ExplicitQoSEventNode):
                     )
                     break
                 if isinstance(intent, AutonomyTuningIntent):
-                    result = self._request_autonomy_tuning(
-                        intent, result.role
-                    )
+                    if intent.save:
+                        try:
+                            path = persist_override(intent.values)
+                            result = GatewayResult(
+                                True, f'saved validated override to {path}',
+                                (), result.role,
+                            )
+                        except (OSError, TypeError, ValueError) as error:
+                            result = GatewayResult(
+                                False, f'override save failed: {error}',
+                                (), result.role,
+                            )
+                    else:
+                        result = self._request_autonomy_tuning(
+                            intent, result.role
+                        )
                     break
                 if isinstance(intent, InitialPoseIntent):
                     result = self._set_initial_pose(intent, result.role)

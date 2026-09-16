@@ -40,6 +40,7 @@ from runner_paddock.autonomy_tuning import (
     INSANE,
     NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
+    PLANNER_OWNER,
     PRESETS as TUNING_PRESETS,
     TIMID,
 )
@@ -220,7 +221,9 @@ def _tuning_node(values):
             for field, spec in TUNING_PARAMETERS.items()
             if spec.owner == owner
         }
-        for owner in (CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER)
+        for owner in (
+            CONTROLLER_OWNER, ADAPTER_OWNER, NAVIGATOR_OWNER, PLANNER_OWNER,
+        )
     }
     node._tuning_get_clients = {
         owner: _TuningClient(owner, state, 'get')
@@ -893,12 +896,52 @@ def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
         node, AutonomyTuningIntent(preset=preset), 'controller'
     )
 
-    for client in node._tuning_set_clients.values():
+    # A named preset is speed policy only; GridBased.cost_penalty (the sole
+    # planner-owned field) must not be written by selecting one.
+    for owner, client in node._tuning_set_clients.items():
+        if owner == PLANNER_OWNER:
+            assert len(client.requests) == 0
+            continue
         assert len(client.requests) == 1
         assert client.requests[0].__class__.__name__.endswith('Request')
-        assert len(client.requests[0].parameters) > 1
+        assert len(client.requests[0].parameters) >= 1
     for client in node._tuning_get_clients.values():
         assert len(client.requests) == 1
+
+
+def test_preset_selection_never_writes_or_alters_live_cost_penalty():
+    node = _tuning_node(TIMID)
+    # Simulate an operator-tuned planning preference already live on the
+    # robot, independent of any speed preset.
+    node._tuning_set_clients[PLANNER_OWNER].state['GridBased.cost_penalty'] = 5.0
+
+    RosStateNode._request_autonomy_tuning(
+        node, AutonomyTuningIntent(preset='confident'), 'controller'
+    )
+
+    assert node._tuning_set_clients[PLANNER_OWNER].requests == []
+    assert node._tuning_set_clients[PLANNER_OWNER].state[
+        'GridBased.cost_penalty'
+    ] == 5.0
+    state = node._cache.state_snapshot()['autonomy_tuning']
+    assert state['values']['cost_penalty'] == 5.0
+
+
+def test_real_construction_wires_planner_get_and_set_clients():
+    """The production __init__ path, not the manual four-owner fixture."""
+    runtime = RosRuntime(StateCache())
+    runtime.start()
+    try:
+        node = runtime._node
+        assert node is not None
+        assert PLANNER_OWNER in node._tuning_get_clients
+        assert PLANNER_OWNER in node._tuning_set_clients
+        assert node._tuning_get_clients[PLANNER_OWNER].srv_name == \
+            '/planner_server/get_parameters'
+        assert node._tuning_set_clients[PLANNER_OWNER].srv_name == \
+            '/planner_server/set_parameters_atomically'
+    finally:
+        runtime.stop()
 
 
 def test_operator_apply_supersedes_read_but_never_an_in_flight_write():
