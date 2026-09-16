@@ -354,7 +354,12 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
     const input = document.querySelector(`[data-tuning-field="${field}"]`);
     if (input && Number.isFinite(value)) input.max = String(value);
   });
-  text("autonomy-tuning-result", `${String(tuning.status || "unavailable").toUpperCase()} — ${tuning.detail || "waiting for live ROS parameter read-back"}`);
+  const tuningResultText = `${String(tuning.status || "unavailable").toUpperCase()} — ${tuning.detail || "waiting for live ROS parameter read-back"}`;
+  const tuningResultState = failed ? "failed" : String(tuning.status || "unavailable");
+  text("autonomy-tuning-result", tuningResultText);
+  $("autonomy-tuning-result").dataset.state = tuningResultState;
+  text("profile-tuning-result", tuningResultText);
+  $("profile-tuning-result").dataset.state = tuningResultState;
   text("autonomy-speed-nominal", Number.isFinite(values.desired_linear_vel)
     ? `${values.desired_linear_vel.toFixed(2)} m/s` : "—");
   text("autonomy-speed-commanded", Number.isFinite(liveAdapter.commanded_speed)
@@ -484,6 +489,8 @@ function render() {
   text("manual-max-requested", `${fmt(config.requested_value ?? 0.40)} m/s`);
   text("manual-max-applied", `${appliedManualMax.toFixed(2)} m/s`);
   text("manual-max-result", config.reason || "Waiting for configuration state…");
+  $("manual-max-result").dataset.state =
+    (!config.reason || ["APPLIED", "DEFAULT"].includes(config.reason)) ? "ok" : "failed";
   if (document.activeElement !== $("manual-max-speed-input")) {
     $("manual-max-speed-input").value = appliedManualMax.toFixed(2);
   }
@@ -532,7 +539,7 @@ function render() {
     "button.mode, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
-    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-speed-law, #btn-apply-engineering, " +
+    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-engineering, " +
     "[data-speed-preset], [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
   ).forEach((button) => {
     button.disabled = !controller;
@@ -557,7 +564,7 @@ function render() {
   $("btn-initial-pose-mode").hidden = !autonomyControl;
   $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
   const tuningReady = controller && tuning.available === true && tuning.status !== "applying";
-  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-speed-law, #btn-apply-engineering").forEach((button) => {
+  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-engineering").forEach((button) => {
     button.disabled = !tuningReady;
   });
   if (!runAvailable) stopRun();
@@ -1472,7 +1479,6 @@ function applyTuningForm() {
   send({ action: "set_autonomy_tuning", values });
 }
 $("btn-apply-speed-policy").addEventListener("click", applyTuningForm);
-$("btn-apply-speed-law").addEventListener("click", applyTuningForm);
 $("btn-apply-engineering").addEventListener("click", applyTuningForm);
 $("btn-apply-profile").addEventListener("click", applyTuningForm);
 $("btn-save-profile").addEventListener("click", () => {

@@ -187,16 +187,7 @@
           </div>
           <button id="btn-apply-speed-policy" type="button">APPLY SPEED POLICY</button>
         </details>
-        <details class="setting-group tuning-section" open>
-          <summary>D2 committed-path speed law</summary>
-          <p class="hint">Continuous clearance ceiling applied to the committed path, beyond the vehicle footprint. Zero clearance gives creep speed; clearance half-speed is where the ceiling is halfway from creep to the active preset, which it approaches continuously as clearance grows. Recovery acceleration bounds how fast speed releases back up after a constraint, independent of braking.</p>
-          <div class="tuning-grid">
-            <label>Reaction time <input data-tuning-field="reaction_time_s" type="number" min="0" step="0.01"> s</label>
-            <label>Recovery acceleration gain <input data-tuning-field="recovery_acceleration_gain" type="number" min="0.01" step="0.01"> 1/s</label>
-            <label>Recovery acceleration floor <input data-tuning-field="recovery_acceleration_floor" type="number" min="0.01" step="0.01"> m/s²</label>
-          </div>
-          <button id="btn-apply-speed-law" type="button">APPLY SPEED POLICY</button>
-        </details>
+        <p class="hint">D2 committed-path speed law (reaction time, recovery acceleration) moved to the SPEED PROFILE tab, which is now authoritative for those fields.</p>
         <details class="setting-group tuning-section">
           <summary>Engineering / controller</summary>
           <p class="hint">Controller calibration. Presets currently restore the same characterized values.</p>
@@ -232,6 +223,7 @@
           <div class="profile-control-grid" id="profile-planner-controls"></div>
           <p class="hint">GridBased.cost_penalty changes Smac route preference on the next plan. No value is implied or ratified by this page.</p>
         </section>
+        <p id="profile-tuning-result" class="state-detail">Waiting for live ROS parameter read-back…</p>
       </section>
 
       <section id="panel-display" class="config-panel" role="tabpanel" hidden>

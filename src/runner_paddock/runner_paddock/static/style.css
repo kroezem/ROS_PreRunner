@@ -154,6 +154,8 @@ button.run.armed small { color: #17383e; }
 .display-map-preview { height: clamp(17rem, 48vh, 32rem); margin-top: .65rem; overflow: hidden; border-radius: .5rem; background: #080d0e; }
 .state-detail { margin: .55rem 0 .8rem; padding: .58rem .65rem; border-left: 3px solid var(--accent); background: #172123; color: #d9e1e3; font-size: .74rem; line-height: 1.4; }
 .secondary-detail { border-left-color: #55666a; }
+.state-detail[data-state="failed"], #manual-max-result[data-state="failed"] { border-left-color: #ef5b5b; background: #241416; color: #ff9b9b; font-weight: 600; }
+#manual-max-result[data-state="failed"] { display: inline-block; padding: .1rem .3rem; border-radius: .25rem; }
 .mode-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
 .mode-actions button { margin: 0; }
 #map-manual-view-controls { display: contents; }
