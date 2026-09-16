@@ -201,9 +201,6 @@ std::vector<double> clearanceSpeeds(
 bool validConfigImpl(const ProfileConfig & c)
 {
   return std::isfinite(c.minimum_traversal_speed) && c.minimum_traversal_speed > 0.0 &&
-         std::isfinite(c.constrained_speed_scaling) &&
-         c.constrained_speed_scaling >= 0.0 && c.constrained_speed_scaling <= 1.0 &&
-         std::isfinite(c.scaling_reference_speed) && c.scaling_reference_speed > 0.0 &&
          std::isfinite(c.tight_clearance) && c.tight_clearance >= 0.0 &&
          std::isfinite(c.open_clearance) && c.open_clearance > c.tight_clearance &&
          std::isfinite(c.clearance_curve_family) && c.clearance_curve_family >= 0.0 &&
@@ -339,15 +336,7 @@ double clearanceSpeed(
   double clearance, double preset_ceiling, const ProfileConfig & config)
 {
   const double preset = std::max(preset_ceiling, config.minimum_traversal_speed);
-  // scaling_reference_speed is the single authoritative ceiling (today,
-  // ABSURD's) fully-scaled bottoms are normalized against, so they retain
-  // the same fraction of that reference bottom at every preset.
-  const double scaled_bottom =
-    config.minimum_traversal_speed * preset / config.scaling_reference_speed;
-  const double bottom = std::clamp(
-    config.minimum_traversal_speed * (1.0 - config.constrained_speed_scaling) +
-    scaled_bottom * config.constrained_speed_scaling,
-    0.0, preset);
+  const double bottom = std::clamp(config.minimum_traversal_speed, 0.0, preset);
   const double measured = std::isfinite(clearance) ? clearance : 0.0;
   const double x = std::clamp(
     (measured - config.tight_clearance) /

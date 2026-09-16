@@ -77,7 +77,7 @@
 
       <section id="control-autonomy" class="runtime-control autonomy-control" hidden>
         <div class="autonomy-policy-compact">
-          <div class="preset-row"><span>Adaptive speed policy</span><span id="autonomy-preset" class="status-chip">CUSTOM</span></div>
+          <div class="preset-row"><span>Speed profile</span><span id="autonomy-tuning-status" class="status-chip">UNAVAILABLE</span></div>
           <dl class="speed-readout">
             <div><dt>Nominal</dt><dd id="autonomy-speed-nominal">—</dd></div>
             <div><dt>Nav2 command</dt><dd id="autonomy-speed-commanded">—</dd></div>
@@ -166,31 +166,10 @@
             <div><strong>Local obstacle processing</strong><div class="inline"><button id="btn-local-obstacles-on" type="button">ON</button><button id="btn-local-obstacles-off" type="button" class="ghost">OFF</button></div><dl class="kv"><dt>Requested</dt><dd id="local-obstacles-requested">—</dd><dt>Applied</dt><dd id="local-obstacles-applied">—</dd><dt>Current</dt><dd id="local-obstacles-current">unavailable</dd><dt>Result</dt><dd id="local-obstacles-result">Waiting for Nav2…</dd></dl></div>
           </div>
         </div>
-        <details class="setting-group tuning-section" open>
-          <summary>Advanced speed policy</summary>
-          <p class="hint">Every displayed value is live ROS read-back. Applying edits writes each parameter's existing owner atomically. The committed-path speed profile (D2) is authoritative for hazard-based slowdown; the controller's own proximity scaling is disabled so it cannot silently reduce speed underneath it.</p>
-          <div class="preset-actions" aria-label="Adaptive speed preset">
-            <button type="button" class="speed-preset" data-speed-preset="timid">TIMID</button>
-            <button type="button" class="speed-preset" data-speed-preset="confident">CONFIDENT</button>
-            <button type="button" class="speed-preset" data-speed-preset="insane">INSANE</button>
-            <button type="button" class="speed-preset" data-speed-preset="absurd">ABSURD</button>
-          </div>
-          <div class="tuning-grid">
-            <label>Nominal speed (preset ceiling) <input data-tuning-field="desired_linear_vel" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Absolute ceiling (adapter) <input data-tuning-field="maximum_commanded_speed" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Regulated minimum (curvature floor) <input data-tuning-field="regulated_linear_scaling_min_speed" type="number" min="0.25" step="0.01"> m/s</label>
-            <label>Curvature radius <input data-tuning-field="regulated_linear_scaling_min_radius" type="number" min="0.01" step="0.01"> m</label>
-            <label>Minimum lookahead <input data-tuning-field="min_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
-            <label>Maximum lookahead <input data-tuning-field="max_lookahead_dist" type="number" min="0.01" step="0.01"> m</label>
-            <label>Lookahead time <input data-tuning-field="lookahead_time" type="number" min="0.01" step="0.01"> s</label>
-            <label>Collision horizon (safety backstop) <input data-tuning-field="max_allowed_time_to_collision_up_to_carrot" type="number" min="0.01" step="0.01"> s</label>
-          </div>
-          <button id="btn-apply-speed-policy" type="button">APPLY SPEED POLICY</button>
-        </details>
-        <p class="hint">D2 committed-path speed law (reaction time, recovery acceleration) moved to the SPEED PROFILE tab, which is now authoritative for those fields.</p>
+        <p class="hint">Operator-facing driving speed (nominal/maximum speed, lookahead, D2 committed-path speed law) lives on the SPEED PROFILE tab, which is authoritative for that policy.</p>
         <details class="setting-group tuning-section">
           <summary>Engineering / controller</summary>
-          <p class="hint">Controller calibration. Presets currently restore the same characterized values.</p>
+          <p class="hint">Adapter PID/feedforward calibration. Kept separate from Speed Profile.</p>
           <div class="tuning-grid">
             <label>Kp <input data-tuning-field="proportional_gain" type="number" min="0.001" step="0.001"></label>
             <label>Ki <input data-tuning-field="integral_gain" type="number" min="0" step="0.001"></label>
@@ -206,22 +185,36 @@
 
       <section id="panel-speed-profile" class="config-panel speed-profile-panel" role="tabpanel" hidden>
         <div class="panel-heading"><div><span class="section-label">Live D2 policy</span><h2>Longitudinal speed profile</h2></div><span class="status-chip">ROS</span></div>
+        <section class="setting-group speed-profile-controls">
+          <div class="group-heading"><h3>Saved profiles</h3><span>local, not applied on load</span></div>
+          <div class="mapping-actions">
+            <select id="profile-catalog-select" aria-label="Saved speed profiles"></select>
+            <button id="btn-load-profile" type="button">LOAD</button>
+            <button id="btn-delete-profile" type="button" class="warn">DELETE</button>
+          </div>
+          <div class="inline save-row">
+            <input id="profile-save-name" type="text" inputmode="latin" autocomplete="off" placeholder="profile name">
+            <button id="btn-save-as-profile" type="button">SAVE AS</button>
+          </div>
+          <p id="profile-catalog-result" class="state-detail">—</p>
+          <p class="hint">LOAD copies a saved snapshot into this draft and graph only; it never applies live and never touches the robot. Apply the loaded draft with APPLY LIVE below. "Default Baseline" can always be loaded but never overwritten or deleted.</p>
+        </section>
         <section class="setting-group profile-chart-card">
           <div class="group-heading"><h3>Clearance → target speed</h3><span>raw geometry ceiling</span></div>
-          <canvas id="profile-clearance-chart" class="profile-chart" role="img" aria-label="Clearance to target speed for all presets"></canvas>
+          <canvas id="profile-clearance-chart" class="profile-chart" role="img" aria-label="Clearance to target speed for the current draft"></canvas>
           <div id="profile-readouts" class="profile-readout-grid"></div>
         </section>
         <section class="setting-group speed-profile-controls">
-          <div class="group-heading"><h3>Speed policy</h3><span>edit previews · Apply is live · Save persists</span></div>
+          <div class="group-heading"><h3>Driving policy</h3><span>edit previews · Apply is live · Save persists</span></div>
           <div class="profile-control-grid" id="profile-policy-controls"></div>
           <label>Curve family <select data-tuning-field="clearance_curve_family"><option value="0">Linear</option><option value="1">Power</option><option value="2">Smoothstep</option></select></label>
           <div class="mapping-actions"><button id="btn-apply-profile" type="button">APPLY LIVE</button><button id="btn-save-profile" type="button">SAVE OVERRIDE</button></div>
-          <p class="hint">The oriented footprint is sampled from the existing distance transform once per committed path. Approach time adds anticipation before constrained regions; braking and recovery feasibility still apply.</p>
+          <p class="hint">The oriented footprint is sampled from the existing distance transform once per committed path. Approach time adds anticipation before constrained regions; braking and recovery feasibility still apply. SAVE OVERRIDE persists this policy across a reboot -- separate from the named Saved Profiles above.</p>
         </section>
         <section class="setting-group speed-profile-controls">
-          <div class="group-heading"><h3>Planning route preference</h3><span>not a speed control</span></div>
+          <div class="group-heading"><h3>Planner settings</h3><span>not part of a saved speed profile</span></div>
           <div class="profile-control-grid" id="profile-planner-controls"></div>
-          <p class="hint">GridBased.cost_penalty changes Smac route preference on the next plan. No value is implied or ratified by this page.</p>
+          <p class="hint">GridBased.cost_penalty changes Smac route preference on the next plan. No value is implied or ratified by this page, and it is never affected by Speed Profile load/save/delete.</p>
         </section>
         <p id="profile-tuning-result" class="state-detail">Waiting for live ROS parameter read-back…</p>
       </section>
@@ -275,6 +268,7 @@
 
   <dialog id="delete-dialog"><form method="dialog"><h2>Delete saved map?</h2><p>Delete <strong id="delete-map-name">—</strong> and its complete saved bundle?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep map</button><button id="btn-confirm-delete" value="delete" class="danger">Delete bundle</button></div></form></dialog>
   <dialog id="delete-recording-dialog"><form method="dialog"><h2>Delete recording?</h2><p>Delete <strong id="delete-recording-name">—</strong> and its MCAP data?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep recording</button><button id="btn-confirm-delete-recording" value="delete" class="danger">Delete recording</button></div></form></dialog>
+  <dialog id="delete-profile-dialog"><form method="dialog"><h2>Delete saved speed profile?</h2><p>Delete <strong id="delete-profile-name">—</strong>?</p><p class="bad">This cannot be undone.</p><div class="dialog-actions"><button value="cancel" class="local-control">Keep profile</button><button id="btn-confirm-delete-profile" value="delete" class="danger">Delete profile</button></div></form></dialog>
 </main>
 <script src="/static/map_geometry.js" defer></script><script src="/static/mapping_camera.js" defer></script><script src="/static/joystick_geometry.js" defer></script><script src="/static/map_viewport_storage.js" defer></script><script src="/static/route_visualization.js" defer></script><script src="/static/telemetry_warning.js" defer></script><script src="/static/speed_profile.js" defer></script><script src="/static/app.js" defer></script>
 </body>

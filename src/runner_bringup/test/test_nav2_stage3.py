@@ -625,7 +625,6 @@ def test_bt_navigator_owns_the_complete_d2_speed_policy():
     navigator = _params()['bt_navigator']['ros__parameters']
     expected = {
         'speed_policy.minimum_traversal_speed': 0.25,
-        'speed_policy.constrained_speed_scaling': 0.20,
         'speed_policy.tight_clearance': 0.05,
         'speed_policy.open_clearance': 0.70,
         'speed_policy.clearance_curve_family': 2.0,
@@ -641,7 +640,6 @@ def test_bt_navigator_owns_the_complete_d2_speed_policy():
         'speed_policy.reaction_time_s': 0.40,
         'speed_policy.recovery_acceleration_gain': 1.6,
         'speed_policy.recovery_acceleration_floor': 0.60,
-        'speed_policy.scaling_reference_speed': 2.0,
     }
     assert {name: navigator[name] for name in expected} == expected
 

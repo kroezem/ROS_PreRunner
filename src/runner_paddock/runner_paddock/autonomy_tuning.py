@@ -103,18 +103,6 @@ PARAMETERS = {
         NAVIGATOR_OWNER, '/bt_navigator',
         'speed_policy.minimum_traversal_speed',
     ),
-    'constrained_speed_scaling': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator',
-        'speed_policy.constrained_speed_scaling',
-    ),
-    # The single authoritative reference ceiling constrained_speed_scaling
-    # normalizes fully-scaled bottoms against (today, ABSURD's maximum).
-    # Explicit so C++ and this preset table cannot silently desynchronize
-    # from a future change to that preset ceiling.
-    'scaling_reference_speed': TuningParameter(
-        NAVIGATOR_OWNER, '/bt_navigator',
-        'speed_policy.scaling_reference_speed',
-    ),
     'tight_clearance': TuningParameter(
         NAVIGATOR_OWNER, '/bt_navigator', 'speed_policy.tight_clearance',
     ),
@@ -171,75 +159,33 @@ PARAMETERS = {
     ),
 }
 
-# The one authoritative ABSURD ceiling. Both ABSURD's own
-# desired_linear_vel and every preset's scaling_reference_speed (D2's
-# fully-scaled-bottom normalization point) derive from this single
-# constant, so changing it cannot silently desynchronize the two.
-ABSURD_MAXIMUM_SPEED_MPS = 2.00
+# Adapter PID/feedforward calibration. Paddock's Engineering panel remains
+# the sole UI home for these; they are never part of a named Speed Profile.
+ENGINEERING_FIELDS = frozenset({
+    'proportional_gain', 'integral_gain', 'feedforward_effort_per_speed',
+    'feedforward_effort_intercept', 'output_max',
+})
 
-TIMID = {
-    'desired_linear_vel': 0.45,
-    'maximum_commanded_speed': 0.60,
-    'regulated_linear_scaling_min_speed': 0.30,
-    'regulated_linear_scaling_min_radius': 0.75,
-    'min_lookahead_dist': 0.30,
-    'max_lookahead_dist': 0.80,
-    'lookahead_time': 1.0,
-    'max_allowed_time_to_collision_up_to_carrot': 0.15,
-    'proportional_gain': 0.05,
-    'integral_gain': 0.01,
-    'feedforward_effort_per_speed': 0.1188,
-    'feedforward_effort_intercept': 0.0174,
-    'output_max': 0.14,
-    # D2 speed law: unchanged across driving-aggressiveness presets. The
-    # presets scale the preset ceiling and reaction distances; the
-    # clearance and recovery shape stay put.
-    'minimum_traversal_speed': 0.25,
-    'constrained_speed_scaling': 0.20,
-    'scaling_reference_speed': ABSURD_MAXIMUM_SPEED_MPS,
-    'tight_clearance': 0.05,
-    'open_clearance': 0.70,
-    'clearance_curve_family': 2.0,
-    'clearance_curve_shape': 1.0,
-    'approach_time_s': 0.0,
-    'curvature_window': 0.40,
-    'max_lateral_acceleration': 0.35,
-    'footprint_front': 0.230,
-    'footprint_rear': 0.060,
-    'footprint_half_width': 0.0825,
-    'braking_linear': 1.6,
-    'braking_constant': 0.27,
-    'reaction_time_s': 0.40,
-    'recovery_acceleration_gain': 1.6,
-    'recovery_acceleration_floor': 0.60,
+# Every operator-facing field Speed Profile owns: the controller's speed
+# ceiling/lookahead behavior plus the complete D2 committed-path speed law.
+# GridBased.cost_penalty (Planner Settings) and the adapter's PID/feedforward
+# calibration (Engineering) are deliberately excluded from a named profile.
+SPEED_PROFILE_FIELDS = frozenset(PARAMETERS) - ENGINEERING_FIELDS - {
+    'cost_penalty',
+}
+
+# Deliberately permissive stand-ins for every field a Speed Profile does not
+# own (Engineering, Planner Settings), used only to complete a snapshot
+# before running it through the one shared validator. None of them can
+# itself trigger a rejection, so a loaded profile's validity depends only on
+# its own fields, never on live Engineering drift since it was saved.
+NEUTRAL_COMPLETION_VALUES = {
+    'proportional_gain': 0.001,
+    'integral_gain': 0.0,
+    'feedforward_effort_per_speed': 1e-6,
+    'feedforward_effort_intercept': 0.0,
+    'output_max': ABSOLUTE_BOUNDS['output_max'],
     'cost_penalty': 2.0,
-}
-
-CONFIDENT = {
-    **TIMID,
-    'desired_linear_vel': 1.00,
-    'maximum_commanded_speed': 1.00,
-    'regulated_linear_scaling_min_speed': 0.40,
-    'max_allowed_time_to_collision_up_to_carrot': 0.60,
-}
-
-INSANE = {
-    **CONFIDENT,
-    'desired_linear_vel': 1.50,
-    'maximum_commanded_speed': 1.50,
-    'output_max': 0.22,
-}
-
-ABSURD = {
-    **CONFIDENT,
-    'desired_linear_vel': ABSURD_MAXIMUM_SPEED_MPS,
-    'maximum_commanded_speed': ABSURD_MAXIMUM_SPEED_MPS,
-    'output_max': 0.28,
-}
-
-PRESETS = {
-    'timid': TIMID, 'confident': CONFIDENT, 'insane': INSANE,
-    'absurd': ABSURD,
 }
 
 
@@ -293,7 +239,7 @@ def validate_values(values: dict) -> dict[str, float]:
 
     positive = set(PARAMETERS) - {
         'integral_gain', 'feedforward_effort_intercept', 'reaction_time_s',
-        'approach_time_s', 'constrained_speed_scaling',
+        'approach_time_s',
         'clearance_curve_family', 'tight_clearance', 'footprint_rear',
     }
     for name in positive:
@@ -304,8 +250,6 @@ def validate_values(values: dict) -> dict[str, float]:
     for name in ('reaction_time_s', 'approach_time_s', 'tight_clearance', 'footprint_rear'):
         if normalized[name] < 0.0:
             raise ValueError(f'{name} must be nonnegative')
-    if not 0.0 <= normalized['constrained_speed_scaling'] <= 1.0:
-        raise ValueError('constrained_speed_scaling must be between zero and one')
     if normalized['clearance_curve_family'] not in (0.0, 1.0, 2.0):
         raise ValueError('clearance_curve_family must be linear, power, or smoothstep')
     if normalized['open_clearance'] <= normalized['tight_clearance']:
@@ -347,11 +291,24 @@ def validate_values(values: dict) -> dict[str, float]:
     return normalized
 
 
-def matching_preset(values: dict[str, float]) -> str:
-    """Classify only a complete exact live readback as a named preset."""
-    if set(values) != set(PARAMETERS):
-        return 'custom'
-    for name, preset in PRESETS.items():
-        if all(values[field] == expected for field, expected in preset.items()):
-            return name
-    return 'custom'
+def validate_speed_profile_snapshot(
+    snapshot: dict, current_values: dict
+) -> dict[str, float]:
+    """
+    Validate a Speed-Profile-only snapshot against the one shared schema.
+
+    A named Speed Profile only covers ``SPEED_PROFILE_FIELDS``. To validate
+    it with the exact same rules ``validate_values`` applies to a live Apply
+    (no second schema), complete it with the caller's live values for every
+    field outside Speed Profile's ownership (Engineering, Planner Settings),
+    validate the whole snapshot, then return just the Speed Profile fields.
+    """
+    if set(snapshot) != SPEED_PROFILE_FIELDS:
+        missing = sorted(SPEED_PROFILE_FIELDS - set(snapshot))
+        extra = sorted(set(snapshot) - SPEED_PROFILE_FIELDS)
+        raise ValueError(
+            f'speed profile fields mismatch; missing={missing}, extra={extra}'
+        )
+    completed = {**current_values, **snapshot}
+    normalized = validate_values(completed)
+    return {field: normalized[field] for field in SPEED_PROFILE_FIELDS}

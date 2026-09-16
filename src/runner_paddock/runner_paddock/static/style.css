@@ -213,8 +213,6 @@ summary { cursor: pointer; }
 .autonomy-policy-compact { display: grid; gap: .35rem; padding: .45rem; border: 1px solid var(--border); border-radius: .45rem; background: #0a1112; }
 .preset-row { display: flex; gap: .3rem; align-items: center; color: var(--muted); font-size: .58rem; text-transform: uppercase; }
 .preset-row .status-chip { margin-left: auto; }
-.speed-preset.active { border-color: var(--accent); background: #17383b; }
-.preset-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; margin: .55rem 0; }
 .speed-readout { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .3rem; margin: 0; }
 .speed-readout div { min-width: 0; }
 .speed-readout dt { color: var(--muted); font-size: .55rem; text-transform: uppercase; }

@@ -33,8 +33,6 @@ from enum import IntEnum
 import math
 from typing import Optional
 
-from runner_paddock.autonomy_tuning import PRESETS as AUTONOMY_PRESETS
-
 
 # Mirror of runner_interfaces/PaddockControlEvent event constants.
 class ControlEvent(IntEnum):
@@ -133,11 +131,25 @@ class ObstacleProcessingIntent:
 
 @dataclass(frozen=True)
 class AutonomyTuningIntent:
-    """Apply one complete preset or manually edited live tuning snapshot."""
+    """Apply or persist-as-override one manually edited live tuning snapshot."""
 
-    preset: str = ''
     values: dict = field(default_factory=dict)
     save: bool = False
+
+
+@dataclass(frozen=True)
+class SaveSpeedProfileIntent:
+    """Validate and persist one named Speed Profile snapshot; no ROS write."""
+
+    name: str
+    values: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DeleteSpeedProfileIntent:
+    """Delete one named Speed Profile snapshot; no ROS write."""
+
+    name: str
 
 
 @dataclass(frozen=True)
@@ -422,17 +434,13 @@ class OperatorGateway:
         owned = self._require_owner(conn_id)
         if owned is not None:
             return owned
-        preset = str(action.get('preset', '')).strip().lower()
         values = action.get('values', {})
-        if preset:
-            if preset not in AUTONOMY_PRESETS or values:
-                return self._reject(conn_id, 'invalid autonomy preset request')
-        elif not isinstance(values, dict):
+        if not isinstance(values, dict):
             return self._reject(conn_id, 'autonomy tuning values must be an object')
         return GatewayResult(
             True,
-            f'autonomy tuning {preset or "custom"} requested',
-            (AutonomyTuningIntent(preset=preset, values=values),),
+            'autonomy tuning requested',
+            (AutonomyTuningIntent(values=values),),
             'controller',
         )
 
@@ -448,6 +456,33 @@ class OperatorGateway:
         return GatewayResult(
             True, 'autonomy tuning override save requested',
             (AutonomyTuningIntent(values=values, save=True),), 'controller',
+        )
+
+    def _do_save_speed_profile(self, conn_id: str, action: dict) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        name = str(action.get('name', '')).strip()
+        if not name:
+            return self._reject(conn_id, 'save requires a profile name')
+        values = action.get('values', {})
+        if not isinstance(values, dict):
+            return self._reject(conn_id, 'speed profile values must be an object')
+        return GatewayResult(
+            True, f'SAVE SPEED PROFILE {name} requested',
+            (SaveSpeedProfileIntent(name=name, values=values),), 'controller',
+        )
+
+    def _do_delete_speed_profile(self, conn_id: str, action: dict) -> GatewayResult:
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        name = str(action.get('name', '')).strip()
+        if not name:
+            return self._reject(conn_id, 'delete requires a profile name')
+        return GatewayResult(
+            True, f'DELETE SPEED PROFILE {name} requested',
+            (DeleteSpeedProfileIntent(name=name),), 'controller',
         )
 
     def _do_set_config(self, conn_id: str, action: dict) -> GatewayResult:

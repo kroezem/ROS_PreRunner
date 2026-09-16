@@ -3,8 +3,8 @@ const test = require("node:test");
 const profile = require("../runner_paddock/static/speed_profile.js");
 
 const settings = {
-  minimum_traversal_speed: 0.25, constrained_speed_scaling: 0.2,
-  scaling_reference_speed: 2, tight_clearance: 0.05, open_clearance: 0.7,
+  desired_linear_vel: 1, minimum_traversal_speed: 0.25,
+  tight_clearance: 0.05, open_clearance: 0.7,
   clearance_curve_family: 2, clearance_curve_shape: 1,
 };
 const closeTo = (actual, expected, tolerance = 1e-9) => assert.ok(
@@ -13,29 +13,17 @@ const closeTo = (actual, expected, tolerance = 1e-9) => assert.ok(
 );
 
 test("curve endpoints match tight and open policy", () => {
-  const preset = profile.PRESETS[1];
-  assert.equal(profile.geometrySpeed(settings.open_clearance, preset, settings), 1);
-  assert.equal(profile.geometrySpeed(settings.tight_clearance, preset, settings), profile.constrainedSpeed(preset, settings));
+  assert.equal(profile.geometrySpeed(settings.open_clearance, settings), settings.desired_linear_vel);
+  assert.equal(profile.geometrySpeed(settings.tight_clearance, settings), settings.minimum_traversal_speed);
 });
 
-test("fully scaled bottom remains below each preset maximum", () => {
-  const scaled = { ...settings, constrained_speed_scaling: 1 };
-  for (const preset of profile.PRESETS) {
-    closeTo(
-      profile.constrainedSpeed(preset, scaled),
-      scaled.minimum_traversal_speed * preset.maxSpeed / scaled.scaling_reference_speed,
-    );
-    assert.ok(profile.constrainedSpeed(preset, scaled) < preset.maxSpeed);
-  }
+test("minimum traversal speed is the bottom end of the curve directly, with no preset-relative scaling", () => {
+  const custom = { ...settings, minimum_traversal_speed: 0.6, desired_linear_vel: 1.5 };
+  assert.equal(profile.geometrySpeed(custom.tight_clearance, custom), 0.6);
 });
 
-test("fully scaled bottom follows an explicit scaling reference, not a hardcoded one", () => {
-  const scaled = { ...settings, constrained_speed_scaling: 1, scaling_reference_speed: 4 };
-  const preset = profile.PRESETS[1];
-  closeTo(
-    profile.constrainedSpeed(preset, scaled),
-    scaled.minimum_traversal_speed * preset.maxSpeed / 4,
-  );
+test("only one field, no PRESETS array or preset matching, drives the curve", () => {
+  assert.equal(profile.PRESETS, undefined);
 });
 
 test("power and smoothstep shapes are selectable", () => {
@@ -86,6 +74,31 @@ test("draft store: a failed apply keeps the draft dirty instead of reverting", (
   store.receiveConfirmed({ cost_penalty: 2.0 });
   assert.equal(store.values().cost_penalty, 50, "failed apply must not discard the draft");
   assert.ok(store.isDirty("cost_penalty"));
+});
+
+test("draft store: loading a saved profile marks every loaded field dirty without an apply cycle", () => {
+  const store = profile.createDraftStore({ desired_linear_vel: 1, minimum_traversal_speed: 0.25, cost_penalty: 2.0 });
+  store.load({ desired_linear_vel: 1.5, minimum_traversal_speed: 0.4 });
+  assert.equal(store.values().desired_linear_vel, 1.5);
+  assert.equal(store.values().minimum_traversal_speed, 0.4);
+  assert.ok(store.isDirty("desired_linear_vel"));
+  assert.ok(store.isDirty("minimum_traversal_speed"));
+  // cost_penalty (Planner Settings) is untouched by a Speed Profile load.
+  assert.equal(store.values().cost_penalty, 2.0);
+  assert.ok(!store.isDirty("cost_penalty"));
+});
+
+test("draft store: a loaded field survives confirmed broadcasts just like a manual edit, until Apply", () => {
+  const store = profile.createDraftStore({ desired_linear_vel: 1 });
+  store.load({ desired_linear_vel: 1.5 });
+  store.receiveConfirmed({ desired_linear_vel: 1 });
+  assert.equal(store.values().desired_linear_vel, 1.5, "load must not silently apply, but must survive broadcasts until Apply");
+});
+
+test("SPEED_PROFILE_FIELDS excludes cost_penalty (Planner Settings is never part of a named profile)", () => {
+  assert.ok(!profile.SPEED_PROFILE_FIELDS.includes("cost_penalty"));
+  assert.ok(profile.SPEED_PROFILE_FIELDS.includes("desired_linear_vel"));
+  assert.ok(profile.SPEED_PROFILE_FIELDS.includes("minimum_traversal_speed"));
 });
 
 test("shouldResolveApplied only fires on the applying->applied rising edge", () => {

@@ -277,22 +277,9 @@ TEST(PathSpeedProfile, CurveFamiliesEndpointsShapesAndScaling)
     runner_path_speed_profile::clearanceSpeed(midpoint, preset, config),
     runner_path_speed_profile::clearanceSpeed(
       midpoint, preset, runner_path_speed_profile::ProfileConfig{}));
-  config.constrained_speed_scaling = 0.0;
   EXPECT_DOUBLE_EQ(
     runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
     config.minimum_traversal_speed);
-  config.constrained_speed_scaling = 1.0;
-  EXPECT_NEAR(
-    runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
-    config.minimum_traversal_speed * 0.45 / config.scaling_reference_speed, 1e-12);
-  EXPECT_LT(runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config), 0.45);
-
-  // The reference is an explicit, named field, not a hardcoded literal: a
-  // different reference speed changes the fully-scaled bottom.
-  config.scaling_reference_speed = 4.0;
-  EXPECT_NEAR(
-    runner_path_speed_profile::clearanceSpeed(0.0, 0.45, config),
-    config.minimum_traversal_speed * 0.45 / 4.0, 1e-12);
 }
 
 TEST(PathSpeedProfile, RejectsInvalidThresholds)

@@ -22,6 +22,7 @@ let manualDemand = { speed_mps: 0, steering: 0 };
 let catalogRenderKey = null;
 let pendingDeleteName = "";
 let pendingDeleteRecordingName = "";
+let pendingDeleteProfileName = "";
 let recordingCatalogKey = null;
 let recordingStopPending = false;
 let retainedPlan = null;
@@ -209,6 +210,18 @@ function connect() {
       if (frame.name === "stop_recording" && !frame.accepted) {
         recordingStopPending = false;
       }
+      if (frame.name === "save_speed_profile") {
+        text("profile-catalog-result", `SAVE AS: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
+        if (frame.accepted) {
+          const saved = $("profile-save-name").value.trim();
+          $("profile-save-name").value = "";
+          refreshSpeedProfileCatalog(saved);
+        }
+      }
+      if (frame.name === "delete_speed_profile") {
+        text("profile-catalog-result", `DELETE: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
+        if (frame.accepted) refreshSpeedProfileCatalog();
+      }
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
       render();
     }
@@ -257,6 +270,7 @@ function selectConfigTab(name) {
     panel.hidden = !selected;
     panel.classList.toggle("active", selected);
   });
+  if (name === "speed-profile") refreshSpeedProfileCatalog();
   placeMapForCurrentView();
 }
 
@@ -329,22 +343,10 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
   const bounds = tuning.bounds || {};
   const liveAdapter = adapterFresh ? adapter : {};
   const available = tuning.available === true;
-  const preset = available ? String(tuning.preset || "custom") : "custom";
   const failed = tuning.status === "failed";
-  const requestedPreset = String(tuning.requested_preset || "custom");
-  const applying = tuning.status === "applying";
-  const presetChip = $("autonomy-preset");
-  text("autonomy-preset", applying
-    ? `APPLYING: ${requestedPreset.toUpperCase()}`
-    : failed
-    ? `APPLY FAILED: ${requestedPreset.toUpperCase()}`
-    : (available ? preset.toUpperCase() : "UNAVAILABLE"));
-  presetChip.dataset.state = failed ? "failed" : String(tuning.status || "unavailable");
-  document.querySelectorAll("[data-speed-preset]").forEach((button) => {
-    const active = available && button.dataset.speedPreset === preset;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
+  const statusChip = $("autonomy-tuning-status");
+  text("autonomy-tuning-status", available ? String(tuning.status || "unavailable").toUpperCase() : "UNAVAILABLE");
+  statusChip.dataset.state = failed ? "failed" : String(tuning.status || "unavailable");
   // Speed Profile's own draft/dirty store (speed_profile.js) owns sync for
   // its panel's inputs via the "paddock-tuning" event dispatched below; an
   // unconditional overwrite here would ignore its dirty tracking.
@@ -543,8 +545,10 @@ function render() {
     "button.mode, #btn-clear-obstacles, #btn-new-map, " +
     "#btn-save-map, #btn-select-goal, #btn-run, " +
     "#btn-goal-mode, #btn-initial-pose-mode, #btn-confirm-delete, #btn-confirm-delete-recording, " +
-    "#btn-apply-manual-speed, #btn-apply-speed-policy, #btn-apply-engineering, " +
-    "[data-speed-preset], [id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
+    "#btn-confirm-delete-profile, " +
+    "#btn-apply-manual-speed, #btn-apply-engineering, " +
+    "#btn-save-as-profile, #btn-delete-profile, " +
+    "[id^='btn-global-obstacles-'], [id^='btn-local-obstacles-']",
   ).forEach((button) => {
     button.disabled = !controller;
   });
@@ -568,7 +572,7 @@ function render() {
   $("btn-initial-pose-mode").hidden = !autonomyControl;
   $("btn-initial-pose-mode").disabled = !controller || !autonomyControl;
   const tuningReady = controller && tuning.available === true && tuning.status !== "applying";
-  document.querySelectorAll("[data-speed-preset], #btn-apply-speed-policy, #btn-apply-engineering").forEach((button) => {
+  document.querySelectorAll("#btn-apply-engineering, #btn-apply-profile, #btn-save-profile").forEach((button) => {
     button.disabled = !tuningReady;
   });
   if (!runAvailable) stopRun();
@@ -1467,12 +1471,6 @@ takeoverButton.addEventListener("click", () => {
   }
 });
 $("btn-clear-obstacles").addEventListener("click", () => send({ action: "clear_obstacles" }));
-document.querySelectorAll("[data-speed-preset]").forEach((button) => {
-  button.addEventListener("click", () => send({
-    action: "set_autonomy_tuning",
-    preset: button.dataset.speedPreset,
-  }));
-});
 function applyTuningForm() {
   const tuning = latest.autonomy_tuning || {};
   if (!tuning.available) return;
@@ -1482,7 +1480,6 @@ function applyTuningForm() {
   });
   send({ action: "set_autonomy_tuning", values });
 }
-$("btn-apply-speed-policy").addEventListener("click", applyTuningForm);
 $("btn-apply-engineering").addEventListener("click", applyTuningForm);
 $("btn-apply-profile").addEventListener("click", applyTuningForm);
 $("btn-save-profile").addEventListener("click", () => {
@@ -1494,6 +1491,69 @@ $("btn-save-profile").addEventListener("click", () => {
   });
   send({ action: "save_autonomy_tuning", values });
 });
+
+// --- Speed Profile: named saved profiles (local, never auto-applied) ----
+
+async function refreshSpeedProfileCatalog(selectName) {
+  const select = $("profile-catalog-select");
+  let entries = [];
+  try {
+    const response = await fetch("/speed_profiles");
+    if (response.ok) entries = await response.json();
+  } catch (error) {
+    // The result line already reports action failures; leave the
+    // dropdown as-is if the catalog itself couldn't be fetched.
+  }
+  const previous = selectName || select.value;
+  select.innerHTML = entries.map((entry) =>
+    `<option value="${entry.name}">${entry.name}${entry.baseline ? " (baseline)" : ""}</option>`
+  ).join("");
+  if (entries.some((entry) => entry.name === previous)) select.value = previous;
+}
+
+$("btn-load-profile").addEventListener("click", async () => {
+  const name = $("profile-catalog-select").value;
+  if (!name) return;
+  try {
+    const response = await fetch(`/speed_profiles/${encodeURIComponent(name)}`);
+    if (!response.ok) {
+      text("profile-catalog-result", `LOAD ${name}: failed (${response.status})`);
+      return;
+    }
+    const values = await response.json();
+    // Loading only copies the snapshot into the local draft and graph; it
+    // never applies live and never touches ROS state.
+    window.dispatchEvent(new CustomEvent("paddock-load-speed-profile", { detail: { values } }));
+    text("profile-catalog-result", `LOAD ${name}: loaded into draft (not applied)`);
+  } catch (error) {
+    text("profile-catalog-result", `LOAD ${name}: ${error}`);
+  }
+});
+
+$("btn-delete-profile").addEventListener("click", () => {
+  const name = $("profile-catalog-select").value;
+  if (!name || name === "Default Baseline") return;
+  pendingDeleteProfileName = name;
+  text("delete-profile-name", name);
+  $("delete-profile-dialog").showModal();
+});
+
+$("delete-profile-dialog").addEventListener("close", () => {
+  if ($("delete-profile-dialog").returnValue === "delete" && pendingDeleteProfileName) {
+    send({ action: "delete_speed_profile", name: pendingDeleteProfileName });
+  }
+  pendingDeleteProfileName = "";
+});
+
+$("btn-save-as-profile").addEventListener("click", () => {
+  const name = $("profile-save-name").value.trim();
+  if (!name) return;
+  const draft = window.PaddockSpeedProfileDraft;
+  if (!draft) return;
+  send({ action: "save_speed_profile", name, values: draft.speedProfileValues() });
+});
+
+refreshSpeedProfileCatalog();
 ["global", "local"].forEach((costmap) => {
   [true, false].forEach((enabled) => {
     $(`btn-${costmap}-obstacles-${enabled ? "on" : "off"}`).addEventListener("click", () => send({

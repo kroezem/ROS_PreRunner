@@ -36,6 +36,9 @@ from runner_paddock.protocol import encode_message
 from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
 from runner_paddock.recording import resolve_finalized_mcap
 from runner_paddock.ros_runtime import RosRuntime
+from runner_paddock.speed_profiles import list_profiles as list_speed_profiles
+from runner_paddock.speed_profiles import load_profile as load_speed_profile
+from runner_paddock.speed_profiles import PROFILES_PATH as DEFAULT_SPEED_PROFILES_PATH
 from runner_paddock.state_cache import StateCache
 import uvicorn
 
@@ -46,6 +49,7 @@ STATIC_DIRECTORY = Path(str(files('runner_paddock.static')))
 def create_app(
     *, cache: StateCache | None = None, runtime: RosRuntime | None = None,
     recording_root: Path | None = None,
+    speed_profiles_path: Path | None = None,
 ) -> FastAPI:
     """Build one web application around an injectable ROS lifecycle."""
     state_cache = cache if cache is not None else StateCache()
@@ -59,6 +63,10 @@ def create_app(
             'PADDOCK_RECORDING_DIRECTORY', DEFAULT_RECORDING_DIRECTORY
         ))
     ).resolve()
+    profiles_path = (
+        speed_profiles_path
+        if speed_profiles_path is not None else DEFAULT_SPEED_PROFILES_PATH
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -128,6 +136,21 @@ def create_app(
             media_type='application/octet-stream',
             filename=mcap.name,
         )
+
+    @app.get('/speed_profiles', include_in_schema=False)
+    async def list_speed_profiles_endpoint() -> list[dict]:
+        return list_speed_profiles(profiles_path)
+
+    @app.get('/speed_profiles/{name}', include_in_schema=False)
+    async def load_speed_profile_endpoint(name: str) -> dict:
+        try:
+            return load_speed_profile(name, profiles_path)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail='speed profile not found',
+            ) from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
 
     @app.websocket('/ws')
     async def websocket_state(websocket: WebSocket) -> None:

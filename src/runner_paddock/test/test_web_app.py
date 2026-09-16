@@ -128,8 +128,15 @@ def test_release_stop_and_takeover_are_one_click_actions():
 def test_tuning_failure_and_shared_bounds_are_rendered_explicitly():
     app_source = (STATIC_DIRECTORY / 'app.js').read_text(encoding='utf-8')
 
-    assert 'APPLY FAILED: ${requestedPreset.toUpperCase()}' in app_source
+    assert 'const failed = tuning.status === "failed";' in app_source
     assert 'const bounds = tuning.bounds || {};' in app_source
+
+
+def test_no_preset_system_remains_in_frontend_assets():
+    for name in ('app.js', 'index.html', 'speed_profile.js'):
+        source = (STATIC_DIRECTORY / name).read_text(encoding='utf-8')
+        for token in ('TIMID', 'CONFIDENT', 'INSANE', 'ABSURD', 'data-speed-preset'):
+            assert token not in source, f'{token} should have been removed from {name}'
 
 
 def test_static_shell_lifecycle_and_two_clients():
@@ -149,12 +156,8 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'data-map-mode="view"' in response.text
         assert 'id="btn-initial-pose-mode"' in response.text
         assert 'id="btn-confirm-initial-pose"' in response.text
-        assert 'data-speed-preset="timid"' in response.text
-        assert 'data-speed-preset="confident"' in response.text
-        assert 'data-speed-preset="insane"' in response.text
         control_html = response.text.split('id="view-control"', 1)[1].split(
             'id="view-configure"', 1)[0]
-        assert 'data-speed-preset=' not in control_html
         assert 'id="btn-clear-stop"' not in response.text
         assert 'id="stop-label"' in response.text
         assert 'id="btn-takeover"' in response.text
@@ -167,14 +170,20 @@ def test_static_shell_lifecycle_and_two_clients():
         assert 'id="layer-color-plan"' not in response.text
         assert 'id="autonomy-speed-commanded"' in response.text
         assert 'id="autonomy-speed-effective"' in response.text
-        assert 'data-tuning-field="desired_linear_vel"' in response.text
-        assert 'data-tuning-field="maximum_commanded_speed"' in response.text
         assert 'data-tuning-field="output_max"' in response.text
         assert 'id="profile-policy-controls"' in response.text
-        assert 'data-tuning-field="reaction_time_s"' in response.text
-        assert 'data-tuning-field="recovery_acceleration_gain"' in response.text
-        assert 'data-tuning-field="recovery_acceleration_floor"' in response.text
-        assert 'data-speed-preset="absurd"' in response.text
+        speed_profile_source = (STATIC_DIRECTORY / 'speed_profile.js').read_text(
+            encoding='utf-8'
+        )
+        assert '"desired_linear_vel"' in speed_profile_source
+        assert '"maximum_commanded_speed"' in speed_profile_source
+        assert '"reaction_time_s"' in speed_profile_source
+        assert '"recovery_acceleration_gain"' in speed_profile_source
+        assert '"recovery_acceleration_floor"' in speed_profile_source
+        assert 'id="profile-catalog-select"' in response.text
+        assert 'id="btn-load-profile"' in response.text
+        assert 'id="btn-delete-profile"' in response.text
+        assert 'id="btn-save-as-profile"' in response.text
         assert 'id="layer-visible-global_costmap"' in response.text
         assert 'id="btn-clear-obstacles"' in response.text
         assert 'id="btn-global-obstacles-off"' in response.text
@@ -290,6 +299,60 @@ def test_recording_download_requires_fresh_authoritative_catalog(tmp_path):
         response = client.get('/recordings/finished/download')
 
     assert response.status_code == 503
+
+
+def test_speed_profiles_list_always_includes_the_immutable_baseline(tmp_path):
+    app = create_app(
+        cache=_initial_cache(), runtime=FakeRuntime(),
+        speed_profiles_path=tmp_path / 'speed_profiles.json',
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/speed_profiles')
+
+    assert response.status_code == 200
+    assert response.json() == [{'name': 'Default Baseline', 'baseline': True}]
+
+
+def test_speed_profiles_load_baseline_returns_a_complete_snapshot(tmp_path):
+    from runner_paddock.autonomy_tuning import SPEED_PROFILE_FIELDS
+
+    app = create_app(
+        cache=_initial_cache(), runtime=FakeRuntime(),
+        speed_profiles_path=tmp_path / 'speed_profiles.json',
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/speed_profiles/Default Baseline')
+
+    assert response.status_code == 200
+    assert set(response.json()) == SPEED_PROFILE_FIELDS
+
+
+def test_speed_profiles_load_unknown_name_is_404(tmp_path):
+    app = create_app(
+        cache=_initial_cache(), runtime=FakeRuntime(),
+        speed_profiles_path=tmp_path / 'speed_profiles.json',
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/speed_profiles/does-not-exist')
+
+    assert response.status_code == 404
+
+
+def test_speed_profiles_endpoints_never_touch_ros_runtime(tmp_path):
+    runtime = FakeRuntime()
+    app = create_app(
+        cache=_initial_cache(), runtime=runtime,
+        speed_profiles_path=tmp_path / 'speed_profiles.json',
+    )
+
+    with TestClient(app) as client:
+        client.get('/speed_profiles')
+        client.get('/speed_profiles/Default Baseline')
+
+    assert runtime.actions == []
 
 
 def test_ws_action_round_trip_and_lease_role():

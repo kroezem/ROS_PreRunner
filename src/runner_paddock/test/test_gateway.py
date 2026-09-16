@@ -22,12 +22,14 @@ from runner_paddock.gateway import (
     ConfigRequestIntent,
     ControlEvent,
     ControlEventIntent,
+    DeleteSpeedProfileIntent,
     InitialPoseIntent,
     MapRequestIntent,
     ModeRequestIntent,
     ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
+    SaveSpeedProfileIntent,
 )
 
 
@@ -238,31 +240,51 @@ def test_initial_pose_is_lease_scoped_finite_and_map_frame_only():
 def test_autonomy_tuning_is_lease_scoped_and_structured():
     gw = _gateway()
     assert not gw.handle('observer', {
-        'action': 'set_autonomy_tuning', 'preset': 'timid',
+        'action': 'set_autonomy_tuning', 'values': {'lookahead_time': 1.1},
     }).accepted
     gw.handle('c1', {'action': 'acquire'})
 
-    preset = gw.handle('c1', {
-        'action': 'set_autonomy_tuning', 'preset': 'confident',
-    })
     custom = gw.handle('c1', {
         'action': 'set_autonomy_tuning', 'values': {'lookahead_time': 1.1},
     })
-
-    assert preset.intents == (AutonomyTuningIntent(preset='confident'),)
-    insane = gw.handle('c1', {
-        'action': 'set_autonomy_tuning', 'preset': 'insane',
-    })
-    assert insane.intents == (AutonomyTuningIntent(preset='insane'),)
-    absurd = gw.handle('c1', {
-        'action': 'set_autonomy_tuning', 'preset': 'absurd',
-    })
-    assert absurd.intents == (AutonomyTuningIntent(preset='absurd'),)
     assert custom.intents == (AutonomyTuningIntent(
         values={'lookahead_time': 1.1}
     ),)
     assert not gw.handle('c1', {
-        'action': 'set_autonomy_tuning', 'preset': 'fastest',
+        'action': 'set_autonomy_tuning', 'values': 'not-an-object',
+    }).accepted
+
+
+def test_speed_profile_save_and_delete_are_lease_scoped_and_structured():
+    gw = _gateway()
+    assert not gw.handle('observer', {
+        'action': 'save_speed_profile', 'name': 'Aggressive',
+        'values': {'lookahead_time': 1.1},
+    }).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    save = gw.handle('c1', {
+        'action': 'save_speed_profile', 'name': 'Aggressive',
+        'values': {'lookahead_time': 1.1},
+    })
+    assert save.accepted
+    assert save.intents == (SaveSpeedProfileIntent(
+        name='Aggressive', values={'lookahead_time': 1.1},
+    ),)
+    assert not gw.handle('c1', {
+        'action': 'save_speed_profile', 'name': '  ', 'values': {},
+    }).accepted
+
+    delete = gw.handle('c1', {
+        'action': 'delete_speed_profile', 'name': 'Aggressive',
+    })
+    assert delete.accepted
+    assert delete.intents == (DeleteSpeedProfileIntent(name='Aggressive'),)
+    assert not gw.handle('c1', {
+        'action': 'delete_speed_profile', 'name': '',
+    }).accepted
+    assert not gw.handle('observer', {
+        'action': 'delete_speed_profile', 'name': 'Aggressive',
     }).accepted
 
 

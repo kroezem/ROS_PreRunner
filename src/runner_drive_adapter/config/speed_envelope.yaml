@@ -1,8 +1,8 @@
 # Single launched origin for Runner longitudinal-control parameters.
 #
-# The launched values are the normal CONFIDENT preset. They remain provisional
-# until physically validated; TIMID is available through Paddock when the
-# deliberately conservative policy is required.
+# These values remain provisional until physically validated. Paddock's
+# Speed Profile editor is authoritative for live operator tuning; it can
+# apply a more conservative driving policy when required.
 controller_server:
   ros__parameters:
     controller_frequency: 20.0

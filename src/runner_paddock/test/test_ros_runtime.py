@@ -33,16 +33,11 @@ from runner_interfaces.msg import PathSpeedProfilePoint
 from runner_interfaces.msg import StopState
 from runner_interfaces.msg import SystemTelemetry
 from runner_paddock.autonomy_tuning import (
-    ABSURD,
     ADAPTER_OWNER,
-    CONFIDENT,
     CONTROLLER_OWNER,
-    INSANE,
     NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
     PLANNER_OWNER,
-    PRESETS as TUNING_PRESETS,
-    TIMID,
 )
 from runner_paddock.gateway import AutonomyTuningIntent
 from runner_paddock.gateway import GatewayResult
@@ -205,6 +200,44 @@ class _DeferredTuningClient(_TuningClient):
         return SimpleNamespace(add_done_callback=lambda _callback: None)
 
 
+# A complete, valid live tuning snapshot -- today's launched values (see
+# runner_drive_adapter/config/speed_envelope.yaml and
+# runner_bringup/config/nav2_params.yaml).
+TUNING_REFERENCE = {
+    'desired_linear_vel': 1.00,
+    'maximum_commanded_speed': 1.00,
+    'regulated_linear_scaling_min_speed': 0.40,
+    'regulated_linear_scaling_min_radius': 0.75,
+    'min_lookahead_dist': 0.30,
+    'max_lookahead_dist': 0.80,
+    'lookahead_time': 1.0,
+    'max_allowed_time_to_collision_up_to_carrot': 0.60,
+    'proportional_gain': 0.05,
+    'integral_gain': 0.01,
+    'feedforward_effort_per_speed': 0.1188,
+    'feedforward_effort_intercept': 0.0174,
+    'output_max': 0.14,
+    'minimum_traversal_speed': 0.25,
+    'tight_clearance': 0.05,
+    'open_clearance': 0.70,
+    'clearance_curve_family': 2.0,
+    'clearance_curve_shape': 1.0,
+    'approach_time_s': 0.0,
+    'curvature_window': 0.40,
+    'max_lateral_acceleration': 0.35,
+    'footprint_front': 0.230,
+    'footprint_rear': 0.060,
+    'footprint_half_width': 0.0825,
+    'braking_linear': 1.6,
+    'braking_constant': 0.27,
+    'reaction_time_s': 0.40,
+    'recovery_acceleration_gain': 1.6,
+    'recovery_acceleration_floor': 0.60,
+    'cost_penalty': 2.0,
+}
+assert set(TUNING_REFERENCE) == set(TUNING_PARAMETERS)
+
+
 def _tuning_node(values):
     node = RosStateNode.__new__(RosStateNode)
     node._cache = StateCache()
@@ -212,7 +245,7 @@ def _tuning_node(values):
     node._tuning_request_id = 0
     node._tuning_operation = None
     node._tuning_state = {
-        'available': False, 'preset': 'custom', 'values': {},
+        'available': False, 'values': {},
         'status': 'unavailable', 'detail': 'waiting', 'request_id': 0,
     }
     states = {
@@ -829,102 +862,49 @@ def test_incorrect_tf_pose_does_not_confirm_and_uses_existing_timeout():
     assert node._local_clear_client.calls == 0
 
 
-def test_timid_confident_insane_absurd_and_custom_are_classified_from_live_readback():
-    node = _tuning_node(TIMID)
+def test_custom_apply_is_read_back_and_reflected_in_live_state():
+    node = _tuning_node(TUNING_REFERENCE)
     RosStateNode._start_tuning_read(node)
-    timid = node._cache.state_snapshot()['autonomy_tuning']
-    assert timid['available']
-    assert timid['preset'] == 'timid'
-    assert timid['values'] == TIMID
+    initial = node._cache.state_snapshot()['autonomy_tuning']
+    assert initial['available']
+    assert initial['values'] == TUNING_REFERENCE
 
+    faster = {
+        **TUNING_REFERENCE, 'desired_linear_vel': 1.5,
+        'maximum_commanded_speed': 1.5, 'output_max': 0.22,
+    }
     result = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='confident'), 'controller'
+        node, AutonomyTuningIntent(values=faster), 'controller'
     )
-    confident = node._cache.state_snapshot()['autonomy_tuning']
+    applied = node._cache.state_snapshot()['autonomy_tuning']
     assert result.accepted
-    assert confident['status'] == 'applied'
-    assert confident['preset'] == 'confident'
-    assert confident['values'] == CONFIDENT
+    assert applied['status'] == 'applied'
+    assert applied['values'] == faster
 
-    result = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='insane'), 'controller'
-    )
-    insane = node._cache.state_snapshot()['autonomy_tuning']
-    assert result.accepted
-    assert insane['status'] == 'applied'
-    assert insane['preset'] == 'insane'
-    assert insane['values'] == INSANE
-    assert insane['values']['desired_linear_vel'] == 1.50
-    assert insane['values']['maximum_commanded_speed'] == 1.50
-    assert insane['values']['output_max'] == 0.22
-
-    result = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='absurd'), 'controller'
-    )
-    absurd = node._cache.state_snapshot()['autonomy_tuning']
-    assert result.accepted
-    assert absurd['status'] == 'applied'
-    assert absurd['preset'] == 'absurd'
-    assert absurd['values'] == ABSURD
-    assert absurd['values']['desired_linear_vel'] == 2.00
-    assert absurd['values']['maximum_commanded_speed'] == 2.00
-    assert absurd['values']['output_max'] == 0.28
-
-    result = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='confident'), 'controller'
-    )
-    restored = node._cache.state_snapshot()['autonomy_tuning']
-    assert result.accepted
-    assert restored['preset'] == 'confident'
-    assert restored['values'] == CONFIDENT
-
-    custom_values = {**CONFIDENT, 'lookahead_time': 1.01}
+    custom_values = {**TUNING_REFERENCE, 'lookahead_time': 1.01}
     result = RosStateNode._request_autonomy_tuning(
         node, AutonomyTuningIntent(values=custom_values), 'controller'
     )
     custom = node._cache.state_snapshot()['autonomy_tuning']
     assert result.accepted
-    assert custom['preset'] == 'custom'
     assert custom['values']['lookahead_time'] == 1.01
 
 
-@pytest.mark.parametrize('preset', ['confident', 'insane', 'absurd'])
-def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write(preset):
-    node = _tuning_node(TIMID)
+def test_tuning_owner_writes_are_atomic_and_read_back_after_each_write():
+    node = _tuning_node(TUNING_REFERENCE)
 
     RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset=preset), 'controller'
+        node, AutonomyTuningIntent(values=dict(TUNING_REFERENCE)), 'controller'
     )
 
-    # A named preset is speed policy only; GridBased.cost_penalty (the sole
-    # planner-owned field) must not be written by selecting one.
-    for owner, client in node._tuning_set_clients.items():
-        if owner == PLANNER_OWNER:
-            assert len(client.requests) == 0
-            continue
+    # A custom apply reaches every owner, including the planner -- there is
+    # no preset exclusion any more.
+    for client in node._tuning_set_clients.values():
         assert len(client.requests) == 1
         assert client.requests[0].__class__.__name__.endswith('Request')
         assert len(client.requests[0].parameters) >= 1
     for client in node._tuning_get_clients.values():
         assert len(client.requests) == 1
-
-
-def test_preset_selection_never_writes_or_alters_live_cost_penalty():
-    node = _tuning_node(TIMID)
-    # Simulate an operator-tuned planning preference already live on the
-    # robot, independent of any speed preset.
-    node._tuning_set_clients[PLANNER_OWNER].state['GridBased.cost_penalty'] = 5.0
-
-    RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='confident'), 'controller'
-    )
-
-    assert node._tuning_set_clients[PLANNER_OWNER].requests == []
-    assert node._tuning_set_clients[PLANNER_OWNER].state[
-        'GridBased.cost_penalty'
-    ] == 5.0
-    state = node._cache.state_snapshot()['autonomy_tuning']
-    assert state['values']['cost_penalty'] == 5.0
 
 
 def test_real_construction_wires_planner_get_and_set_clients():
@@ -945,7 +925,7 @@ def test_real_construction_wires_planner_get_and_set_clients():
 
 
 def test_operator_apply_supersedes_read_but_never_an_in_flight_write():
-    node = _tuning_node(TIMID)
+    node = _tuning_node(TUNING_REFERENCE)
     node._tuning_operation = {
         'kind': 'read', 'request_id': 1, 'pending': {CONTROLLER_OWNER},
     }
@@ -954,25 +934,28 @@ def test_operator_apply_supersedes_read_but_never_an_in_flight_write():
         owner: _DeferredTuningClient(owner, client.state, 'set')
         for owner, client in node._tuning_set_clients.items()
     }
+    fast = {
+        **TUNING_REFERENCE, 'desired_linear_vel': 2.0,
+        'maximum_commanded_speed': 2.0, 'output_max': 0.28,
+    }
 
     accepted = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='absurd'), 'controller'
+        node, AutonomyTuningIntent(values=fast), 'controller'
     )
 
     assert accepted.accepted
     applying = node._cache.state_snapshot()['autonomy_tuning']
     assert applying['status'] == 'applying'
-    assert applying['preset'] == 'absurd'
-    assert applying['values'] == ABSURD
+    assert applying['values'] == fast
     rejected = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='confident'), 'controller'
+        node, AutonomyTuningIntent(values=dict(TUNING_REFERENCE)), 'controller'
     )
     assert not rejected.accepted
     assert 'already in progress' in rejected.reason
 
 
 def test_tuning_read_keeps_healthy_owner_values_when_one_owner_is_unavailable():
-    node = _tuning_node(TIMID)
+    node = _tuning_node(TUNING_REFERENCE)
     node._tuning_get_clients[NAVIGATOR_OWNER].service_is_ready = lambda: False
 
     RosStateNode._start_tuning_read(node)
@@ -986,13 +969,13 @@ def test_tuning_read_keeps_healthy_owner_values_when_one_owner_is_unavailable():
     assert state['status'] == 'unavailable'
     assert set(state['unavailable_fields']) == unavailable
     assert set(state['values']) == set(TUNING_PARAMETERS) - unavailable
-    assert state['values']['desired_linear_vel'] == TIMID['desired_linear_vel']
-    assert state['values']['output_max'] == TIMID['output_max']
+    assert state['values']['desired_linear_vel'] == TUNING_REFERENCE['desired_linear_vel']
+    assert state['values']['output_max'] == TUNING_REFERENCE['output_max']
     assert 'navigator parameter read service unavailable' in state['detail']
 
 
 def test_tuning_read_isolates_one_unavailable_field_within_an_owner():
-    node = _tuning_node(TIMID)
+    node = _tuning_node(TUNING_REFERENCE)
     missing_field = 'lookahead_time'
     missing_parameter = TUNING_PARAMETERS[missing_field].parameter_name
     node._tuning_get_clients[CONTROLLER_OWNER].state[missing_parameter] = None
@@ -1002,25 +985,21 @@ def test_tuning_read_isolates_one_unavailable_field_within_an_owner():
     state = node._cache.state_snapshot()['autonomy_tuning']
     assert state['unavailable_fields'] == [missing_field]
     assert set(state['values']) == set(TUNING_PARAMETERS) - {missing_field}
-    assert state['values']['desired_linear_vel'] == TIMID['desired_linear_vel']
-    assert state['values']['output_max'] == TIMID['output_max']
+    assert state['values']['desired_linear_vel'] == TUNING_REFERENCE['desired_linear_vel']
+    assert state['values']['output_max'] == TUNING_REFERENCE['output_max']
     assert f'{missing_field} is missing or is not double' in state['detail']
 
 
-def test_preflight_invalid_preset_does_not_modify_either_node(monkeypatch):
-    node = _tuning_node(TIMID)
+def test_preflight_invalid_custom_values_does_not_modify_either_node():
+    node = _tuning_node(TUNING_REFERENCE)
     controller_before = dict(
         node._tuning_set_clients[CONTROLLER_OWNER].state
     )
     adapter_before = dict(node._tuning_set_clients[ADAPTER_OWNER].state)
-    monkeypatch.setitem(
-        TUNING_PRESETS,
-        'insane',
-        {**INSANE, 'output_max': 0.31},
-    )
+    invalid = {**TUNING_REFERENCE, 'output_max': 0.31}
 
     result = RosStateNode._request_autonomy_tuning(
-        node, AutonomyTuningIntent(preset='insane'), 'controller'
+        node, AutonomyTuningIntent(values=invalid), 'controller'
     )
 
     assert not result.accepted
@@ -1030,11 +1009,9 @@ def test_preflight_invalid_preset_does_not_modify_either_node(monkeypatch):
     assert node._tuning_set_clients[ADAPTER_OWNER].state == adapter_before
     failure = node._cache.state_snapshot()['autonomy_tuning']
     assert failure['status'] == 'failed'
-    assert failure['requested_preset'] == 'insane'
     assert 'rejected before RPC' in failure['detail']
 
     RosStateNode._start_tuning_read(node)
     refreshed = node._cache.state_snapshot()['autonomy_tuning']
     assert refreshed['status'] == 'failed'
-    assert refreshed['requested_preset'] == 'insane'
-    assert refreshed['values'] == TIMID
+    assert refreshed['values'] == TUNING_REFERENCE

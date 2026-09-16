@@ -57,12 +57,10 @@ from runner_paddock.autonomy_tuning import (
     ABSOLUTE_BOUNDS as TUNING_ABSOLUTE_BOUNDS,
     ADAPTER_OWNER,
     CONTROLLER_OWNER,
-    matching_preset,
     NAVIGATOR_OWNER,
     PARAMETERS as TUNING_PARAMETERS,
-    PLANNER_OWNER,
     persist_override,
-    PRESETS as TUNING_PRESETS,
+    PLANNER_OWNER,
     validate_values as validate_tuning_values,
     values_for_owner,
 )
@@ -71,6 +69,7 @@ from runner_paddock.gateway import (
     ClearCostmapsIntent,
     ConfigRequestIntent,
     ControlEventIntent,
+    DeleteSpeedProfileIntent,
     GatewayResult,
     InitialPoseIntent,
     MapRequestIntent,
@@ -78,10 +77,13 @@ from runner_paddock.gateway import (
     ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
+    SaveSpeedProfileIntent,
 )
 from runner_paddock.grid_geometry import compose, normalized_yaw, PlanarPose
 from runner_paddock.protocol import ValidatedGridData
 from runner_paddock.qos_event_node import ExplicitQoSEventNode
+from runner_paddock.speed_profiles import delete_profile as delete_speed_profile
+from runner_paddock.speed_profiles import save_profile as save_speed_profile
 from runner_paddock.state_cache import StateCache
 from sensor_msgs.msg import BatteryState
 from tf2_ros import Buffer
@@ -419,11 +421,9 @@ class RosStateNode(ExplicitQoSEventNode):
         self._tuning_operation = None
         self._tuning_state = {
             'available': False,
-            'preset': 'custom',
             'values': {},
             'status': 'unavailable',
             'detail': 'waiting for live ROS parameter read-back',
-            'requested_preset': '',
             'request_id': 0,
         }
         tuning_nodes = {
@@ -1300,7 +1300,6 @@ class RosStateNode(ExplicitQoSEventNode):
                            if unavailable else '')
                     ),
                     'available': False,
-                    'preset': 'custom',
                     'values': values,
                     'unavailable_fields': unavailable,
                 })
@@ -1384,16 +1383,11 @@ class RosStateNode(ExplicitQoSEventNode):
                 unavailable = sorted(set(TUNING_PARAMETERS) - set(values))
                 self._tuning_state.update({
                     'available': False,
-                    'preset': 'custom',
                     'values': values,
                     'unavailable_fields': unavailable,
                     'status': 'failed' if verification else 'unavailable',
                     'detail': '; '.join(errors) + '; unavailable fields: '
                     + ', '.join(unavailable),
-                    'requested_preset': (
-                        '' if verification is None
-                        else verification['requested_preset']
-                    ),
                 })
             else:
                 matches_request = (
@@ -1423,25 +1417,14 @@ class RosStateNode(ExplicitQoSEventNode):
                     detail = '; '.join(problems)
                 self._tuning_state.update({
                     'available': True,
-                    'preset': matching_preset(values),
                     'values': values,
                     'unavailable_fields': [],
                     'status': status,
                     'detail': detail,
-                    'requested_preset': (
-                        self._tuning_state.get('requested_preset', '')
-                        if verification is None and failed_apply
-                        else (
-                            '' if verification is None or applied
-                            else verification['requested_preset']
-                        )
-                    ),
                 })
         self._publish_tuning_state()
 
-    def _record_tuning_preflight_failure(
-        self, requested_preset: str, detail: str
-    ) -> None:
+    def _record_tuning_preflight_failure(self, detail: str) -> None:
         """Expose a rejected apply without discarding the last live read-back."""
         with self._tuning_lock:
             if self._tuning_operation is not None:
@@ -1449,7 +1432,6 @@ class RosStateNode(ExplicitQoSEventNode):
             self._tuning_state.update({
                 'status': 'failed',
                 'detail': detail,
-                'requested_preset': requested_preset,
             })
         self._publish_tuning_state()
 
@@ -1457,24 +1439,13 @@ class RosStateNode(ExplicitQoSEventNode):
         self, intent: AutonomyTuningIntent, role: str
     ) -> GatewayResult:
         try:
-            requested = validate_tuning_values(
-                dict(TUNING_PRESETS[intent.preset])
-                if intent.preset else intent.values
-            )
+            requested = validate_tuning_values(intent.values)
         except (KeyError, TypeError, ValueError) as error:
-            label = intent.preset or 'custom'
             self._record_tuning_preflight_failure(
-                label, f'{label} tuning rejected before RPC: {error}'
+                f'tuning rejected before RPC: {error}'
             )
             return GatewayResult(False, str(error), (), role)
-        # A named speed preset (TIMID/CONFIDENT/INSANE/ABSURD) is speed
-        # policy only; GridBased.cost_penalty is independent planning
-        # preference and must never be reset by selecting one. A custom
-        # values apply (the shared tuning form, including the dedicated
-        # planner-preference control) still reaches every owner.
         write_owners = set(self._tuning_set_clients)
-        if intent.preset:
-            write_owners -= {PLANNER_OWNER}
         unavailable = [
             owner for owner in write_owners
             if not self._tuning_set_clients[owner].service_is_ready()
@@ -1484,9 +1455,7 @@ class RosStateNode(ExplicitQoSEventNode):
                 'atomic parameter service unavailable: '
                 + ', '.join(unavailable)
             )
-            self._record_tuning_preflight_failure(
-                intent.preset or 'custom', detail
-            )
+            self._record_tuning_preflight_failure(detail)
             return GatewayResult(
                 False, detail, (), role,
             )
@@ -1508,16 +1477,13 @@ class RosStateNode(ExplicitQoSEventNode):
                 'request_id': request_id,
                 'pending': owners,
                 'requested': requested,
-                'requested_preset': intent.preset or 'custom',
                 'errors': [],
                 'deadline': time.monotonic() + TUNING_REQUEST_TIMEOUT_SEC,
             }
             self._tuning_state.update({
                 'status': 'applying',
-                'detail': f'applying {intent.preset or "custom"} atomically',
+                'detail': 'applying tuning atomically',
                 'request_id': request_id,
-                'requested_preset': intent.preset or 'custom',
-                'preset': intent.preset or 'custom',
                 'values': requested,
                 'available': True,
                 'unavailable_fields': [],
@@ -1550,9 +1516,7 @@ class RosStateNode(ExplicitQoSEventNode):
                 self._finish_tuning_set(item, rid, done)
             )
         return GatewayResult(
-            True,
-            f'{intent.preset or "custom"} tuning accepted; awaiting read-back',
-            (), role,
+            True, 'tuning accepted; awaiting read-back', (), role,
         )
 
     def _finish_tuning_set(
@@ -1582,7 +1546,6 @@ class RosStateNode(ExplicitQoSEventNode):
         self._start_tuning_read({
             'requested': requested,
             'set_errors': errors,
-            'requested_preset': operation['requested_preset'],
         })
 
     # -- operator intent ---------------------------------------------------
@@ -1637,6 +1600,36 @@ class RosStateNode(ExplicitQoSEventNode):
                     else:
                         result = self._request_autonomy_tuning(
                             intent, result.role
+                        )
+                    break
+                if isinstance(intent, SaveSpeedProfileIntent):
+                    with self._tuning_lock:
+                        current_values = dict(self._tuning_state['values'])
+                    try:
+                        save_speed_profile(
+                            intent.name, intent.values, current_values,
+                        )
+                        result = GatewayResult(
+                            True, f'saved speed profile {intent.name}',
+                            (), result.role,
+                        )
+                    except (OSError, TypeError, ValueError) as error:
+                        result = GatewayResult(
+                            False, f'speed profile save failed: {error}',
+                            (), result.role,
+                        )
+                    break
+                if isinstance(intent, DeleteSpeedProfileIntent):
+                    try:
+                        delete_speed_profile(intent.name)
+                        result = GatewayResult(
+                            True, f'deleted speed profile {intent.name}',
+                            (), result.role,
+                        )
+                    except (KeyError, ValueError) as error:
+                        result = GatewayResult(
+                            False, f'speed profile delete failed: {error}',
+                            (), result.role,
                         )
                     break
                 if isinstance(intent, InitialPoseIntent):

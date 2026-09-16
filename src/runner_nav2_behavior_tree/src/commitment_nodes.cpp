@@ -37,7 +37,7 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
   const rcl_interfaces::srv::GetParameters::Response & response)
 {
   runner_path_speed_profile::ProfileConfig config;
-  if (response.values.size() != 18u || std::any_of(
+  if (response.values.size() != 16u || std::any_of(
       response.values.begin(), response.values.end(), [](const auto & value) {
         return value.type != rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
       }))
@@ -45,23 +45,21 @@ runner_path_speed_profile::ProfileConfig readSpeedPolicyParameters(
     return config;
   }
   config.minimum_traversal_speed = response.values[0].double_value;
-  config.constrained_speed_scaling = response.values[1].double_value;
-  config.tight_clearance = response.values[2].double_value;
-  config.open_clearance = response.values[3].double_value;
-  config.clearance_curve_family = response.values[4].double_value;
-  config.clearance_curve_shape = response.values[5].double_value;
-  config.approach_time_s = response.values[6].double_value;
-  config.curvature_window = response.values[7].double_value;
-  config.max_lateral_acceleration = response.values[8].double_value;
-  config.footprint_front = response.values[9].double_value;
-  config.footprint_rear = response.values[10].double_value;
-  config.footprint_half_width = response.values[11].double_value;
-  config.braking_linear = response.values[12].double_value;
-  config.braking_constant = response.values[13].double_value;
-  config.reaction_time_s = response.values[14].double_value;
-  config.recovery_acceleration_gain = response.values[15].double_value;
-  config.recovery_acceleration_floor = response.values[16].double_value;
-  config.scaling_reference_speed = response.values[17].double_value;
+  config.tight_clearance = response.values[1].double_value;
+  config.open_clearance = response.values[2].double_value;
+  config.clearance_curve_family = response.values[3].double_value;
+  config.clearance_curve_shape = response.values[4].double_value;
+  config.approach_time_s = response.values[5].double_value;
+  config.curvature_window = response.values[6].double_value;
+  config.max_lateral_acceleration = response.values[7].double_value;
+  config.footprint_front = response.values[8].double_value;
+  config.footprint_rear = response.values[9].double_value;
+  config.footprint_half_width = response.values[10].double_value;
+  config.braking_linear = response.values[11].double_value;
+  config.braking_constant = response.values[12].double_value;
+  config.reaction_time_s = response.values[13].double_value;
+  config.recovery_acceleration_gain = response.values[14].double_value;
+  config.recovery_acceleration_floor = response.values[15].double_value;
   return config;
 }
 
@@ -373,7 +371,7 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
   runner_path_speed_profile::ProfileConfig config;
   auto policy_request = std::make_shared<rcl_interfaces::srv::GetParameters::Request>();
   policy_request->names = {
-    "speed_policy.minimum_traversal_speed", "speed_policy.constrained_speed_scaling",
+    "speed_policy.minimum_traversal_speed",
     "speed_policy.tight_clearance", "speed_policy.open_clearance",
     "speed_policy.clearance_curve_family", "speed_policy.clearance_curve_shape",
     "speed_policy.approach_time_s",
@@ -383,8 +381,7 @@ BT::NodeStatus GeneratePathSpeedProfile::tick()
     "speed_policy.braking_linear", "speed_policy.braking_constant",
     "speed_policy.reaction_time_s",
     "speed_policy.recovery_acceleration_gain",
-    "speed_policy.recovery_acceleration_floor",
-    "speed_policy.scaling_reference_speed"};
+    "speed_policy.recovery_acceleration_floor"};
   auto policy_future = policy_parameter_client_->async_send_request(policy_request);
   if (rclcpp::spin_until_future_complete(node_, policy_future, server_timeout_) ==
     rclcpp::FutureReturnCode::SUCCESS)

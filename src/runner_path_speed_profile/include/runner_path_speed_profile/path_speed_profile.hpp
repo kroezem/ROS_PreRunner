@@ -18,12 +18,6 @@ namespace runner_path_speed_profile
 struct ProfileConfig
 {
   double minimum_traversal_speed{0.25};
-  double constrained_speed_scaling{0.20};
-  // The single authoritative reference ceiling constrained-speed scaling
-  // normalizes against (today, ABSURD's preset maximum). Explicit and
-  // tunable so a future change to that preset's ceiling cannot silently
-  // desynchronize this law from it.
-  double scaling_reference_speed{2.0};
   double tight_clearance{0.05};
   double open_clearance{0.70};
   // 0 = linear, 1 = power, 2 = smoothstep(power(x, shape)).
