@@ -29,6 +29,7 @@ from runner_paddock.gateway import (
     ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
+    SaveSemanticsIntent,
     SaveSpeedProfileIntent,
 )
 
@@ -285,6 +286,31 @@ def test_speed_profile_save_and_delete_are_lease_scoped_and_structured():
     }).accepted
     assert not gw.handle('observer', {
         'action': 'delete_speed_profile', 'name': 'Aggressive',
+    }).accepted
+
+
+def test_save_semantics_is_lease_scoped_and_structured():
+    gw = _gateway()
+    assert not gw.handle('observer', {
+        'action': 'save_semantics', 'name': 'studio', 'class_data': 'AAA=',
+    }).accepted
+    gw.handle('c1', {'action': 'acquire'})
+
+    save = gw.handle('c1', {
+        'action': 'save_semantics', 'name': 'studio', 'class_data': 'AAA=',
+    })
+    assert save.accepted
+    assert save.intents == (SaveSemanticsIntent(
+        name='studio', class_data_base64='AAA=',
+    ),)
+    assert not gw.handle('c1', {
+        'action': 'save_semantics', 'name': '  ', 'class_data': 'AAA=',
+    }).accepted
+    assert not gw.handle('c1', {
+        'action': 'save_semantics', 'name': 'studio', 'class_data': '',
+    }).accepted
+    assert not gw.handle('c1', {
+        'action': 'save_semantics', 'name': 'studio',
     }).accepted
 
 

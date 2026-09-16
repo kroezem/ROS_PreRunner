@@ -257,6 +257,12 @@ def validate_bundle(map_dir: Path, map_id: str) -> BundleInfo:
                     raise MapError(
                         f'{map_id}: manifest names an invalid artifact filename'
                     )
+                if filename not in CORE_FILENAMES:
+                    # Optional artifacts (semantics.png) are hashed for their
+                    # own integrity checking (see runner_paddock.semantics)
+                    # but never gate core-bundle completeness: a corrupt
+                    # optional layer must not invalidate the occupancy map.
+                    continue
                 path = base / filename
                 if not path.is_file() or _sha256(path) != digest:
                     raise MapError(

@@ -32,10 +32,15 @@ from fastapi.staticfiles import StaticFiles
 from runner_paddock.client_stream import ClientHub
 from runner_paddock.client_stream import StateStreamer
 from runner_paddock.client_stream import VISUALIZATION_KINDS
+from runner_paddock.map_session import MapError
+from runner_paddock.map_session import validate_bundle
 from runner_paddock.protocol import encode_message
 from runner_paddock.recording import DEFAULT_RECORDING_DIRECTORY
 from runner_paddock.recording import resolve_finalized_mcap
 from runner_paddock.ros_runtime import RosRuntime
+from runner_paddock.semantics import read_semantics
+from runner_paddock.semantics import semantics_path
+from runner_paddock.semantics import SemanticsError
 from runner_paddock.speed_profiles import list_profiles as list_speed_profiles
 from runner_paddock.speed_profiles import load_profile as load_speed_profile
 from runner_paddock.speed_profiles import PROFILES_PATH as DEFAULT_SPEED_PROFILES_PATH
@@ -44,12 +49,14 @@ import uvicorn
 
 
 STATIC_DIRECTORY = Path(str(files('runner_paddock.static')))
+DEFAULT_MAP_DIRECTORY = '/home/matti/runner_ws/maps'
 
 
 def create_app(
     *, cache: StateCache | None = None, runtime: RosRuntime | None = None,
     recording_root: Path | None = None,
     speed_profiles_path: Path | None = None,
+    map_root: Path | None = None,
 ) -> FastAPI:
     """Build one web application around an injectable ROS lifecycle."""
     state_cache = cache if cache is not None else StateCache()
@@ -67,6 +74,11 @@ def create_app(
         speed_profiles_path
         if speed_profiles_path is not None else DEFAULT_SPEED_PROFILES_PATH
     )
+    map_directory = (
+        map_root
+        if map_root is not None
+        else Path(os.environ.get('PADDOCK_MAP_DIRECTORY', DEFAULT_MAP_DIRECTORY))
+    ).resolve()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -136,6 +148,36 @@ def create_app(
             media_type='application/octet-stream',
             filename=mcap.name,
         )
+
+    @app.get('/maps/{name}/semantics.png', include_in_schema=False)
+    async def download_semantics(name: str) -> FileResponse:
+        """
+        Serve one map's semantic raster, validated before it is served.
+
+        404 when the map or its semantic layer does not exist -- the
+        browser's response is to synthesize an all-UNCLASSIFIED layer, per
+        the storage contract: missing semantics is not an error. 422 when
+        the file exists but is corrupt, wrong-sized, or contains an
+        unsupported value -- that must be reported, never silently served
+        as if it applied.
+        """
+        try:
+            info = validate_bundle(map_directory, name)
+        except MapError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        path = semantics_path(map_directory, name)
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404, detail='no semantic layer saved for this map',
+            )
+        try:
+            read_semantics(
+                map_directory, name,
+                expected_width=info.width, expected_height=info.height,
+            )
+        except SemanticsError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return FileResponse(path, media_type='image/png')
 
     @app.get('/speed_profiles', include_in_schema=False)
     async def list_speed_profiles_endpoint() -> list[dict]:

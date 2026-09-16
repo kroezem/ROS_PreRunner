@@ -107,6 +107,18 @@ class MapRequestIntent:
 
 
 @dataclass(frozen=True)
+class SaveSemanticsIntent:
+    """
+    One semantic-raster save, applied as ordinary file I/O -- never a ROS
+    message. ``class_data_base64`` is a base64-encoded raw class buffer,
+    one byte per cell, row-major with row 0 = the grid origin.
+    """
+
+    name: str
+    class_data_base64: str
+
+
+@dataclass(frozen=True)
 class ConfigRequestIntent:
     """One revision-checked supported operational configuration request."""
 
@@ -621,6 +633,23 @@ class OperatorGateway:
         return GatewayResult(
             True, f'DELETE MAP {name} requested',
             (MapRequestIntent(MAP_OP_DELETE_MAP, self._lease_id, name=name),),
+            'controller',
+        )
+
+    def _do_save_semantics(self, conn_id: str, action: dict) -> GatewayResult:
+        """Validate one semantic-raster save; ordinary file I/O, not SLAM/Nav2."""
+        owned = self._require_owner(conn_id)
+        if owned is not None:
+            return owned
+        name = str(action.get('name', '')).strip()
+        if not name:
+            return self._reject(conn_id, 'save requires a map basename')
+        class_data = action.get('class_data')
+        if not isinstance(class_data, str) or not class_data:
+            return self._reject(conn_id, 'save requires base64 class data')
+        return GatewayResult(
+            True, f'SAVE SEMANTICS {name} requested',
+            (SaveSemanticsIntent(name=name, class_data_base64=class_data),),
             'controller',
         )
 

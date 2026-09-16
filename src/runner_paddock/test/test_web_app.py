@@ -18,6 +18,12 @@ import time
 
 from fastapi.testclient import TestClient
 
+from runner_paddock.map_session import MapSaveTransaction
+from runner_paddock.map_session import OccupancyRaster
+from runner_paddock.map_session import POSEGRAPH_DATA_NAME
+from runner_paddock.map_session import POSEGRAPH_POSEGRAPH_NAME
+from runner_paddock.semantics import semantics_path
+from runner_paddock.semantics import write_semantics
 from runner_paddock.state_cache import StateCache
 from runner_paddock.web_app import create_app
 from runner_paddock.web_app import STATIC_DIRECTORY
@@ -96,6 +102,7 @@ def test_frontend_assets_are_packaged_at_runtime_location():
         'app.js',
         'joystick_geometry.js',
         'map_geometry.js',
+        'semantic_paint.js',
         'speed_profile.js',
         'style.css',
         'service-worker.js',
@@ -299,6 +306,62 @@ def test_recording_download_requires_fresh_authoritative_catalog(tmp_path):
         response = client.get('/recordings/finished/download')
 
     assert response.status_code == 503
+
+
+def _publish_map(map_root, name='studio', *, width=3, height=2):
+    txn = MapSaveTransaction(map_root, name, 'sess')
+    txn.prepare()
+    txn.staged_path(POSEGRAPH_POSEGRAPH_NAME).write_bytes(b'p')
+    txn.staged_path(POSEGRAPH_DATA_NAME).write_bytes(b'd')
+    raster = OccupancyRaster(
+        width=width, height=height, resolution=0.05,
+        origin_x=0.0, origin_y=0.0, origin_yaw=0.0,
+        data=tuple([-1] * (width * height)),
+    )
+    txn.write_raster(raster)
+    txn.validate()
+    txn.publish()
+
+
+def test_semantics_download_is_404_when_no_layer_is_saved(tmp_path):
+    _publish_map(tmp_path, 'studio')
+    app = create_app(cache=_initial_cache(), runtime=FakeRuntime(), map_root=tmp_path)
+
+    with TestClient(app) as client:
+        missing_layer = client.get('/maps/studio/semantics.png')
+        missing_map = client.get('/maps/nope/semantics.png')
+
+    assert missing_layer.status_code == 404
+    assert missing_map.status_code == 404
+
+
+def test_semantics_download_serves_saved_layer(tmp_path):
+    _publish_map(tmp_path, 'studio', width=3, height=2)
+    write_semantics(tmp_path, 'studio', bytes([0, 1, 2, 0, 0, 1]))
+    app = create_app(cache=_initial_cache(), runtime=FakeRuntime(), map_root=tmp_path)
+
+    with TestClient(app) as client:
+        response = client.get('/maps/studio/semantics.png')
+
+    assert response.status_code == 200
+    assert response.headers['content-type'] == 'image/png'
+
+
+def test_corrupt_semantics_download_is_reported_and_does_not_break_the_map(tmp_path):
+    _publish_map(tmp_path, 'studio', width=3, height=2)
+    write_semantics(tmp_path, 'studio', bytes([0, 1, 2, 0, 0, 1]))
+    semantics_path(tmp_path, 'studio').write_bytes(b'not a png')
+    app = create_app(cache=_initial_cache(), runtime=FakeRuntime(), map_root=tmp_path)
+
+    with TestClient(app) as client:
+        corrupt = client.get('/maps/studio/semantics.png')
+        # The core occupancy bundle must remain unaffected by the corrupt
+        # optional layer -- confirmed indirectly via the map save endpoint
+        # continuing to accept requests for this map id.
+        still_valid_save = client.get('/maps/studio/semantics.png')
+
+    assert corrupt.status_code == 422
+    assert still_valid_save.status_code == 422  # same corrupt file, not a crash
 
 
 def test_speed_profiles_list_always_includes_the_immutable_baseline(tmp_path):

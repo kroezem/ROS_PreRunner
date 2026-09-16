@@ -38,6 +38,7 @@ const mappingCamera = window.PaddockMappingCamera;
 const joystickGeometry = window.PaddockJoystickGeometry;
 const mapViewportStorage = window.PaddockMapViewportStorage;
 const routeVisualization = window.PaddockRouteVisualization;
+const semanticPaint = window.PaddockSemanticPaint;
 const mapView = { x: 0, y: 0, scale: 50, rotation: 0, fitted: false };
 const mappingView = { scale: 50 };
 let mapViewIdentity = null;
@@ -45,6 +46,7 @@ const mapLayers = {
   map: { grid: null, raster: null },
   global_costmap: { grid: null, raster: null },
   local_costmap: { grid: null, raster: null },
+  semantics: { grid: null, raster: null },
 };
 const LAYER_STORAGE_KEY = "runner-paddock-map-layers-v1";
 const LAYER_DEFAULTS = {
@@ -54,10 +56,37 @@ const LAYER_DEFAULTS = {
   plan: { visible: true },
   robot: { visible: true, color: "#00b4d8" },
   goal: { visible: true, color: "#90e0ef" },
+  semantics: { visible: true, opacity: 0.55 },
 };
 const layerSettings = loadLayerSettings();
 let mapMode = "view";
 let mapDrag = null;
+
+// --- semantic layer (storage/UI only; never read by SLAM/Nav2/autonomy) --
+const SEMANTIC_CLASS = { UNCLASSIFIED: 0, CAUTION: 1, LETHAL: 2 };
+const SEMANTIC_TOOL_VALUES = {
+  unclassified: SEMANTIC_CLASS.UNCLASSIFIED,
+  caution: SEMANTIC_CLASS.CAUTION,
+  lethal: SEMANTIC_CLASS.LETHAL,
+  eraser: SEMANTIC_CLASS.UNCLASSIFIED,
+};
+const SEMANTIC_CLASS_COLORS = {
+  [SEMANTIC_CLASS.CAUTION]: [244, 163, 0],
+  [SEMANTIC_CLASS.LETHAL]: [215, 38, 61],
+};
+const SEMANTIC_UNDO_LIMIT = 50;
+let semanticsData = null; // Uint8Array, grid row-major (row 0 = origin), or null
+let semanticsDataWidth = 0;
+let semanticsDataHeight = 0;
+let semanticsBaseline = null; // last fetched/saved snapshot, for Revert
+let semanticsLoadedForMap = undefined; // map identity the buffer above belongs to
+let semanticsLoadWarning = "";
+let semanticsDirty = false;
+let semanticsSaving = false;
+let paintTool = "caution";
+let brushRadiusMeters = 0.3;
+let paintStroke = null; // { pointerId, edits: Map<index, previousValue> }
+let paintUndoStack = [];
 const goalInteraction = {
   dragging: false,
   pointerId: null,
@@ -221,6 +250,14 @@ function connect() {
       if (frame.name === "delete_speed_profile") {
         text("profile-catalog-result", `DELETE: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
         if (frame.accepted) refreshSpeedProfileCatalog();
+      }
+      if (frame.name === "save_semantics") {
+        semanticsSaving = false;
+        if (frame.accepted && semanticsData) {
+          semanticsBaseline = semanticsData.slice();
+          semanticsDirty = false;
+        }
+        renderSemanticsControls();
       }
       ack(`${frame.name || "action"}: ${frame.accepted ? "ok" : "REJECTED"} — ${frame.reason}`);
       render();
@@ -520,6 +557,8 @@ function render() {
     : "No delete operation this boot");
   text("map-count", String((mapState.catalog || []).length));
   renderCatalog(mapState.catalog || [], mapState.selected_map_applied);
+  loadSemanticsForSelectedMap();
+  renderSemanticsControls();
 
   text("a-map", mode.active_autonomy_map || "(none)");
   text("a-mission", `${MISSION[nav.state] ?? "—"}${nav.mission_valid ? " · valid" : ""} · rev ${nav.mission_revision ?? 0}`);
@@ -869,6 +908,245 @@ function makeGridRaster(grid, kind) {
   return raster;
 }
 
+function makeSemanticsRaster(grid) {
+  if (!grid || grid.width <= 0 || grid.height <= 0 || grid.data.length !== grid.width * grid.height) return null;
+  const raster = document.createElement("canvas");
+  raster.width = grid.width;
+  raster.height = grid.height;
+  const context = raster.getContext("2d");
+  const image = context.createImageData(grid.width, grid.height);
+  for (let gy = 0; gy < grid.height; gy += 1) {
+    const canvasY = grid.height - 1 - gy;
+    for (let gx = 0; gx < grid.width; gx += 1) {
+      const value = grid.data[gy * grid.width + gx];
+      const offset = (canvasY * grid.width + gx) * 4;
+      const color = SEMANTIC_CLASS_COLORS[value];
+      if (!color) image.data.set([0, 0, 0, 0], offset);
+      else image.data.set([...color, 255], offset);
+    }
+  }
+  context.putImageData(image, 0, 0);
+  return raster;
+}
+
+// Rebuild the display/paint-ready semantics grid from the raw class buffer
+// plus whatever the live occupancy grid currently says about resolution and
+// origin -- those are never stored redundantly, only ever taken fresh from
+// the live grid, so there is exactly one source of truth for them.
+function syncSemanticsGrid() {
+  const liveGrid = mapLayers.map.grid;
+  if (
+    !semanticsData || !liveGrid ||
+    liveGrid.width !== semanticsDataWidth || liveGrid.height !== semanticsDataHeight
+  ) {
+    mapLayers.semantics.grid = null;
+    return;
+  }
+  mapLayers.semantics.grid = {
+    width: semanticsDataWidth,
+    height: semanticsDataHeight,
+    resolution: liveGrid.resolution,
+    origin: liveGrid.origin,
+    data: semanticsData,
+  };
+}
+
+function persistedMapDimensions() {
+  const name = selectedMapIdentity();
+  if (!name) return null;
+  const catalog = ((latest.map_state || {}).catalog) || [];
+  const entry = catalog.find((item) => item.name === name && item.complete);
+  return entry ? { width: entry.width, height: entry.height } : null;
+}
+
+function semanticsDimensionsAvailable() {
+  const liveGrid = mapLayers.map.grid;
+  const persisted = persistedMapDimensions();
+  return Boolean(liveGrid && persisted &&
+    liveGrid.width === persisted.width && liveGrid.height === persisted.height);
+}
+
+function refreshSemanticsRaster() {
+  mapLayers.semantics.raster = makeSemanticsRaster(mapLayers.semantics.grid);
+}
+
+function semanticsEqualsBaseline() {
+  if (!semanticsData || !semanticsBaseline || semanticsData.length !== semanticsBaseline.length) {
+    return semanticsData === semanticsBaseline;
+  }
+  for (let i = 0; i < semanticsData.length; i += 1) {
+    if (semanticsData[i] !== semanticsBaseline[i]) return false;
+  }
+  return true;
+}
+
+function updateSemanticsDirty() {
+  semanticsDirty = !semanticsEqualsBaseline();
+}
+
+async function decodeSemanticsPng(blob, width, height) {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  context.drawImage(bitmap, 0, 0);
+  const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+  if (bitmap.width !== width || bitmap.height !== height) {
+    throw new Error(
+      `semantics.png is ${bitmap.width}x${bitmap.height}, occupancy raster is ${width}x${height}`,
+    );
+  }
+  // Every pixel channel is identical for an 8-bit grayscale PNG, so the red
+  // channel is the class value; flipRows converts image order (row 0 = top)
+  // to grid order (row 0 = origin/bottom), the same flip the backend uses.
+  const imageOrder = new Uint8Array(width * height);
+  for (let i = 0; i < imageOrder.length; i += 1) {
+    imageOrder[i] = image.data[i * 4];
+  }
+  return semanticPaint.flipRows(imageOrder, width, height);
+}
+
+async function loadSemanticsForSelectedMap() {
+  const name = selectedMapIdentity();
+  if (name === semanticsLoadedForMap) return;
+  const dims = persistedMapDimensions() ||
+    (mapLayers.map.grid ? { width: mapLayers.map.grid.width, height: mapLayers.map.grid.height } : null);
+  if (!name || !dims) {
+    // Nothing selected yet, or dimensions aren't known yet (catalog/grid not
+    // arrived); try again on the next render rather than guessing a size.
+    if (!name) {
+      semanticsLoadedForMap = name;
+      semanticsData = null;
+      semanticsBaseline = null;
+      semanticsDataWidth = 0;
+      semanticsDataHeight = 0;
+      semanticsLoadWarning = "";
+      paintUndoStack = [];
+      semanticsDirty = false;
+      syncSemanticsGrid();
+      refreshSemanticsRaster();
+    }
+    return;
+  }
+  semanticsLoadedForMap = name;
+  semanticsLoadWarning = "";
+  let data = null;
+  try {
+    const response = await fetch(`/maps/${encodeURIComponent(name)}/semantics.png`);
+    if (response.status === 404) {
+      data = new Uint8Array(dims.width * dims.height);
+    } else if (response.ok) {
+      data = await decodeSemanticsPng(await response.blob(), dims.width, dims.height);
+    } else {
+      const body = await response.json().catch(() => ({}));
+      semanticsLoadWarning =
+        `existing semantic data could not be loaded (${body.detail || response.status}); showing an empty layer`;
+      data = new Uint8Array(dims.width * dims.height);
+    }
+  } catch (error) {
+    semanticsLoadWarning = `could not fetch semantic data: ${error}`;
+    data = new Uint8Array(dims.width * dims.height);
+  }
+  if (name !== selectedMapIdentity()) return; // selection moved on while awaiting
+  semanticsData = data;
+  semanticsDataWidth = dims.width;
+  semanticsDataHeight = dims.height;
+  semanticsBaseline = data.slice();
+  paintUndoStack = [];
+  semanticsDirty = false;
+  syncSemanticsGrid();
+  refreshSemanticsRaster();
+  renderMap();
+}
+
+// Brush radius is always meters/resolution -> grid cells, never a screen
+// pixel distance, so zoom/pan/rotation never change the physical brush size.
+function paintDiskAt(worldX, worldY) {
+  const grid = mapLayers.semantics.grid;
+  if (!grid || !paintStroke) return;
+  const cell = mapGeometry.worldToGrid(grid, worldX, worldY);
+  const radiusCells = Math.max(0, brushRadiusMeters / grid.resolution);
+  const value = SEMANTIC_TOOL_VALUES[paintTool] ?? SEMANTIC_CLASS.UNCLASSIFIED;
+  semanticPaint.paintDisk(
+    grid.data, grid.width, grid.height, cell.x, cell.y, radiusCells, value,
+    paintStroke.edits,
+  );
+}
+
+function paintSegment(fromWorld, toWorld) {
+  const grid = mapLayers.semantics.grid;
+  if (!grid) return;
+  const step = Math.max(grid.resolution * 0.5, 0.01);
+  for (const point of semanticPaint.segmentSteps(fromWorld, toWorld, step)) {
+    paintDiskAt(point.x, point.y);
+  }
+}
+
+function beginPaintStroke(pointerId, worldPoint) {
+  paintStroke = { pointerId, edits: new Map(), last: worldPoint };
+  paintDiskAt(worldPoint.x, worldPoint.y);
+  refreshSemanticsRaster();
+}
+
+function continuePaintStroke(worldPoint) {
+  if (!paintStroke) return;
+  paintSegment(paintStroke.last, worldPoint);
+  paintStroke.last = worldPoint;
+  refreshSemanticsRaster();
+}
+
+function endPaintStroke() {
+  if (!paintStroke) return;
+  if (paintStroke.edits.size) {
+    paintUndoStack.push(paintStroke.edits);
+    while (paintUndoStack.length > SEMANTIC_UNDO_LIMIT) paintUndoStack.shift();
+    updateSemanticsDirty();
+  }
+  paintStroke = null;
+}
+
+function undoSemanticsStroke() {
+  const grid = mapLayers.semantics.grid;
+  if (!paintUndoStack.length || !grid) return;
+  const stroke = paintUndoStack.pop();
+  semanticPaint.applyUndo(grid.data, stroke);
+  refreshSemanticsRaster();
+  updateSemanticsDirty();
+  renderMap();
+}
+
+function revertSemantics() {
+  if (!semanticsBaseline) return;
+  semanticsData = semanticsBaseline.slice();
+  paintUndoStack = [];
+  semanticsDirty = false;
+  syncSemanticsGrid();
+  refreshSemanticsRaster();
+  renderMap();
+}
+
+function base64FromBytes(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return window.btoa(binary);
+}
+
+function saveSemantics() {
+  const name = selectedMapIdentity();
+  if (!name || !semanticsData || semanticsSaving || !semanticsDimensionsAvailable()) return;
+  semanticsSaving = true;
+  renderSemanticsControls();
+  send({
+    action: "save_semantics",
+    name,
+    class_data: base64FromBytes(semanticsData),
+  });
+}
+
 function screenFromWorld(x, y) {
   return mapGeometry.worldToScreen(activeMapView(), mapCanvas.width, mapCanvas.height, x, y);
 }
@@ -1024,6 +1302,7 @@ function drawPlan() {
 }
 
 function renderMap() {
+  syncSemanticsGrid();
   const view = activeMapView();
   mapCanvas.dataset.view = JSON.stringify({
     x: view.x, y: view.y, scale: view.scale,
@@ -1032,6 +1311,7 @@ function renderMap() {
   mapContext.setTransform(1, 0, 0, 1, 0, 0);
   mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
   if (layerSettings.map.visible) drawGridLayer("map");
+  if (layerSettings.semantics.visible) drawGridLayer("semantics");
   const sources = ((latest.health || {}).sources || {});
   const globalFresh = !sources.global_costmap || sources.global_costmap.fresh;
   const localFresh = !sources.local_costmap || sources.local_costmap.fresh;
@@ -1098,6 +1378,7 @@ function updateLayerStatuses(sources, auth) {
     goal: layerSourceStatus(
       sources.command_authority, Boolean(auth.autonomy_goal_selected),
     ),
+    semantics: mapLayers.semantics.grid ? "available" : "unavailable",
   };
   Object.entries(statuses).forEach(([kind, status]) => {
     const element = $(`layer-status-${kind}`);
@@ -1205,6 +1486,9 @@ function setMapMode(mode) {
     initialPoseInteraction.preview = null;
     initialPoseInteraction.awaiting = false;
   }
+  if (mode !== "paint" && paintStroke) {
+    endPaintStroke();
+  }
   mapCanvas.className = `mode-${mode}`;
   document.querySelectorAll("[data-map-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.mapMode === mode);
@@ -1236,6 +1520,13 @@ function pointIsInsideGlobalMap(point) {
 mapCanvas.addEventListener("pointerdown", (event) => {
   if (mappingFollowActive()) return;
   if (mapMode === "view") return;
+  if (mapMode === "paint") {
+    if (role !== "controller" || !mapLayers.semantics.grid) return;
+    mapCanvas.setPointerCapture(event.pointerId);
+    beginPaintStroke(event.pointerId, pointerWorld(event));
+    renderMap();
+    return;
+  }
   if (mapMode === "goal" || mapMode === "initial-pose") {
     const point = pointerWorld(event);
     if (!pointIsInsideGlobalMap(point)) {
@@ -1261,6 +1552,11 @@ mapCanvas.addEventListener("pointerdown", (event) => {
 });
 
 mapCanvas.addEventListener("pointermove", (event) => {
+  if (paintStroke && paintStroke.pointerId === event.pointerId) {
+    continuePaintStroke(pointerWorld(event));
+    renderMap();
+    return;
+  }
   const poseInteraction = goalInteraction.dragging
     ? goalInteraction : initialPoseInteraction.dragging
       ? initialPoseInteraction : null;
@@ -1293,6 +1589,12 @@ mapCanvas.addEventListener("pointermove", (event) => {
 });
 
 function endMapDrag(event) {
+  if (paintStroke && paintStroke.pointerId === event.pointerId) {
+    endPaintStroke();
+    renderSemanticsControls();
+    renderMap();
+    return;
+  }
   const poseInteraction = goalInteraction.dragging
     ? goalInteraction : initialPoseInteraction.dragging
       ? initialPoseInteraction : null;
@@ -1340,6 +1642,54 @@ $("btn-confirm-initial-pose").addEventListener("click", () => {
   });
   renderInitialPoseControls();
 });
+
+// --- semantic layer UI ---------------------------------------------------
+
+function renderSemanticsControls() {
+  const controller = role === "controller";
+  const dimsMatch = semanticsDimensionsAvailable();
+  const canPaint = controller && dimsMatch && Boolean(semanticsData);
+
+  const editButton = $("btn-edit-semantics-mode");
+  if (editButton) editButton.disabled = !controller || !dimsMatch;
+  document.querySelectorAll("[data-semantic-tool]").forEach((button) => {
+    button.disabled = !canPaint;
+    button.classList.toggle("active", button.dataset.semanticTool === paintTool);
+  });
+  const undoButton = $("btn-semantics-undo");
+  if (undoButton) undoButton.disabled = !controller || paintUndoStack.length === 0;
+  const revertButton = $("btn-semantics-revert");
+  if (revertButton) revertButton.disabled = !controller || !semanticsDirty;
+  const saveButton = $("btn-semantics-save");
+  if (saveButton) {
+    saveButton.disabled = !canPaint || !semanticsDirty || semanticsSaving;
+  }
+
+  const statusElement = $("semantics-status");
+  if (!statusElement) return;
+  let status;
+  let state = "ok";
+  if (!selectedMapIdentity()) {
+    status = "select a map to edit its semantic layer";
+    state = "unavailable";
+  } else if (!dimsMatch) {
+    status = "live map and saved map dimensions do not match — semantic editing disabled";
+    state = "warning";
+  } else if (semanticsLoadWarning) {
+    status = semanticsLoadWarning;
+    state = "warning";
+  } else if (semanticsSaving) {
+    status = "saving semantic layer…";
+    state = "busy";
+  } else if (semanticsDirty) {
+    status = "unsaved semantic edits";
+    state = "dirty";
+  } else {
+    status = "semantic layer up to date";
+  }
+  statusElement.textContent = status;
+  statusElement.dataset.state = state;
+}
 
 // --- maps ---------------------------------------------------------------
 
@@ -1580,6 +1930,22 @@ function toggleRecording() {
 $("btn-record").addEventListener("click", toggleRecording);
 $("btn-new-map").addEventListener("click", () => send({ action: "new_map" }));
 $("btn-save-map").addEventListener("click", () => send({ action: "save_map", name: $("save-name").value.trim() }));
+document.querySelectorAll("[data-semantic-tool]").forEach((button) => {
+  button.addEventListener("click", () => {
+    paintTool = button.dataset.semanticTool;
+    renderSemanticsControls();
+  });
+});
+$("semantics-brush-radius").addEventListener("input", (event) => {
+  const value = Number(event.target.value);
+  if (Number.isFinite(value) && value > 0) brushRadiusMeters = value;
+});
+$("btn-semantics-undo").addEventListener("click", () => undoSemanticsStroke());
+$("btn-semantics-revert").addEventListener("click", () => {
+  revertSemantics();
+  renderSemanticsControls();
+});
+$("btn-semantics-save").addEventListener("click", () => saveSemantics());
 $("btn-select-goal").addEventListener("click", () => send({
   action: "select_goal",
   x: Number($("goal-x").value),
@@ -1747,6 +2113,8 @@ healthDetails.addEventListener("toggle", healthDebugRender);
 debugDetails.addEventListener("toggle", debugRender);
 window.setInterval(debugRender, 500);
 initializeLayerControls();
+$("semantics-brush-radius").value = String(brushRadiusMeters);
+renderSemanticsControls();
 window.PaddockSpeedProfile.initialize();
 setMapMode("view");
 connect();

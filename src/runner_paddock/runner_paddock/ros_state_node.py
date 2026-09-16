@@ -14,7 +14,11 @@
 
 """Paddock gateway ROS node: reads state topics, writes operator intent."""
 
+import base64
+import binascii
 import math
+import os
+import pathlib
 import struct
 import threading
 import time
@@ -77,11 +81,14 @@ from runner_paddock.gateway import (
     ObstacleProcessingIntent,
     OperatorGateway,
     RecordingRequestIntent,
+    SaveSemanticsIntent,
     SaveSpeedProfileIntent,
 )
 from runner_paddock.grid_geometry import compose, normalized_yaw, PlanarPose
+from runner_paddock.map_session import MapError
 from runner_paddock.protocol import ValidatedGridData
 from runner_paddock.qos_event_node import ExplicitQoSEventNode
+from runner_paddock.semantics import write_semantics
 from runner_paddock.speed_profiles import delete_profile as delete_speed_profile
 from runner_paddock.speed_profiles import save_profile as save_speed_profile
 from runner_paddock.state_cache import StateCache
@@ -124,6 +131,12 @@ INITIAL_POSE_TOPIC = '/initialpose'
 SYSTEM_TELEMETRY_TOPIC = '/system/telemetry'
 BATTERY_TOPIC = '/battery'
 MAP_FRAME = 'map'
+# Semantic-raster file I/O is ordinary Paddock storage, not a ROS concern; it
+# reuses the same map root the map executor publishes into, read from the
+# same environment variable, but never subscribes to /map or any map topic.
+MAP_DIRECTORY = pathlib.Path(os.environ.get(
+    'PADDOCK_MAP_DIRECTORY', '/home/matti/runner_ws/maps'
+))
 ROBOT_FRAME = 'base_link'
 INITIAL_POSE_CONFIRM_TIMEOUT_SEC = 5.0
 INITIAL_POSE_STOP_TIMEOUT_SEC = 5.0
@@ -1635,6 +1648,9 @@ class RosStateNode(ExplicitQoSEventNode):
                 if isinstance(intent, InitialPoseIntent):
                     result = self._set_initial_pose(intent, result.role)
                     break
+                if isinstance(intent, SaveSemanticsIntent):
+                    result = self._save_semantics(intent, result.role)
+                    break
                 self._publish_intent(intent)
             self._publish_gateway_state()
         if not result.accepted:
@@ -1966,6 +1982,39 @@ class RosStateNode(ExplicitQoSEventNode):
             'detail': detail,
             'observed': observed,
         })
+
+    def _save_semantics(
+        self, intent: SaveSemanticsIntent, role: str
+    ) -> GatewayResult:
+        """
+        Persist one semantic raster: ordinary file I/O, no ROS involved.
+
+        Storage/visualization only -- this never touches /map, any costmap,
+        TF, or autonomy. Base64-decodes the browser's raw class buffer
+        (row-major, row 0 = origin) and hands it to
+        ``runner_paddock.semantics.write_semantics``, which re-validates
+        dimensions against the map's current occupancy raster on disk before
+        writing anything, so a stale or mismatched save is rejected rather
+        than silently applied.
+        """
+        try:
+            class_data = base64.b64decode(
+                intent.class_data_base64, validate=True
+            )
+        except (binascii.Error, ValueError) as error:
+            return GatewayResult(
+                False, f'semantics save failed: invalid class data ({error})',
+                (), role,
+            )
+        try:
+            write_semantics(MAP_DIRECTORY, intent.name, class_data)
+        except (MapError, OSError) as error:
+            return GatewayResult(
+                False, f'semantics save failed: {error}', (), role,
+            )
+        return GatewayResult(
+            True, f'saved semantics for {intent.name}', (), role,
+        )
 
     def _clear_costmaps(self, result: GatewayResult) -> GatewayResult:
         """Call both authoritative Nav2 clear services and await their replies."""
