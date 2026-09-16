@@ -15,10 +15,25 @@
 """
 ROS-independent mapping-session model, map catalog, and save transaction.
 
-This module owns every decision that does not need ROS: safe names, complete-
+This module owns every decision that does not need ROS: safe map ids, complete-
 bundle validation, occupancy-raster writing/plausibility, manifest hashing, the
 staging -> publish transaction, and the mapping-session lifecycle. The ROS node
 supplies clocks, SLAM service calls, and the latest ``/map`` grid.
+
+Storage layout: one directory per map, named by its map id, containing a fixed
+set of canonical filenames::
+
+    maps/<map_id>/
+      map.yaml
+      occupancy.pgm
+      posegraph.posegraph
+      posegraph.data
+      semantics.png        (optional; owned by runner_paddock.semantics)
+      manifest.json
+
+The directory name is the map's sole identity. ``map.yaml``'s ``image:`` field
+is written to reference ``occupancy.pgm`` relatively; every reader resolves it
+relative to ``map.yaml``'s own directory rather than assuming the filename.
 """
 
 from dataclasses import dataclass, field
@@ -36,9 +51,24 @@ from typing import Optional
 import yaml
 
 
-# Core artifacts of a complete slam_toolbox localization bundle.
-CORE_EXTENSIONS = ('posegraph', 'data', 'yaml', 'pgm')
-MANIFEST_SUFFIX = '.manifest.json'
+# Canonical fixed filenames inside one map directory.
+MAP_YAML_NAME = 'map.yaml'
+OCCUPANCY_NAME = 'occupancy.pgm'
+# slam_toolbox's SerializePoseGraph appends '.posegraph'/'.data' to whatever
+# stem it is given; this stem is not required to match the map id.
+POSEGRAPH_STEM = 'posegraph'
+POSEGRAPH_POSEGRAPH_NAME = f'{POSEGRAPH_STEM}.posegraph'
+POSEGRAPH_DATA_NAME = f'{POSEGRAPH_STEM}.data'
+SEMANTICS_NAME = 'semantics.png'
+MANIFEST_NAME = 'manifest.json'
+
+# Required for a bundle to be considered complete/selectable.
+CORE_FILENAMES = (
+    MAP_YAML_NAME, OCCUPANCY_NAME, POSEGRAPH_POSEGRAPH_NAME, POSEGRAPH_DATA_NAME,
+)
+# Every filename the manifest may hash, core plus optional.
+CANONICAL_FILENAMES = CORE_FILENAMES + (SEMANTICS_NAME,)
+
 STAGING_DIRNAME = '.staging'
 MAP_BASENAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 MAX_BASENAME_LEN = 64
@@ -73,23 +103,28 @@ class DeleteState(IntEnum):
 
 
 class MapError(ValueError):
-    """A rejected name, save, or selection with an actionable reason."""
+    """A rejected map id, save, or selection with an actionable reason."""
 
 
-def safe_basename(name: str) -> str:
-    """Return ``name`` when it is a bounded, separator-free map basename."""
-    if not name or len(name) > MAX_BASENAME_LEN:
-        raise MapError('map name must be 1-64 characters')
-    if '..' in name or '/' in name or '\\' in name or os.sep in name:
-        raise MapError('map name must not contain path separators or ".."')
-    if Path(name).name != name:
-        raise MapError('map name must be a bare basename')
-    if not MAP_BASENAME.fullmatch(name):
+def safe_basename(map_id: str) -> str:
+    """Return ``map_id`` when it is a bounded, single-component directory name."""
+    if not map_id or len(map_id) > MAX_BASENAME_LEN:
+        raise MapError('map id must be 1-64 characters')
+    if '..' in map_id or '/' in map_id or '\\' in map_id or os.sep in map_id:
+        raise MapError('map id must not contain path separators or ".."')
+    if Path(map_id).name != map_id:
+        raise MapError('map id must be a bare single path component')
+    if not MAP_BASENAME.fullmatch(map_id):
         raise MapError(
-            'map name must start with a letter or number and use only '
+            'map id must start with a letter or number and use only '
             'letters, numbers, dot, underscore, or hyphen'
         )
-    return name
+    return map_id
+
+
+def map_directory(map_dir: Path, map_id: str) -> Path:
+    """Return the directory owning one map's artifacts, validating the id."""
+    return map_dir / safe_basename(map_id)
 
 
 def _read_pgm_header(path: Path) -> tuple[int, int, int]:
@@ -149,6 +184,14 @@ def parse_map_yaml(path: Path) -> dict:
     }
 
 
+def resolve_image_path(yaml_path: Path, image_field: str) -> Path:
+    """Resolve a YAML ``image:`` value relative to the YAML's own directory."""
+    image_path = Path(image_field)
+    if not image_path.is_absolute():
+        image_path = yaml_path.parent / image_path
+    return image_path
+
+
 @dataclass(frozen=True)
 class BundleInfo:
     """Validated metadata for one complete map bundle."""
@@ -161,16 +204,9 @@ class BundleInfo:
     height: int
 
 
-def _bundle_paths(map_dir: Path, name: str) -> dict[str, Path]:
-    return {
-        extension: map_dir / f'{name}.{extension}'
-        for extension in CORE_EXTENSIONS
-    }
-
-
-def read_manifest(map_dir: Path, name: str) -> Optional[dict]:
-    """Return a parsed manifest for ``name`` or None when it is absent/bad."""
-    path = map_dir / f'{name}{MANIFEST_SUFFIX}'
+def read_manifest(map_dir: Path, map_id: str) -> Optional[dict]:
+    """Return a parsed manifest for ``map_id`` or None when it is absent/bad."""
+    path = map_directory(map_dir, map_id) / MANIFEST_NAME
     if not path.is_file():
         return None
     try:
@@ -182,29 +218,29 @@ def read_manifest(map_dir: Path, name: str) -> Optional[dict]:
     return document
 
 
-def validate_bundle(map_dir: Path, name: str) -> BundleInfo:
-    """Raise :class:`MapError` unless ``name`` is a complete, usable bundle."""
-    safe_basename(name)
-    paths = _bundle_paths(map_dir, name)
-    for extension in ('posegraph', 'data'):
-        path = paths[extension]
+def validate_bundle(map_dir: Path, map_id: str) -> BundleInfo:
+    """Raise :class:`MapError` unless ``map_id`` is a complete, usable bundle."""
+    safe_basename(map_id)
+    base = map_directory(map_dir, map_id)
+    if not base.is_dir():
+        raise MapError(f'{map_id}: no such map directory')
+    for filename in (POSEGRAPH_POSEGRAPH_NAME, POSEGRAPH_DATA_NAME):
+        path = base / filename
         if not path.is_file() or path.stat().st_size == 0:
-            raise MapError(f'{name}: missing or empty .{extension}')
-    yaml_path = paths['yaml']
+            raise MapError(f'{map_id}: missing or empty {filename}')
+    yaml_path = base / MAP_YAML_NAME
     if not yaml_path.is_file() or yaml_path.stat().st_size == 0:
-        raise MapError(f'{name}: missing or empty .yaml')
+        raise MapError(f'{map_id}: missing or empty {MAP_YAML_NAME}')
     meta = parse_map_yaml(yaml_path)
-    image_path = Path(meta['image'])
-    if not image_path.is_absolute():
-        image_path = yaml_path.parent / image_path
+    image_path = resolve_image_path(yaml_path, meta['image'])
     if not image_path.is_file() or image_path.stat().st_size == 0:
-        raise MapError(f'{name}: YAML references missing raster {meta["image"]}')
+        raise MapError(f'{map_id}: {MAP_YAML_NAME} references missing raster {meta["image"]}')
     width, height, maxval = _read_pgm_header(image_path)
     if width <= 0 or height <= 0:
-        raise MapError(f'{name}: raster dimensions are not positive')
+        raise MapError(f'{map_id}: raster dimensions are not positive')
     if not 0 < maxval <= 255:
-        raise MapError(f'{name}: raster maxval {maxval} is implausible')
-    manifest = read_manifest(map_dir, name)
+        raise MapError(f'{map_id}: raster maxval {maxval} is implausible')
+    manifest = read_manifest(map_dir, map_id)
     revision = ''
     session_id = ''
     if manifest is not None:
@@ -212,14 +248,22 @@ def validate_bundle(map_dir: Path, name: str) -> BundleInfo:
         session_id = str(manifest.get('session_id', ''))
         recorded = manifest.get('artifacts', {})
         if isinstance(recorded, dict) and recorded:
-            for extension, digest in recorded.items():
-                path = map_dir / f'{name}.{extension}'
+            for filename, digest in recorded.items():
+                if (
+                    not isinstance(filename, str)
+                    or '/' in filename or '\\' in filename or '..' in filename
+                    or Path(filename).name != filename
+                ):
+                    raise MapError(
+                        f'{map_id}: manifest names an invalid artifact filename'
+                    )
+                path = base / filename
                 if not path.is_file() or _sha256(path) != digest:
                     raise MapError(
-                        f'{name}: manifest hash mismatch for .{extension}'
+                        f'{map_id}: manifest hash mismatch for {filename}'
                     )
     return BundleInfo(
-        name=name,
+        name=map_id,
         revision=revision,
         session_id=session_id,
         resolution=meta['resolution'],
@@ -228,55 +272,42 @@ def validate_bundle(map_dir: Path, name: str) -> BundleInfo:
     )
 
 
-def delete_bundle(map_dir: Path, name: str) -> BundleInfo:
+def delete_bundle(map_dir: Path, map_id: str) -> BundleInfo:
     """
-    Remove one validated bundle after staging every artifact atomically.
+    Remove one validated map directory via a single atomic rename-away.
 
-    Each rename is atomic within ``map_dir``. If staging fails, already moved
-    files are restored before the rejection is returned. Once every artifact
-    is staged, the bundle has left catalog truth and best-effort cleanup of the
-    private tombstone cannot expose a partial saved map.
+    A directory rename is one atomic filesystem operation: it either fully
+    succeeds (the map directory now lives under a private tombstone, ready
+    for best-effort cleanup) or fully fails (the live directory is
+    untouched). There is no partial-move state to roll back.
     """
-    info = validate_bundle(map_dir, name)
-    paths = list(_bundle_paths(map_dir, name).values())
-    manifest = map_dir / f'{name}{MANIFEST_SUFFIX}'
-    if manifest.exists():
-        paths.append(manifest)
-    tombstone = Path(tempfile.mkdtemp(prefix=f'.delete-{name}-', dir=map_dir))
-    moved: list[tuple[Path, Path]] = []
+    info = validate_bundle(map_dir, map_id)
+    base = map_directory(map_dir, map_id)
+    tombstone = Path(tempfile.mkdtemp(prefix=f'.delete-{map_id}-', dir=map_dir))
+    destination = tombstone / map_id
     try:
-        for source in paths:
-            destination = tombstone / source.name
-            os.replace(source, destination)
-            moved.append((source, destination))
+        os.replace(base, destination)
     except OSError as error:
-        rollback_errors = []
-        for source, destination in reversed(moved):
-            try:
-                os.replace(destination, source)
-            except OSError as rollback_error:
-                rollback_errors.append(str(rollback_error))
         shutil.rmtree(tombstone, ignore_errors=True)
-        detail = f'could not stage complete bundle deletion: {error}'
-        if rollback_errors:
-            detail += f'; rollback incomplete: {"; ".join(rollback_errors)}'
-        raise MapError(detail) from error
+        raise MapError(
+            f'{map_id}: could not stage directory deletion: {error}'
+        ) from error
     shutil.rmtree(tombstone, ignore_errors=True)
     return info
 
 
 def validate_delete_candidate(
-    map_dir: Path, name: str, *, selected: str, active_autonomy_map: str
+    map_dir: Path, map_id: str, *, selected: str, active_autonomy_map: str
 ) -> BundleInfo:
     """Reject a bundle that selection or the live runtime still references."""
-    safe_basename(name)
-    if name == selected:
+    safe_basename(map_id)
+    if map_id == selected:
         raise MapError(
             'cannot delete the selected map; select another map first'
         )
-    if name == active_autonomy_map:
+    if map_id == active_autonomy_map:
         raise MapError('cannot delete the map used by AUTONOMY')
-    return validate_bundle(map_dir, name)
+    return validate_bundle(map_dir, map_id)
 
 
 @dataclass(frozen=True)
@@ -296,24 +327,24 @@ class CatalogEntry:
 
 def scan_catalog(map_dir: Path, selected: str = '') -> list[CatalogEntry]:
     """
-    List every discovered bundle, validating completeness cheaply.
+    List every discovered map directory, validating completeness cheaply.
 
-    Discovery is by any core artifact under the top-level map root; the staging
-    directory is never scanned, so a half-written bundle can never appear.
+    Discovery is by top-level subdirectory name under the map root; a name
+    that does not pass :func:`safe_basename` (including every dot-prefixed
+    staging/tombstone directory) is never treated as a map. A half-published
+    bundle can never appear, since staging/tombstones always fail that check.
     """
     if not map_dir.is_dir():
         return []
-    names: set[str] = set()
+    names: list[str] = []
     for entry in sorted(map_dir.iterdir()):
-        if not entry.is_file():
+        if not entry.is_dir():
             continue
-        suffix = entry.suffix.lstrip('.')
-        if suffix in CORE_EXTENSIONS:
-            stem = entry.name[: -(len(suffix) + 1)]
-            if MAP_BASENAME.fullmatch(stem):
-                names.add(stem)
+        if not MAP_BASENAME.fullmatch(entry.name):
+            continue
+        names.append(entry.name)
     catalog: list[CatalogEntry] = []
-    for name in sorted(names):
+    for name in names:
         try:
             info = validate_bundle(map_dir, name)
         except MapError as error:
@@ -409,18 +440,22 @@ class SaveOutcome:
 
 
 def build_manifest(
-    session_id: str, name: str, map_dir: Path, *, created: float
+    session_id: str, map_id: str, base_dir: Path, *, created: float
 ) -> dict:
-    """Build the manifest dict from the four on-disk staged artifacts."""
+    """Build the manifest dict, hashing whichever canonical files are present."""
     artifacts = {
-        extension: _sha256(map_dir / f'{name}.{extension}')
-        for extension in CORE_EXTENSIONS
+        filename: _sha256(base_dir / filename)
+        for filename in CANONICAL_FILENAMES
+        if (base_dir / filename).is_file()
     }
-    joined = ''.join(artifacts[extension] for extension in CORE_EXTENSIONS)
+    joined = ''.join(
+        artifacts[filename] for filename in CANONICAL_FILENAMES
+        if filename in artifacts
+    )
     revision = hashlib.sha256(joined.encode('ascii')).hexdigest()[:12]
     return {
         'version': 1,
-        'name': name,
+        'name': map_id,
         'session_id': session_id,
         'created': created,
         'created_iso': time.strftime(
@@ -433,49 +468,47 @@ def build_manifest(
 
 class MapSaveTransaction:
     """
-    Stage the four artifacts, validate, then publish atomically.
+    Stage a complete map directory, validate it, then publish atomically.
 
     The node performs SLAM serialization (into the staging directory) and hands
     this object the captured occupancy raster. Nothing enters the selectable
-    catalog until :meth:`publish` has moved a fully validated bundle.
+    catalog until :meth:`publish` has moved the fully validated, staged
+    directory into place with one atomic rename.
     """
 
-    def __init__(self, map_dir: Path, name: str, session_id: str) -> None:
+    def __init__(self, map_dir: Path, map_id: str, session_id: str) -> None:
         self.map_dir = map_dir
-        self.name = safe_basename(name)
+        self.name = safe_basename(map_id)
         self.session_id = session_id
-        self.staging = map_dir / STAGING_DIRNAME
+        self.staging_root = map_dir / STAGING_DIRNAME
+        self.staging = self.staging_root / self.name
         self.created = time.time()
 
-    def staged_path(self, extension: str) -> Path:
-        return self.staging / f'{self.name}.{extension}'
+    def staged_path(self, filename: str) -> Path:
+        return self.staging / filename
 
     def prepare(self) -> None:
-        """Create a clean staging area, refusing to clobber a live bundle."""
-        for extension in CORE_EXTENSIONS:
-            live = self.map_dir / f'{self.name}.{extension}'
-            if live.exists():
-                raise MapError(
-                    f'{self.name}: a bundle with this name already exists'
-                )
-        if (self.map_dir / f'{self.name}{MANIFEST_SUFFIX}').exists():
-            raise MapError(f'{self.name}: a bundle with this name already exists')
+        """Create a clean staging directory, refusing to clobber a live bundle."""
+        if map_directory(self.map_dir, self.name).exists():
+            raise MapError(
+                f'{self.name}: a bundle with this name already exists'
+            )
+        if self.staging.exists():
+            shutil.rmtree(self.staging)
         self.staging.mkdir(parents=True, exist_ok=True)
-        for path in self.staging.glob(f'{self.name}.*'):
-            path.unlink()
 
     def serialize_target(self) -> str:
         """Absolute path stem passed to slam_toolbox SerializePoseGraph."""
-        return str(self.staging / self.name)
+        return str(self.staging / POSEGRAPH_STEM)
 
     def check_serialized(self) -> None:
         """Verify the SLAM step produced non-empty posegraph/data."""
-        for extension in ('posegraph', 'data'):
-            path = self.staged_path(extension)
+        for filename in (POSEGRAPH_POSEGRAPH_NAME, POSEGRAPH_DATA_NAME):
+            path = self.staged_path(filename)
             if not path.is_file() or path.stat().st_size == 0:
                 raise MapError(
                     f'{self.name}: SerializePoseGraph did not create '
-                    f'a non-empty .{extension}'
+                    f'a non-empty {filename}'
                 )
 
     def write_raster(self, raster: OccupancyRaster) -> None:
@@ -484,35 +517,28 @@ class MapSaveTransaction:
             raise MapError(f'{self.name}: captured /map grid is empty')
         if len(raster.data) != raster.width * raster.height:
             raise MapError(f'{self.name}: captured /map grid is inconsistent')
-        self.staged_path('pgm').write_bytes(raster.to_pgm_bytes())
-        self.staged_path('yaml').write_text(
-            raster.to_yaml_text(f'{self.name}.pgm'), encoding='utf-8'
+        self.staged_path(OCCUPANCY_NAME).write_bytes(raster.to_pgm_bytes())
+        self.staged_path(MAP_YAML_NAME).write_text(
+            raster.to_yaml_text(OCCUPANCY_NAME), encoding='utf-8'
         )
 
     def validate(self) -> BundleInfo:
-        """Full complete-bundle validation against the staged files."""
-        info = validate_bundle(self.staging, self.name)
+        """Full complete-bundle validation against the staged directory."""
+        info = validate_bundle(self.staging_root, self.name)
         if info.width <= 1 or info.height <= 1:
             raise MapError(f'{self.name}: staged raster is degenerate')
         return info
 
     def publish(self) -> SaveOutcome:
-        """Write the manifest, then atomically move the bundle into the root."""
+        """Write the manifest, then atomically rename the directory into place."""
         manifest = build_manifest(
             self.session_id, self.name, self.staging, created=self.created
         )
-        manifest_staged = self.staging / f'{self.name}{MANIFEST_SUFFIX}'
-        manifest_staged.write_text(
+        (self.staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2, sort_keys=True), encoding='utf-8'
         )
-        # Move core artifacts first, manifest last: a reader that sees the
-        # manifest has already seen every artifact it names.
-        for extension in CORE_EXTENSIONS:
-            os.replace(
-                self.staged_path(extension),
-                self.map_dir / f'{self.name}.{extension}',
-            )
-        os.replace(manifest_staged, self.map_dir / f'{self.name}{MANIFEST_SUFFIX}')
+        final_dir = map_directory(self.map_dir, self.name)
+        os.replace(self.staging, final_dir)
         return SaveOutcome(
             state=SaveState.SUCCEEDED,
             detail='bundle published to catalog',

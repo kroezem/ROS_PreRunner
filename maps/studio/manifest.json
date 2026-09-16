@@ -1,0 +1,14 @@
+{
+  "artifacts": {
+    "map.yaml": "7921bec51ef2c77dfe860ee3581ceb22c9341f53c3886918253532182ce7dd18",
+    "occupancy.pgm": "a3752ba6e2f7110244fb69f002a83d4331ef84ff7ec95acda3c8a464a7f47753",
+    "posegraph.data": "bb94072d04048b3f58f85c4f4f94ee4d8a1b3fca0416678ac091bb9bee98e238",
+    "posegraph.posegraph": "6b76cacf98104dd7464de691db92780ba6b692af5fe58b1de816715c9ca724bd"
+  },
+  "created": 1789576898.6627452,
+  "created_iso": "2026-09-16T16:41:38Z",
+  "name": "studio",
+  "revision": "b0021b9957a4",
+  "session_id": "",
+  "version": 1
+}

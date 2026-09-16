@@ -20,12 +20,19 @@ import pytest
 
 from runner_paddock.map_session import (
     build_manifest,
-    CORE_EXTENSIONS,
+    CANONICAL_FILENAMES,
+    CORE_FILENAMES,
     delete_bundle,
+    map_directory,
+    MANIFEST_NAME,
+    MAP_YAML_NAME,
     MapError,
     MapSaveTransaction,
     MapSessionModel,
+    OCCUPANCY_NAME,
     OccupancyRaster,
+    POSEGRAPH_DATA_NAME,
+    POSEGRAPH_POSEGRAPH_NAME,
     safe_basename,
     SaveOutcome,
     SaveState,
@@ -52,18 +59,19 @@ def raster(width=4, height=3):
     )
 
 
-def write_bundle(directory, name='studio', *, manifest=True, session='s1'):
-    """Write a complete four-file bundle, optionally with a manifest."""
+def write_bundle(map_dir, name='studio', *, manifest=True, session='s1'):
+    """Write a complete map directory, optionally with a manifest."""
     grid = raster(20, 16)
-    (directory / f'{name}.posegraph').write_bytes(b'posegraph-bytes')
-    (directory / f'{name}.data').write_bytes(b'data-bytes')
-    (directory / f'{name}.pgm').write_bytes(grid.to_pgm_bytes())
-    (directory / f'{name}.yaml').write_text(grid.to_yaml_text(f'{name}.pgm'))
+    base = map_dir / name
+    base.mkdir(parents=True, exist_ok=True)
+    (base / POSEGRAPH_POSEGRAPH_NAME).write_bytes(b'posegraph-bytes')
+    (base / POSEGRAPH_DATA_NAME).write_bytes(b'data-bytes')
+    (base / OCCUPANCY_NAME).write_bytes(grid.to_pgm_bytes())
+    (base / MAP_YAML_NAME).write_text(grid.to_yaml_text(OCCUPANCY_NAME))
     if manifest:
-        document = build_manifest(session, name, directory, created=1.0)
-        (directory / f'{name}.manifest.json').write_text(
-            json.dumps(document, sort_keys=True)
-        )
+        document = build_manifest(session, name, base, created=1.0)
+        (base / MANIFEST_NAME).write_text(json.dumps(document, sort_keys=True))
+    return base
 
 
 @pytest.mark.parametrize(
@@ -90,7 +98,7 @@ def test_pgm_and_yaml_round_trip_is_plausible(tmp_path):
 def test_catalog_hides_incomplete_and_reports_reason(tmp_path):
     write_bundle(tmp_path, 'good')
     write_bundle(tmp_path, 'broken', manifest=False)
-    (tmp_path / 'broken.pgm').unlink()
+    (tmp_path / 'broken' / OCCUPANCY_NAME).unlink()
 
     catalog = {entry.name: entry for entry in scan_catalog(tmp_path)}
 
@@ -116,14 +124,14 @@ def test_model_catalog_reuses_validation_until_files_change(
     assert model.catalog() == []
     assert calls == 1
 
-    (tmp_path / 'new.yaml').write_text('image: new.pgm\n')
+    write_bundle(tmp_path, 'new')
     model.catalog()
     assert calls == 2
 
 
 def test_catalog_flags_manifest_hash_mismatch(tmp_path):
     write_bundle(tmp_path, 'tampered')
-    (tmp_path / 'tampered.data').write_bytes(b'a-different-payload')
+    (tmp_path / 'tampered' / POSEGRAPH_DATA_NAME).write_bytes(b'a-different-payload')
 
     entry = next(
         item for item in scan_catalog(tmp_path) if item.name == 'tampered'
@@ -133,29 +141,49 @@ def test_catalog_flags_manifest_hash_mismatch(tmp_path):
 
 
 def test_manifest_revision_is_deterministic_for_identical_artifacts(tmp_path):
-    (tmp_path / 'a.posegraph').write_bytes(b'p')
-    (tmp_path / 'a.data').write_bytes(b'd')
-    (tmp_path / 'a.pgm').write_bytes(b'i')
-    (tmp_path / 'a.yaml').write_text('image: a.pgm\n')
+    base = tmp_path / 'a'
+    base.mkdir()
+    (base / POSEGRAPH_POSEGRAPH_NAME).write_bytes(b'p')
+    (base / POSEGRAPH_DATA_NAME).write_bytes(b'd')
+    (base / OCCUPANCY_NAME).write_bytes(b'i')
+    (base / MAP_YAML_NAME).write_text('image: occupancy.pgm\n')
 
-    first = build_manifest('sX', 'a', tmp_path, created=1.0)
-    second = build_manifest('sY', 'a', tmp_path, created=999.0)
+    first = build_manifest('sX', 'a', base, created=1.0)
+    second = build_manifest('sY', 'a', base, created=999.0)
 
     assert first['revision'] == second['revision']
     assert len(first['revision']) == 12
+    assert set(first['artifacts']) == set(CORE_FILENAMES)
+
+
+def test_build_manifest_includes_semantics_only_when_present(tmp_path):
+    base = tmp_path / 'a'
+    base.mkdir()
+    for filename in CORE_FILENAMES:
+        (base / filename).write_bytes(b'x')
+
+    without_semantics = build_manifest('s', 'a', base, created=1.0)
+    assert 'semantics.png' not in without_semantics['artifacts']
+
+    (base / 'semantics.png').write_bytes(b'png-bytes')
+    with_semantics = build_manifest('s', 'a', base, created=1.0)
+    assert 'semantics.png' in with_semantics['artifacts']
+    assert with_semantics['revision'] != without_semantics['revision']
+    assert set(with_semantics['artifacts']) == set(CANONICAL_FILENAMES)
 
 
 def test_save_transaction_publishes_atomically(tmp_path):
     txn = MapSaveTransaction(tmp_path, 'field', 'sess-7')
     txn.prepare()
-    txn.staged_path('posegraph').write_bytes(b'posegraph')
-    txn.staged_path('data').write_bytes(b'data')
+    txn.staged_path(POSEGRAPH_POSEGRAPH_NAME).write_bytes(b'posegraph')
+    txn.staged_path(POSEGRAPH_DATA_NAME).write_bytes(b'data')
     txn.check_serialized()
     txn.write_raster(raster(30, 20))
     txn.validate()
 
     # Nothing selectable before publish.
     assert scan_catalog(tmp_path) == []
+    assert not (tmp_path / 'field').exists()
 
     outcome = txn.publish()
 
@@ -163,10 +191,12 @@ def test_save_transaction_publishes_atomically(tmp_path):
     catalog = scan_catalog(tmp_path)
     assert [entry.name for entry in catalog] == ['field']
     assert catalog[0].complete
-    manifest = json.loads((tmp_path / 'field.manifest.json').read_text())
+    published = tmp_path / 'field'
+    manifest = json.loads((published / MANIFEST_NAME).read_text())
     assert manifest['session_id'] == 'sess-7'
-    for extension in CORE_EXTENSIONS:
-        assert (tmp_path / f'field.{extension}').stat().st_size > 0
+    for filename in CORE_FILENAMES:
+        assert (published / filename).stat().st_size > 0
+    assert not (tmp_path / '.staging' / 'field').exists()
 
 
 def test_save_transaction_refuses_to_clobber_existing_bundle(tmp_path):
@@ -179,9 +209,9 @@ def test_save_transaction_refuses_to_clobber_existing_bundle(tmp_path):
 def test_save_transaction_rejects_empty_serialized_artifacts(tmp_path):
     txn = MapSaveTransaction(tmp_path, 'field', 'sess-1')
     txn.prepare()
-    txn.staged_path('posegraph').write_bytes(b'')
-    txn.staged_path('data').write_bytes(b'data')
-    with pytest.raises(MapError, match='non-empty .posegraph'):
+    txn.staged_path(POSEGRAPH_POSEGRAPH_NAME).write_bytes(b'')
+    txn.staged_path(POSEGRAPH_DATA_NAME).write_bytes(b'data')
+    with pytest.raises(MapError, match='non-empty posegraph.posegraph'):
         txn.check_serialized()
 
 
@@ -193,17 +223,17 @@ def test_delete_bundle_removes_only_a_complete_named_bundle(tmp_path):
 
     assert deleted.name == 'remove'
     assert [entry.name for entry in scan_catalog(tmp_path)] == ['keep']
-    assert not list(tmp_path.glob('remove.*'))
+    assert not (tmp_path / 'remove').exists()
 
 
 def test_delete_bundle_rejects_invalid_or_incomplete_bundle(tmp_path):
     write_bundle(tmp_path, 'broken')
-    (tmp_path / 'broken.data').unlink()
+    (tmp_path / 'broken' / POSEGRAPH_DATA_NAME).unlink()
 
-    with pytest.raises(MapError, match='missing or empty .data'):
+    with pytest.raises(MapError, match='missing or empty posegraph.data'):
         delete_bundle(tmp_path, 'broken')
 
-    assert (tmp_path / 'broken.posegraph').exists()
+    assert (tmp_path / 'broken' / POSEGRAPH_POSEGRAPH_NAME).exists()
 
 
 def test_delete_policy_rejects_selected_and_active_autonomy_maps(tmp_path):
@@ -221,6 +251,11 @@ def test_delete_policy_rejects_selected_and_active_autonomy_maps(tmp_path):
 
     assert validate_bundle(tmp_path, 'selected')
     assert validate_bundle(tmp_path, 'active')
+
+
+def test_map_directory_rejects_unsafe_ids(tmp_path):
+    with pytest.raises(MapError):
+        map_directory(tmp_path, '../evil')
 
 
 def test_session_id_change_discards_prior_session_state(tmp_path):

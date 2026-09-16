@@ -1,70 +1,128 @@
 # Runner map saving
 
-The studio bundle is committed (6a7c961); artifact presence does not certify physical localization quality. Localization and autonomy require
-an explicit basename containing nonempty `.posegraph`, `.data`, `.yaml`, and
-the occupancy image referenced by that YAML.
+One map is one directory under `maps/`, named by its map id, containing a
+fixed set of canonical filenames:
 
-Two paths produce a bundle. The Paddock backend (`runner_map_executor`, v1.3
-Stage 4) is the normal operator path: it stages into `maps/.staging/`, captures
-a same-session occupancy raster, validates the complete four-artifact bundle,
-writes `<name>.manifest.json` (session id, creation time, revision, SHA-256 of
-the four artifacts) and only then moves the bundle into `maps/`. A half-written
-bundle stays in `.staging/` and never becomes selectable. See
-`docs/paddock_v1.3_implementation.md`.
+```
+maps/<map_id>/
+  map.yaml
+  occupancy.pgm
+  posegraph.posegraph
+  posegraph.data
+  semantics.png        (optional; see docs/paddock_v1.3_implementation.md)
+  manifest.json
+```
+
+The directory name is the map's sole identity. `map.yaml`'s `image:` field
+references `occupancy.pgm` relatively; every consumer resolves it relative to
+`map.yaml`'s own directory rather than assuming the filename.
+
+Localization and autonomy require a map id whose directory contains nonempty
+`posegraph.posegraph`, `posegraph.data`, `map.yaml`, and the occupancy image
+`map.yaml` references. Artifact presence does not certify physical
+localization quality.
+
+Two paths produce a bundle. The Paddock backend (`runner_map_executor`) is
+the normal operator path: it stages a complete directory under
+`maps/.staging/<map_id>/`, captures a same-session occupancy raster,
+validates the complete bundle, writes `manifest.json` (session id, creation
+time, revision, SHA-256 of each canonical file present) and only then
+publishes it into `maps/<map_id>/` with a single atomic directory rename. A
+half-written bundle stays under `.staging/` and never becomes selectable —
+the map id never appears as a top-level entry until the rename completes.
+See `docs/paddock_v1.3_implementation.md`.
 
 The `Runner: Save Map` VS Code task / `scripts/save_map.sh` is the engineering
-path and remains valid. It creates two different representations of the same
-map:
+path and remains valid. It also stages into `maps/.staging/<map_id>/` and
+publishes with one atomic rename. It creates two different representations of
+the same map:
 
-- `slam_toolbox`'s `SerializePoseGraph` service creates `.posegraph` and
-  `.data`.
-- Nav2's `map_saver_cli` creates `.pgm` and `.yaml`. The task explicitly uses
-  transient-local map QoS and a 10-second subscription timeout.
+- `slam_toolbox`'s `SerializePoseGraph` service is called with the stem
+  `maps/.staging/<map_id>/posegraph`, producing `posegraph.posegraph` and
+  `posegraph.data`. slam_toolbox itself appends these two suffixes to
+  whatever stem it is given — the stem does not need to match the map id.
+- Nav2's `map_saver_cli` is called against a private temporary stem (it ties
+  its YAML and image outputs to one shared basename, so it cannot itself
+  produce differently-named `map.yaml`/`occupancy.pgm` files); the script
+  then renames its `.pgm` output to `occupancy.pgm` and rewrites the
+  `image:` line of its `.yaml` output to `occupancy.pgm` before saving it as
+  `map.yaml`. The task explicitly uses transient-local map QoS and a
+  10-second subscription timeout.
 
-The task refuses to run if any artifact already exists for the requested
-basename. It reports success only after all four files exist and are nonempty.
-A missing or incorrectly typed `/slam_toolbox/serialize_map` service fails
-before any export. The serialized files are verified before occupancy export,
-so a reported serialization success that produced no files cannot degrade into
-another PGM/YAML-only basename.
-A failed step may leave a partial basename in place; this is intentional so
-that potentially valuable map data is never removed automatically.
+The script refuses to run if `maps/<map_id>/` already exists. It reports
+success only after all four core artifacts exist under that directory and are
+nonempty. A missing or incorrectly typed `/slam_toolbox/serialize_map`
+service fails before any export. The serialized files are verified before
+occupancy export, so a reported serialization success that produced no files
+cannot degrade into a partially-written map directory. Any failed step
+removes the private staging directory; the map id never becomes a published,
+selectable bundle unless every artifact is present and valid.
 
-## Recover occupancy files for an incomplete basename
+## Recover occupancy files for an incomplete map directory
 
-Use this only when the existing `.posegraph` and `.data` are nonempty and both
-occupancy files are absent. The checks below prevent overwriting any of the four
-artifacts. Run it while the mapping launch is active and publishing `/map`:
+Use this only when the existing `posegraph.posegraph` and `posegraph.data`
+are nonempty and both occupancy files are absent. The checks below prevent
+overwriting any canonical file. Run it while the mapping launch is active and
+publishing `/map`:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source "$HOME/runner_ws/install/setup.bash"
 
 NAME="incomplete_map"
-MAP="$HOME/runner_ws/maps/$NAME"
+MAP_DIR="$HOME/runner_ws/maps/$NAME"
 
-[[ "$NAME" =~ ^[A-Za-z0-9._-]+$ ]]
-test -s "${MAP}.posegraph"
-test -s "${MAP}.data"
-test ! -e "${MAP}.yaml"
-test ! -e "${MAP}.pgm"
+[[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+test -s "$MAP_DIR/posegraph.posegraph"
+test -s "$MAP_DIR/posegraph.data"
+test ! -e "$MAP_DIR/map.yaml"
+test ! -e "$MAP_DIR/occupancy.pgm"
 
+TMP_STEM=$(mktemp -u "$MAP_DIR/.recover.XXXXXX")
 ros2 run nav2_map_server map_saver_cli \
-  -f "$MAP" \
+  -f "$TMP_STEM" \
   --fmt pgm \
   --ros-args \
   -p map_subscribe_transient_local:=true \
   -p save_map_timeout:=10.0
 
-test -s "${MAP}.yaml"
-test -s "${MAP}.pgm"
+test -s "${TMP_STEM}.yaml"
+test -s "${TMP_STEM}.pgm"
+mv -- "${TMP_STEM}.pgm" "$MAP_DIR/occupancy.pgm"
+sed -E 's/^image:.*/image: occupancy.pgm/' "${TMP_STEM}.yaml" > "$MAP_DIR/map.yaml"
+rm -f -- "${TMP_STEM}.yaml"
+
+test -s "$MAP_DIR/map.yaml"
+test -s "$MAP_DIR/occupancy.pgm"
 ```
 
-If either occupancy artifact already exists, stop and choose a new basename or
-inspect the existing files. Do not rerun the saver over that basename.
+If either occupancy artifact already exists, stop and choose a new map id or
+inspect the existing files. Do not rerun the saver over that directory.
+`manifest.json` is not regenerated by this recovery procedure — the recovered
+directory will scan as a legacy bundle (empty revision/session id) until the
+next full save from Paddock.
 
 The focused shell test can be run without ROS or real map files:
 
 ```bash
 scripts/test_save_map.sh
 ```
+
+## Migrating legacy flat bundles
+
+Maps saved before this directory-per-map layout are flat files
+(`maps/<name>.yaml`, `.pgm`, `.posegraph`, `.data`, and optionally
+`.manifest.json`). Convert them with:
+
+```bash
+python3 scripts/migrate_maps.py maps/
+```
+
+This is a one-time, idempotent, offline utility — it is never run
+automatically at Paddock startup. It validates each legacy bundle, builds and
+validates the equivalent directory under `maps/.staging/`, and only then
+publishes it with an atomic rename. Legacy flat files are never modified or
+removed by this tool; move them aside yourself (e.g. into a dated backup
+directory) once you have confirmed the migrated directories load correctly.
+Run `python3 scripts/migrate_maps.py maps/ --dry-run` first to preview what
+would be created without writing anything.

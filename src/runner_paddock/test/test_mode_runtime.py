@@ -20,6 +20,10 @@ from pathlib import Path
 
 import pytest
 
+from runner_paddock.map_session import MAP_YAML_NAME
+from runner_paddock.map_session import OCCUPANCY_NAME
+from runner_paddock.map_session import POSEGRAPH_DATA_NAME
+from runner_paddock.map_session import POSEGRAPH_POSEGRAPH_NAME
 from runner_paddock.mode_runtime import AUTONOMY_ONLY_NODES
 from runner_paddock.mode_runtime import AUTONOMY_UNIT
 from runner_paddock.mode_runtime import COMMON_NODES
@@ -73,12 +77,16 @@ class FakeSystemd:
             self.graph.update({name: 1 for name in AUTONOMY_ONLY_NODES})
 
 
-def complete_map(directory: Path, name='studio'):
-    """Create a complete four-file bundle in a temporary directory."""
-    (directory / f'{name}.posegraph').write_text('posegraph')
-    (directory / f'{name}.data').write_text('data')
-    (directory / f'{name}.pgm').write_text('image')
-    (directory / f'{name}.yaml').write_text(f'image: {name}.pgm\n')
+def complete_map(map_root: Path, name='studio'):
+    """Create a complete map directory bundle under a temporary map root."""
+    base = map_root / name
+    base.mkdir(parents=True, exist_ok=True)
+    (base / POSEGRAPH_POSEGRAPH_NAME).write_text('posegraph')
+    (base / POSEGRAPH_DATA_NAME).write_text('data')
+    (base / OCCUPANCY_NAME).write_bytes(b'P5\n1 1\n255\n\x00')
+    (base / MAP_YAML_NAME).write_text(
+        f'image: {OCCUPANCY_NAME}\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n'
+    )
 
 
 def runtime(
@@ -283,9 +291,9 @@ def test_map_basename_rejects_paths(name, tmp_path):
 
 def test_map_requires_yaml_referenced_fourth_file(tmp_path):
     complete_map(tmp_path)
-    (tmp_path / 'studio.pgm').unlink()
+    (tmp_path / 'studio' / OCCUPANCY_NAME).unlink()
 
-    with pytest.raises(ValueError, match='incomplete autonomy map bundle'):
+    with pytest.raises(ValueError, match='references missing raster'):
         validate_map_bundle('studio', map_directory=tmp_path)
 
 

@@ -3,28 +3,36 @@
 set -euo pipefail
 
 if (( $# != 1 )); then
-  echo "Usage: $0 MAP_NAME" >&2
+  echo "Usage: $0 MAP_ID" >&2
   exit 2
 fi
 
 name=$1
 if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ "$name" == *..* ]]; then
-  echo "Invalid map name. Start with a letter or number, use only letters, numbers, dots, underscores, and hyphens, and do not use '..'." >&2
+  echo "Invalid map id. Start with a letter or number, use only letters, numbers, dots, underscores, and hyphens, and do not use '..'." >&2
   exit 2
 fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 workspace_root=$(cd -- "$script_dir/.." && pwd -P)
-map_dir="$workspace_root/maps"
-map_path="$map_dir/$name"
+map_root="$workspace_root/maps"
+map_dir="$map_root/$name"
+staging_root="$map_root/.staging"
+staging_dir="$staging_root/$name"
 
-mkdir -p -- "$map_dir"
+mkdir -p -- "$map_root" "$staging_root"
 
-if compgen -G "${map_path}.*" >/dev/null; then
-  echo "Refusing to overwrite existing map artifacts: ${map_path}.*" >&2
-  ls -lh -- "${map_path}."* >&2
+if [[ -e "$map_dir" ]]; then
+  echo "Refusing to overwrite existing map directory: $map_dir" >&2
   exit 1
 fi
+
+rm -rf -- "$staging_dir"
+mkdir -p -- "$staging_dir"
+cleanup() { rm -rf -- "$staging_dir"; }
+trap cleanup EXIT
+
+posegraph_stem="$staging_dir/posegraph"
 
 serialize_service=/slam_toolbox/serialize_map
 serialize_type=slam_toolbox/srv/SerializePoseGraph
@@ -45,11 +53,11 @@ if [[ "$discovered_type" != "$serialize_type" ]]; then
   exit 1
 fi
 
-echo "Saving posegraph to $map_path"
+echo "Saving posegraph to $posegraph_stem"
 if ! serialize_output=$(timeout --foreground 120s ros2 service call \
   "$serialize_service" \
   "$serialize_type" \
-  "{filename: \"$map_path\"}" 2>&1)
+  "{filename: \"$posegraph_stem\"}" 2>&1)
 then
   printf '%s\n' "$serialize_output" >&2
   echo "SerializePoseGraph call failed." >&2
@@ -69,8 +77,8 @@ if [[ "$serialize_result" != "0" ]]; then
   exit 1
 fi
 
-for extension in posegraph data; do
-  artifact="${map_path}.${extension}"
+for suffix in posegraph data; do
+  artifact="${posegraph_stem}.${suffix}"
   if [[ ! -s "$artifact" ]]; then
     echo "SerializePoseGraph reported success but did not create a nonempty $artifact" >&2
     echo "Occupancy-grid export was not attempted; the map bundle is incomplete." >&2
@@ -78,9 +86,14 @@ for extension in posegraph data; do
   fi
 done
 
-echo "Saving occupancy grid to $map_path"
+# map_saver_cli ties its YAML and image outputs to one shared stem, so it
+# cannot itself write the canonical occupancy.pgm/map.yaml pair. Save to a
+# private stem, then rename/rewrite into the canonical filenames below.
+saver_stem="$staging_dir/raw_occupancy"
+
+echo "Saving occupancy grid to $saver_stem"
 if ! ros2 run nav2_map_server map_saver_cli \
-  -f "$map_path" \
+  -f "$saver_stem" \
   --fmt pgm \
   --ros-args \
   -p map_subscribe_transient_local:=true \
@@ -90,11 +103,19 @@ then
   exit 1
 fi
 
+if [[ ! -s "${saver_stem}.pgm" || ! -s "${saver_stem}.yaml" ]]; then
+  echo "Missing or empty map artifact: ${saver_stem}.pgm / ${saver_stem}.yaml" >&2
+  exit 1
+fi
+
+mv -- "${saver_stem}.pgm" "$staging_dir/occupancy.pgm"
+sed -E 's/^image:.*/image: occupancy.pgm/' "${saver_stem}.yaml" > "$staging_dir/map.yaml"
+rm -f -- "${saver_stem}.yaml"
+
 missing=0
-for extension in posegraph data yaml pgm; do
-  artifact="${map_path}.${extension}"
-  if [[ ! -s "$artifact" ]]; then
-    echo "Missing or empty map artifact: $artifact" >&2
+for artifact in posegraph.posegraph posegraph.data occupancy.pgm map.yaml; do
+  if [[ ! -s "$staging_dir/$artifact" ]]; then
+    echo "Missing or empty map artifact: $staging_dir/$artifact" >&2
     missing=1
   fi
 done
@@ -102,10 +123,9 @@ if (( missing != 0 )); then
   exit 1
 fi
 
+mv -- "$staging_dir" "$map_dir"
+trap - EXIT
+
 echo
-echo "Saved and verified all map artifacts:"
-ls -lh -- \
-  "${map_path}.posegraph" \
-  "${map_path}.data" \
-  "${map_path}.yaml" \
-  "${map_path}.pgm"
+echo "Saved and verified all map artifacts under $map_dir:"
+ls -lh -- "$map_dir"

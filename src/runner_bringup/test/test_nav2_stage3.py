@@ -153,10 +153,12 @@ def test_map_name_is_required_and_complete_bundle_is_validated():
 
         assert 'DEFAULT_MAP_NAME' not in launch
         assert 'default_value' not in declaration
-        assert "f'{map_file_name}.posegraph'" in launch
-        assert "f'{map_file_name}.data'" in launch
-        assert "static_yaml = f'{map_file_name}.yaml'" in launch
-        assert "startswith('image:')" in launch
+        # Validation is delegated to the one authoritative bundle validator
+        # instead of each launch file re-parsing map.yaml itself -- a second,
+        # independent 'image:' line scanner here would be a regression.
+        assert 'from runner_paddock.map_session import validate_bundle' in launch
+        assert "startswith('image:')" not in launch
+        assert 'resolve_map_directory(Path(MAP_DIRECTORY), map_id)' in launch
 
 
 def test_local_costmap_uses_raw_scan_and_ratified_geometry():

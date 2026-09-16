@@ -30,6 +30,8 @@ if [[ ${1:-} == service && ${2:-} == type ]]; then
 fi
 
 if [[ ${1:-} == service && ${2:-} == call ]]; then
+  filename=$(printf '%s' "${5:-}" | sed -nE 's/.*filename: *"([^"]*)".*/\1/p')
+
   if [[ ${MOCK_SERIALIZE_CLI_STATUS:-0} != 0 ]]; then
     echo "mock serialize transport failure" >&2
     exit "$MOCK_SERIALIZE_CLI_STATUS"
@@ -37,8 +39,8 @@ if [[ ${1:-} == service && ${2:-} == call ]]; then
 
   result=${MOCK_SERIALIZE_RESULT:-0}
   if [[ "$result" == 0 && ${MOCK_CREATE_SERIALIZED:-1} == 1 ]]; then
-    printf 'posegraph\n' > "${MOCK_MAP_PATH}.posegraph"
-    printf 'data\n' > "${MOCK_MAP_PATH}.data"
+    printf 'posegraph\n' > "${filename}.posegraph"
+    printf 'data\n' > "${filename}.data"
   fi
   printf 'response:\nslam_toolbox.srv.SerializePoseGraph_Response(result=%s)\n' "$result"
   exit 0
@@ -48,13 +50,21 @@ if [[ ${1:-} == run && ${2:-} == nav2_map_server && ${3:-} == map_saver_cli ]]; 
   [[ " $* " == *" --fmt pgm "* ]]
   [[ " $* " == *" -p map_subscribe_transient_local:=true "* ]]
   [[ " $* " == *" -p save_map_timeout:=10.0 "* ]]
+  stem=""
+  previous=""
+  for arg in "$@"; do
+    if [[ "$previous" == "-f" ]]; then
+      stem=$arg
+    fi
+    previous=$arg
+  done
   if [[ ${MOCK_OCCUPANCY_STATUS:-0} != 0 ]]; then
     echo "mock occupancy timeout" >&2
     exit "$MOCK_OCCUPANCY_STATUS"
   fi
   if [[ ${MOCK_CREATE_OCCUPANCY:-1} == 1 ]]; then
-    printf 'image: %s.pgm\n' "$(basename -- "$MOCK_MAP_PATH")" > "${MOCK_MAP_PATH}.yaml"
-    printf 'P5\n1 1\n255\n0' > "${MOCK_MAP_PATH}.pgm"
+    printf 'image: %s.pgm\n' "$(basename -- "$stem")" > "${stem}.yaml"
+    printf 'P5\n1 1\n255\n0' > "${stem}.pgm"
   fi
   exit 0
 fi
@@ -68,7 +78,6 @@ run_save()
 {
   local name=$1
   shift
-  MOCK_MAP_PATH="$map_dir/$name" \
   MOCK_ROS2_LOG="$mock_log" \
   PATH="$mock_bin:$PATH" \
     env "$@" "$save_script" "$name"
@@ -88,17 +97,33 @@ assert_fails_without_success()
   fi
 }
 
+assert_no_partial_directory()
+{
+  local name=$1
+  if [[ -e "$map_dir/$name" ]]; then
+    echo "Failed save left a published map directory: $map_dir/$name" >&2
+    exit 1
+  fi
+  if [[ -e "$map_dir/.staging/$name" ]]; then
+    echo "Failed save left a staging directory behind: $map_dir/.staging/$name" >&2
+    exit 1
+  fi
+}
+
 success_output="$test_root/success.out"
 run_save success > "$success_output" 2>&1
-for extension in posegraph data yaml pgm; do
-  test -s "$map_dir/success.$extension"
+for artifact in posegraph.posegraph posegraph.data occupancy.pgm map.yaml; do
+  test -s "$map_dir/success/$artifact"
 done
-test "$(find "$map_dir" -maxdepth 1 -type f -name 'success.*' | wc -l)" -eq 4
+test "$(find "$map_dir/success" -maxdepth 1 -type f | wc -l)" -eq 4
+rg -q '^image: occupancy\.pgm$' "$map_dir/success/map.yaml"
 rg -q "Saved and verified all map artifacts" "$success_output"
+[[ ! -e "$map_dir/.staging/success" ]]
 
 assert_fails_without_success "$test_root/serialize-result.out" \
   run_save serialize_result_failure MOCK_SERIALIZE_RESULT=255
 rg -q "SerializePoseGraph returned result=255" "$test_root/serialize-result.out"
+assert_no_partial_directory serialize_result_failure
 
 before_calls=$(wc -l < "$mock_log")
 assert_fails_without_success "$test_root/service-unavailable.out" \
@@ -107,6 +132,7 @@ after_calls=$(wc -l < "$mock_log")
 test "$((after_calls - before_calls))" -eq 1
 rg -q "Required slam_toolbox service is unavailable" \
   "$test_root/service-unavailable.out"
+assert_no_partial_directory service_unavailable
 
 before_calls=$(wc -l < "$mock_log")
 assert_fails_without_success "$test_root/service-type.out" \
@@ -115,6 +141,7 @@ after_calls=$(wc -l < "$mock_log")
 test "$((after_calls - before_calls))" -eq 1
 rg -q "Unexpected type for /slam_toolbox/serialize_map" \
   "$test_root/service-type.out"
+assert_no_partial_directory service_type_mismatch
 
 before_calls=$(wc -l < "$mock_log")
 assert_fails_without_success "$test_root/missing-serialized.out" \
@@ -123,27 +150,31 @@ after_calls=$(wc -l < "$mock_log")
 test "$((after_calls - before_calls))" -eq 2
 rg -q "Occupancy-grid export was not attempted" \
   "$test_root/missing-serialized.out"
+assert_no_partial_directory missing_serialized
 
 assert_fails_without_success "$test_root/occupancy.out" \
   run_save occupancy_failure MOCK_OCCUPANCY_STATUS=1
 rg -q "Occupancy-grid save failed" "$test_root/occupancy.out"
+assert_no_partial_directory occupancy_failure
 
 assert_fails_without_success "$test_root/missing.out" \
   run_save missing_occupancy MOCK_CREATE_OCCUPANCY=0
 rg -q "Missing or empty map artifact" "$test_root/missing.out"
+assert_no_partial_directory missing_occupancy
 
-printf 'existing\n' > "$map_dir/existing.posegraph"
+mkdir -p -- "$map_dir/existing"
+printf 'existing\n' > "$map_dir/existing/posegraph.posegraph"
 before_calls=$(wc -l < "$mock_log")
 assert_fails_without_success "$test_root/overwrite.out" run_save existing
 after_calls=$(wc -l < "$mock_log")
 test "$before_calls" -eq "$after_calls"
-rg -q "Refusing to overwrite existing map artifacts" "$test_root/overwrite.out"
+rg -q "Refusing to overwrite existing map directory" "$test_root/overwrite.out"
 
 assert_fails_without_success "$test_root/invalid.out" run_save 'bad/name'
-rg -q "Invalid map name" "$test_root/invalid.out"
+rg -q "Invalid map id" "$test_root/invalid.out"
 assert_fails_without_success "$test_root/dotdot.out" run_save 'bad..name'
-rg -q "Invalid map name" "$test_root/dotdot.out"
+rg -q "Invalid map id" "$test_root/dotdot.out"
 assert_fails_without_success "$test_root/leading-dot.out" run_save '.hidden'
-rg -q "Invalid map name" "$test_root/leading-dot.out"
+rg -q "Invalid map id" "$test_root/leading-dot.out"
 
 echo "save_map.sh tests passed"

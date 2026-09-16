@@ -19,13 +19,13 @@ from dataclasses import dataclass
 from enum import IntEnum
 import os
 from pathlib import Path
-import re
 import time
 from typing import Callable, Mapping, Tuple
 import uuid
 
 import dbus
 
+from runner_paddock.map_session import validate_bundle as _validate_map_bundle
 from runner_paddock.state_machine import Mode
 
 
@@ -51,7 +51,6 @@ MAP_DIRECTORY = Path(os.environ.get(
 AUTONOMY_MAP_FILE = Path(os.environ.get(
     'PADDOCK_AUTONOMY_MAP_FILE', '/run/runner-paddock/autonomy-map'
 ))
-MAP_BASENAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
 COMMON_NODES = frozenset({
     '/LD19',
@@ -215,46 +214,19 @@ class SystemdManager:
 
 
 def validate_map_bundle(
-    basename: str,
+    map_id: str,
     *,
     map_directory: Path = MAP_DIRECTORY,
-) -> tuple[Path, Path, Path, Path]:
-    """Validate a basename and its posegraph/data/YAML/image bundle."""
-    if (
-        not basename
-        or not MAP_BASENAME.fullmatch(basename)
-        or '..' in basename
-        or Path(basename).name != basename
-    ):
-        raise ValueError(
-            'autonomy map must be a basename containing only letters, '
-            'numbers, dot, underscore, or hyphen'
-        )
-    base = map_directory / basename
-    posegraph = Path(f'{base}.posegraph')
-    data = Path(f'{base}.data')
-    yaml_file = Path(f'{base}.yaml')
-    missing = [path for path in (posegraph, data, yaml_file) if not path.is_file()]
-    image = None
-    if not missing:
-        for line in yaml_file.read_text(encoding='utf-8').splitlines():
-            if line.strip().startswith('image:'):
-                value = line.split(':', 1)[1].strip().strip('"\'')
-                if value:
-                    image = Path(value)
-                    if not image.is_absolute():
-                        image = yaml_file.parent / image
-                break
-        if image is None:
-            raise ValueError(f'{yaml_file} has no image entry')
-        if not image.is_file():
-            missing.append(image)
-    if missing:
-        raise ValueError(
-            'incomplete autonomy map bundle: '
-            + ', '.join(str(path) for path in missing)
-        )
-    return posegraph, data, yaml_file, image
+) -> None:
+    """
+    Validate a map id and its complete on-disk directory bundle.
+
+    Delegates entirely to :func:`runner_paddock.map_session.validate_bundle`,
+    the single authoritative bundle validator, instead of re-parsing
+    ``map.yaml`` here. Raises :class:`MapError` (a :class:`ValueError`) with
+    an actionable reason on any incomplete or invalid bundle.
+    """
+    _validate_map_bundle(map_directory, map_id)
 
 
 class ModeRuntime:
