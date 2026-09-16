@@ -345,11 +345,15 @@ function renderAutonomyTuning(tuning, adapter, navActive, adapterFresh) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+  // Speed Profile's own draft/dirty store (speed_profile.js) owns sync for
+  // its panel's inputs via the "paddock-tuning" event dispatched below; an
+  // unconditional overwrite here would ignore its dirty tracking.
   document.querySelectorAll("[data-tuning-field]").forEach((input) => {
+    if (input.closest("#panel-speed-profile")) return;
     const value = values[input.dataset.tuningField];
     if (document.activeElement !== input) input.value = Number.isFinite(value) ? String(value) : "";
   });
-  window.dispatchEvent(new CustomEvent("paddock-tuning", { detail: values }));
+  window.dispatchEvent(new CustomEvent("paddock-tuning", { detail: { values, status: tuning.status } }));
   Object.entries(bounds).forEach(([field, value]) => {
     const input = document.querySelector(`[data-tuning-field="${field}"]`);
     if (input && Number.isFinite(value)) input.max = String(value);
