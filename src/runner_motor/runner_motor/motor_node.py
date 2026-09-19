@@ -26,6 +26,11 @@ DIR_REVERSE = 1
 
 STEER_CTR = 1500  # servo centre
 STEER_US = 500  # ± range around centre
+# Replacement servo (2026-09-19) drives opposite mechanical direction for
+# the same pulse width; flip here so /cmd_vel.angular.z's sign convention
+# (positive = physical left, ratified in docs/runner_spec_v0.9.md) is
+# unchanged for every upstream producer (teleop, Nav2 via drive_adapter).
+STEER_SIGN = -1
 
 
 def us_to_ns(us):
@@ -272,7 +277,7 @@ class MotorNode(Node):
 
         steer_us = int(
             STEER_CTR
-            + max(-1.0, min(1.0, msg.angular.z)) * STEER_US
+            + STEER_SIGN * max(-1.0, min(1.0, msg.angular.z)) * STEER_US
         )
         self.servo.set_duty_cycle_ns(us_to_ns(steer_us))
 
