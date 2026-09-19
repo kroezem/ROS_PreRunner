@@ -41,9 +41,16 @@ interaction or unit test in this document is physical validation.**
 **Deploy coherence is not assumed**: this document describes the repository,
 not necessarily what each systemd unit is executing (§15).
 
-**No new D-decisions are ratified by this v1.7 pass.** D-89 and D-90 remain
-ratified as in v1.6; the D-91…D-95 labels are dispositioned in §17 without
-inventing ratification history.
+**Decisions.** D-89 and D-90 remain ratified as in v1.6. **This v1.7 pass
+ratifies three decisions, at Matti's direction on 2026-09-20: D-91
+(committed-path retention), D-93 (identity-bound path speed profile
+contract) and D-94 (tracker ownership of execution progress and cusp
+transitions, narrowly and tracker-implementation-agnostic).** They reuse the
+numbers of the v1.6 planning labels but are ratified in the scoped form
+stated in §17.1, not as those labels were originally sketched. D-92 and
+D-95 remain unratified labels; nothing else is ratified (steering, D2
+tuning, `cost_penalty`, default profile, route simulator, recording set,
+chair-leg fix and unstick recovery all remain open).
 
 ## Uncommitted / WIP state at authoring time
 
@@ -696,7 +703,7 @@ perfect maneuver execution and is not claimed to be.**
 | A1 obstacle-evidence coherence | **Implemented** (`57ae77c`): Max composition in both costmaps, aligned marking/clearing, 4 m local window (§11.7), 10 Hz local publish, bag analyzer (`navigation_bag_analyzer.py`) as replay harness. |
 | A2 evidence filtering | **Not adopted.** The first post-A1 measurement showed baseline flicker (~0.25–0.27 % per frame) but that bag's 106s traced to persistent unmapped obstacles; A2 was judged not yet justified. |
 | B recovery executive | **Interim implemented** (`4db4f27`): controller patience + one bounded replan + redispatch guard. The full `BLOCKED → WAIT → RESUME → REPLAN → ABORT` ladder with operator reason codes is not confirmed. |
-| C path commitment | **Implemented** (`87c9a92`, `PersistentPathValid`, `CandidatePathValid`) — but with no separately ratified decision (§17). |
+| C path commitment | **Implemented** (`87c9a92`, `PersistentPathValid`, `CandidatePathValid`) — behavior now governed by D-91 (§17.1); its parameters remain tuning. |
 | D planner/path contract | **Forward-first certification reverted** (§11.3). The *speed/clearance profile and transport* portion was delivered as D2 (§11.6). |
 | E Runner tracker | **Partial:** profile consumption and cusp protocol in the vendored RPP. Not built: hard curvature cap, creep instead of the regulated speed floor, executable-trajectory stopping-distance guard, `BLOCKED` status. |
 | F retrace | Not started. |
@@ -988,8 +995,9 @@ with `SAVE OVERRIDE` a third, reboot-persistent channel (§9).
 
 ## 17. Decision-log reconciliation
 
-**No new D-decisions are ratified by this document.** Dispositions of every
-D-identifier named in v1.6:
+Dispositions of every D-identifier named in v1.6. D-91, D-93 and D-94 are
+ratified by this v1.7 pass in the scoped form of §17.1; no other decision is
+newly ratified.
 
 | Decision | Disposition | Evidence / notes |
 |---|---|---|
@@ -999,23 +1007,71 @@ D-identifier named in v1.6:
 | D-88 experimental 2.0 m/s / 0.30 ceilings | **IMPLEMENTATION CHANGED, INTENT SAME** | ceilings in `AutonomyTuningPolicy.msg`; Insane and the fixed presets are gone (`99d1fea`); ceilings remain validation limits, not validated |
 | D-89 obstacle-evidence coherence | **RATIFIED; A1 IMPLEMENTED; NEEDS REVIEW** | Max composition, derived window (`57ae77c`); A2 not adopted; chair-leg forgetting unresolved and in tension with its clear-promptly rule |
 | D-90 recoverable local-control failure / anti-storm | **RATIFIED; PARTIALLY IMPLEMENTED** | `4db4f27`; operator-facing reason codes and Retrace not confirmed |
-| D-91 committed-path replanning | **LABEL ONLY — behavior implemented without a ratified decision** | `87c9a92`, `PersistentPathValid` parameters (1.25 m, 3, 2.0 m) are config in the BT XML, never ratified as a decision |
-| D-92 forward-first policy and path certification | **LABEL ONLY — implemented then reverted** | `ad62558` → `cad538f`; single Reeds-Shepp planner; no certification |
-| D-93 execution-contract transport | **LABEL ONLY — behavior implemented without a ratified decision** | `PathSpeedProfile` + `SetPathSpeedProfile` + identity hash + transient-local topic |
-| D-94 controller-agnostic tracker contract | **LABEL ONLY — partially realized** | RPP fork consumes the profile and owns cusp/segment progress; a ROS-independent profile library exists; no shared trajectory-guard/`BLOCKED` helpers; no MPPI or VP |
-| D-95 retrace | **LABEL ONLY — not started** | no source |
+| D-91 committed-path retention | **RATIFIED in v1.7 (principle only); IMPLEMENTED** | `87c9a92`; see §17.1. The BT parameters (1.25 m, 3, 2.0 m) remain tuning, not ratified |
+| D-92 forward-first policy and path certification | **UNRATIFIED LABEL — deferred; implemented then reverted** | `ad62558` → `cad538f`; single Reeds-Shepp planner; no certification |
+| D-93 identity-bound path speed profile contract | **RATIFIED in v1.7; IMPLEMENTED** | `PathSpeedProfile` + `SetPathSpeedProfile` + identity hash + transient-local topic; see §17.1 |
+| D-94 tracker ownership of progress and cusps | **RATIFIED in v1.7 (narrow); IMPLEMENTED in the RPP fork** | `2d95a93`; see §17.1. The broader v1.6 label (shared trajectory-guard/`BLOCKED` helpers, MPPI/VP alternatives) is **not** ratified and not built |
+| D-95 retrace | **UNRATIFIED LABEL — not started** | no source |
 
-The D-91…D-95 identifiers were provisional planning labels in v1.6 and
-carried no authority; they remain unratified. Where source implements a
-behavior, this document describes the behavior and states that no decision
-records it. Historical decisions relevant to current design (from v1.2–v1.5,
+D-92 and D-95 were provisional planning labels in v1.6 and carried no
+authority; they remain unratified. Historical decisions relevant to current design (from v1.2–v1.5,
 still in force per the v1.3/v1.5 reconciliation tables): D-55 (adapter path
 through the authority), D-73/D-74/D-75 (zero brake, signed reverse,
 stationary-confirmed direction switching, persistent encoder), D-83
 (deliberate DualSense shaping), D-85 (reverse autonomy), D-86 (single
 launched speed origin, now qualified by the Speed Profile editor being
 authoritative for live tuning), D-87 (purpose/discipline), D-29, D-71/D-76/D-79/D-80.
-Decisions **needing Matti's confirmation** (not made here) are in §19.
+Open decision questions are in §19.
+
+### 17.1 Decisions ratified by this v1.7 pass (2026-09-20)
+
+Each is an architectural boundary; the numeric parameters and current
+implementation details named as tuning are explicitly **not** ratified.
+
+**D-91 — Committed-path retention.** Runner intentionally retains an accepted
+(committed) path for as long as it remains valid, rather than continuously
+replacing it with newly planned candidates. Candidate generation and path
+execution are separate concerns: a new candidate is generated, validated and
+committed only when the retained path is no longer valid (or the goal
+changes), and a **failed or rejected candidate does not by itself destroy the
+committed path**. Future work must not casually revert this to
+continuous-replan semantics. *Not ratified:* the current corridor length
+(1.25 m), required observations (3), progress-search distance (2.0 m), the
+validity test's specific mechanism, and the recovery-ladder details — these
+remain tuning (source: `PersistentPathValid`, `CandidatePathValid`, the BT
+XML).
+
+**D-93 — Identity-bound path speed profile contract.** The execution
+architecture is: committed path → identity-bound `PathSpeedProfile` →
+tracker. A profile belongs to one specific committed path and is valid for
+that path only if its identity (`path_hash`, `pose_count`,
+`committed_path_stamp`) matches; it is handed to the tracker **before**
+execution begins; and failure to establish that contract (rejection or
+timeout) **prevents dispatch** of the path. D2 is a path-relative policy
+layer producing a per-point ceiling that the tracker consumes; it is not
+actuator control and does not replace the tracker's or actuator's own safety
+checks. *Not ratified:* the D2 clearance curve, braking/recovery parameters,
+lateral-acceleration cap, defaults, and the specific transport (service plus
+transient-local topic) beyond the identity-and-handoff requirement — these
+are active research/tuning. The tracker's behavior when no matching profile
+exists (currently a 0.25 m/s fallback) is implementation, not part of this
+decision.
+
+**D-94 — Tracker ownership of execution progress and cusps (narrow).** The
+tracker/path handler owns progress along the committed path, the segment and
+cusp state, and the transition across a reversal. Crossing a cusp requires
+**fresh downstream stationary evidence** (a post-cusp stationary encoder
+sample newer than the start of the wait). Other components may **observe**
+execution progress (`PathExecutionState`) but must not independently
+reconstruct it or compete for ownership of it. The contract is
+tracker-implementation-agnostic: it is to survive replacing RPP with another
+tracker (Vector Pursuit or otherwise), so ownership and interface are
+ratified, not RPP. *Not ratified:* "RPP is the permanent tracker"; the v1.6
+D-94 label's broader scope (shared trajectory-guard/`BLOCKED`-status helpers,
+MPPI/Vector-Pursuit as alternatives); and any claim that current cusp
+execution is good (tiny-reversal failures and the reverse-start deadlock
+remain open, §11.4, §11.8). Motor-side reversal gating (D-74/D-75 subject)
+remains motor-local and unchanged.
 
 ## 18. Physical-validation status
 
@@ -1080,10 +1136,10 @@ Decisions **needing Matti's confirmation** (not made here) are in §19.
 15. Stage A2 mechanism, full Stage B ladder/reason codes, Stage E items,
     Retrace, and Stage G validation are not built.
 
-**Decisions and confirmations needed from Matti (not made in this
-document).** Whether to ratify decisions for committed-path semantics, the
-execution-contract transport and the tracker contract, and forward-first
-reversal policy (currently label-only, §17); which named profile (if any) is
+**Decisions and confirmations still needed from Matti (not made in this
+document).** Whether to ratify forward-first/reversal policy (D-92, deferred;
+implementation was reverted and short reverse segments/cusps are unresolved)
+and Retrace (D-95); which named profile (if any) is
 the documented default given the launched 1.0 m/s origin versus the live
 2.0 m/s `fast` profile; whether `cost_penalty` 50 becomes tracked policy;
 whether the untracked nav2 docs and the route simulator are committed;
