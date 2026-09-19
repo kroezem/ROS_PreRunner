@@ -25,7 +25,7 @@ DIR_FORWARD = 0
 DIR_REVERSE = 1
 
 STEER_CTR = 1500  # servo centre
-STEER_US = 500  # ± range around centre
+STEER_US = 450  # ± range around centre; measured usable endpoints 1050/1950 us
 # Replacement servo (2026-09-19) drives opposite mechanical direction for
 # the same pulse width; flip here so /cmd_vel.angular.z's sign convention
 # (positive = physical left, ratified in docs/runner_spec_v0.9.md) is
